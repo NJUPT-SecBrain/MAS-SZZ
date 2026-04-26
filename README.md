@@ -1,38 +1,39 @@
 # MAS-SZZ: Multi-Agentic SZZ Algorithm for Vulnerability-Inducing Commit Identification
-多智能体漏洞引入提交识别框架
 
-给定 CVE 修复提交（VFC），由多智能体协作完成三阶段分析，自动定位漏洞引入提交（VIC）。
+A multi-agent framework for automatically identifying Vulnerability-Inducing Commits (VICs). Given a Vulnerability-Fixing Commit (VFC), the system traces back through git history using a three-stage LLM agent pipeline to locate the commit that introduced the vulnerability.
 
-## 项目架构
+Paper: *MAS-SZZ: Multi-Agentic SZZ Algorithm for Vulnerability-Inducing Commit Identification*, ASE'26.
 
-- **阶段 1：根因分析** — Auditor 生成漏洞根因描述，Judge 验证质量，最多重试 3 次
-- **阶段 2：锚点语句选择** — 解析 patch hunk，按改动意图分组，过滤非安全相关改动，定位最直接引入漏洞的代码行
-- **阶段 3：自主仓库探索** — 以锚点行为起点，迭代 `git blame` 回溯，LLM 逐步判断每个历史 commit 是否存在漏洞，直到定位 VIC
+## Architecture
 
-## 目录结构
+- **Stage 1: Root Cause Analysis** — Auditor agent generates a vulnerability root cause description; Judge agent verifies quality, with up to 3 retries
+- **Stage 2: Anchor Statement Selection** — Parses patch hunks, groups by change intent, filters non-security-related changes, and pinpoints the code line most directly responsible for the vulnerability
+- **Stage 3: Autonomous Repository Exploration** — Starting from the anchor line, iteratively runs `git blame` to trace back through commits; an LLM judges whether each historical commit contains the vulnerability until the VIC is found
+
+## Structure
 
 ```
 mas-szz/
-├── run.py              # 批量运行入口
-├── pipeline.py         # 主控流，串联三个阶段
-├── data_types.py       # 全局数据结构定义
-├── prompts.py          # 所有 Agent 的 prompt 模板
-├── llm.py              # LLM 客户端（API key 和 base_url 在此配置）
-├── constants.py        # 超参数配置（MODEL_NAME 等）
+├── run.py              # Batch entry point
+├── pipeline.py         # Main controller, orchestrates three stages
+├── data_types.py       # Global data structure definitions
+├── prompts.py          # Prompt templates for all agents
+├── llm.py              # LLM client (configure API key and base_url via env vars)
+├── constants.py        # Hyperparameter config (MODEL_NAME, etc.)
 ├── agents/
-│   ├── root_cause_agent.py         # 阶段1 Auditor
-│   ├── root_cause_reviewer.py      # 阶段1 Judge
-│   ├── grouping_agent.py           # 阶段2 hunk 意图分析与分组
-│   ├── reviewer_agent.py           # 阶段2 一致性审查 + 漏洞相关性筛选
-│   ├── vuln_statement_agent.py     # 阶段2 定位锚点行
-│   └── bic_agent.py                # 阶段3 git blame 回溯，定位 VIC
-├── tools/              # git 操作、patch 解析、上下文提取
+│   ├── root_cause_agent.py         # Stage 1 Auditor
+│   ├── root_cause_reviewer.py      # Stage 1 Judge
+│   ├── grouping_agent.py           # Stage 2 hunk intent analysis and grouping
+│   ├── reviewer_agent.py           # Stage 2 consistency check + vulnerability relevance filtering
+│   ├── vuln_statement_agent.py     # Stage 2 anchor line localization
+│   └── bic_agent.py                # Stage 3 git blame tracing, locates VIC
+├── tools/              # Git operations, patch parsing, context retrieval
 └── dataset/
 ```
 
-## 数据集
+## Dataset
 
-两个数据集均为 JSON 数组，每条记录格式如下：
+Both datasets are JSON arrays. Each record has the following format:
 
 ```json
 {
@@ -43,21 +44,26 @@ mas-szz/
 }
 ```
 
-`bug_commit_hash` 为 ground truth VIC，用于评估准确率。切换数据集只需修改 `constants.py` 中的 `DS_KVIC_PATH` 和 `CVE_DESC_PATH`。
+`bug_commit_hash` is the ground truth VIC used for evaluation. To switch datasets, update `DS_KVIC_PATH` and `CVE_DESC_PATH` in `constants.py`.
 
-## 安装
+## Installation
 
 ```bash
 pip install openai tiktoken
 ```
 
-## 准备
+## Setup
 
-将目标仓库 clone 到 `repos/<repo_name>/`（与数据集中 `repo_name` 字段一致）。
+Clone the target repository to `repos/<repo_name>/` (matching the `repo_name` field in the dataset).
 
-在 `llm.py` 的 `_API_CONFIGS` 中填写 API key 和 base_url，在 `constants.py` 中设置 `MODEL_NAME`。
+Set the following environment variables:
 
-## 运行
+```bash
+export OPENAI_API_KEY=your_api_key
+export OPENAI_BASE_URL=your_base_url  # optional, defaults to OpenAI
+```
+
+## Run
 
 ```bash
 python run.py
