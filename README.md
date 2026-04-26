@@ -2,7 +2,6 @@
 
 A multi-agent framework for automatically identifying Vulnerability-Inducing Commits (VICs). Given a Vulnerability-Fixing Commit (VFC), the system traces back through git history using a three-stage LLM agent pipeline to locate the commit that introduced the vulnerability.
 
-Paper: *MAS-SZZ: Multi-Agentic SZZ Algorithm for Vulnerability-Inducing Commit Identification*, ASE'26.
 
 ## Architecture
 
