@@ -1,0 +1,450 @@
+{
+  "cveid": "CVE-2026-46025",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "55da81663b9642dd046b26dd6f1baddbcf337c1e"
+  ],
+  "ground_truth_bic": "42b7491af14cbba2393329ce43d508a957bd94fa",
+  "predicted_bic": [
+    "f9132fbc2e83baf2c45a77043672a63a675c9394",
+    "42b7491af14cbba2393329ce43d508a957bd94fa"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 52072,
+  "root_cause": {
+    "text": "Race condition in DAMON subsystem where `damon_call()` adds a request to the call_controls list under one lock but later checks `damon_ctx->kdamond` (protected by a different lock) for termination, allowing a new request to be added after kdamond has cancelled all pending requests but before it clears the `kdamond` pointer, causing callers to wait indefinitely for handling that never occurs (deadlock) or leaked memory.",
+    "evidence": "CVE description explicitly states: \"The damon_call() requests registration and damon_ctx->kdamond unset are protected by different mutexes, though. Hence, damon_call() could race with damon_ctx->kdamond unset, and result in deadlocks.\" The patch introduces `call_controls_obsolete` protected by `call_controls_lock` to prevent new registrations once kdamond begins its cancellation process.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1632,
+      "content": "list_add_tail(&control->list, &ctx->call_controls);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1597,
+      "content": "mutex_unlock(&ctx->call_controls_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1634,
+      "content": "if (!damon_is_running(ctx))",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1638,
+      "content": "wait_for_completion(&control->completion);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1635,
+      "content": "return damon_call_handle_inactive_ctx(ctx, control);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 3065,
+      "content": "kdamond_call(ctx, true);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1594,
+      "content": "list_for_each_entry(c, &ctx->call_controls, list) {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Race condition in DAMON subsystem where `damon_call()` adds a request to the call_controls list under one lock but later checks `damon_ctx->kdamond` (protected by a different lock) for termination, allowing a new request to be added after kdamond has cancelled all pending requests but before it clears the `kdamond` pointer, causing callers to wait indefinitely for handling that never occurs (deadlock) or leaked memory.",
+      "evidence_points": "CVE description explicitly states: \"The damon_call() requests registration and damon_ctx->kdamond unset are protected by different mutexes, though. Hence, damon_call() could race with damon_ctx->kdamond unset, and result in deadlocks.\" The patch introduces `call_controls_obsolete` protected by `call_controls_lock` to prevent new registrations once kdamond begins its cancellation process."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1632,
+            "content": "list_add_tail(&control->list, &ctx->call_controls);",
+            "rationale": "Adds the request to the call_controls list under call_controls_lock, but after releasing the lock, the request remains pending and can be left unhandled if kdamond terminates concurrently."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1597,
+            "content": "mutex_unlock(&ctx->call_controls_lock);",
+            "rationale": "Releases the lock, creating a window where the kdamond termination path can cancel requests and clear the list before the running check, yet the request is already added."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1634,
+            "content": "if (!damon_is_running(ctx))",
+            "rationale": "Checks if the context is running after the lock is released; due to race, damon_is_running may return true even though kdamond has already cancelled pending requests and is about to clear the kdamond pointer, causing the caller to wait indefinitely."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1638,
+            "content": "wait_for_completion(&control->completion);",
+            "rationale": "Blocks the caller waiting for completion of the call request; if kdamond never processes it (because it was cancelled before the request was added), a deadlock occurs."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1635,
+            "content": "return damon_call_handle_inactive_ctx(ctx, control);",
+            "rationale": "Handles the inactive case by calling damon_call_handle_inactive_ctx, which itself checks the list under lock; however, between the addition and this call, the list may have been emptied, leading to a missed handling and potential future deadlock or leak."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "mm/damon/core.c",
+            "lineno": 3065,
+            "content": "kdamond_call(ctx, true);",
+            "rationale": "Part of the kdamond termination path that cancels pending call requests; if this executes after a new request has been added but before the running check in damon_call, the request will be removed from the list but the caller will not be notified, causing a deadlock or memory leak."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1594,
+            "content": "list_for_each_entry(c, &ctx->call_controls, list) {",
+            "rationale": "Iterates the call_controls list under lock in damon_call_handle_inactive_ctx; the iteration only checks if the control is still present, but if it was already removed by kdamond termination, it returns 0 and the request is leaked/wasted."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "list_add_tail(&control->list, &ctx->call_controls);",
+            "location": "hunk",
+            "explanation": "Adds the request to the call_controls list under call_controls_lock, but after releasing the lock, the request remains pending and can be left unhandled if kdamond terminates concurrently."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "mutex_unlock(&ctx->call_controls_lock);",
+            "location": "hunk",
+            "explanation": "Releases the lock, creating a window where the kdamond termination path can cancel requests and clear the list before the running check, yet the request is already added."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "if (!damon_is_running(ctx))",
+            "location": "hunk",
+            "explanation": "Checks if the context is running after the lock is released; due to race, damon_is_running may return true even though kdamond has already cancelled pending requests and is about to clear the kdamond pointer, causing the caller to wait indefinitely."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "wait_for_completion(&control->completion);",
+            "location": "hunk",
+            "explanation": "Blocks the caller waiting for completion of the call request; if kdamond never processes it (because it was cancelled before the request was added), a deadlock occurs."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "return damon_call_handle_inactive_ctx(ctx, control);",
+            "location": "hunk",
+            "explanation": "Handles the inactive case by calling damon_call_handle_inactive_ctx, which itself checks the list under lock; however, between the addition and this call, the list may have been emptied, leading to a missed handling and potential future deadlock or leak."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "kdamond_call(ctx, true);",
+            "location": "hunk",
+            "explanation": "Part of the kdamond termination path that cancels pending call requests; if this executes after a new request has been added but before the running check in damon_call, the request will be removed from the list but the caller will not be notified, causing a deadlock or memory leak."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "list_for_each_entry(c, &ctx->call_controls, list) {",
+            "location": "hunk",
+            "explanation": "Iterates the call_controls list under lock in damon_call_handle_inactive_ctx; the iteration only checks if the control is still present, but if it was already removed by kdamond termination, it returns 0 and the request is leaked/wasted."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1632
+        },
+        "commit": "c3fa5b1bfd8380d935fa961f2ac166bdf000f418",
+        "commit_short": "c3fa5b1bfd83",
+        "commit_msg": "mm/damon/core: fix list_add_tail() call on damon_call()\n\nEach damon_ctx maintains callback requests using a linked list\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1453,
+        "code_snippet": "commit c3fa5b1bfd8380d935fa961f2ac166bdf000f418\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Tue Oct 14 13:59:36 2025 -0700\n\n    mm/damon/core: fix list_add_tail() call on damon_call()\n    \n    Each damon_ctx maintains callback requests using a linked list\n    (damon_ctx->call_controls).  When a new callback request is received via\n    damon_call(), the new request should be added to the list.  However, the\n    function is making a mistake at list_add_tail() invocation: putting the\n    new item",
+        "exists": true,
+        "reason": "The function damon_call() in this commit still exhibits the race condition described in the root cause: it adds the request to call_controls under ctx->call_controls_lock (line: mutex_lock(&ctx->call_controls_lock); list_add_tail(&control->list, &ctx->call_controls); mutex_unlock(&ctx->call_controls_lock);) and then immediately checks ctx->kdamond via damon_is_running(ctx) without holding the same lock (if (!damon_is_running(ctx)) return -EINVAL;). This allows a new request to be added after kdamond has cancelled pending requests but before clearing the kdamond pointer, leading to potential deadlock or memory leak. The commit only fixes a list_add_tail argument order bug and does not address the locking race."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0e59f47c15ce",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1453
+        },
+        "commit": "004ded6bee11b8ed463cdc54b89a4390f4b64f6d",
+        "commit_short": "004ded6bee11",
+        "commit_msg": "mm/damon: accept parallel damon_call() requests\n\nPatch series \"mm/damon: remove damon_callback\".\n\ndamon_callback was the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1400,
+        "code_snippet": "commit 004ded6bee11b8ed463cdc54b89a4390f4b64f6d\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Sat Jul 12 12:50:03 2025 -0700\n\n    mm/damon: accept parallel damon_call() requests\n    \n    Patch series \"mm/damon: remove damon_callback\".\n    \n    damon_callback was the only way for communicating with DAMON for contexts\n    running on its worker thread.  The interface is flexible and simple.  But\n    as DAMON evolves with more features, damon_callback has become somewhat\n    too old.  With runtime p",
+        "exists": true,
+        "reason": "In damon_call(), the request is added to the call_controls list under call_controls_lock (line 'list_add_tail(&ctx->call_controls, &control->list);') but the check of kdamond via damon_is_running() and the subsequent wait_for_completion() occur without atomic synchronization with kdamond termination. This allows a race where kdamond completes all pending requests and clears its pointer after the addition but before the check, causing the caller to wait indefinitely. The kdamond_call() function does not prevent this race. The vulnerability construct is present and the fix (e.g., holding a single lock across addition, check, and wait) is not included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "e001ef9652c2",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1400
+        },
+        "commit": "42b7491af14cbba2393329ce43d508a957bd94fa",
+        "commit_short": "42b7491af14c",
+        "commit_msg": "mm/damon/core: introduce damon_call()\n\nIntroduce a new DAMON core API function, damon_call().  It aims to replace\nsome d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1202,
+        "code_snippet": "commit 42b7491af14cbba2393329ce43d508a957bd94fa\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Jan 3 09:43:53 2025 -0800\n\n    mm/damon/core: introduce damon_call()\n    \n    Introduce a new DAMON core API function, damon_call().  It aims to replace\n    some damon_callback usages that access damon_ctx of ongoing kdamond with\n    additional synchronizations.  It receives a function pointer, let the\n    parallel kdamond invokes the function, and returns after the invocation is\n    finished, or ca",
+        "exists": true,
+        "reason": "The introduced `damon_call()` function (lines 1183-1216 in the diff) sets `ctx->call_control` under `call_control_lock` but then checks `ctx->kdamond` under a different lock (`kdamond_lock`) via `damon_is_running()`. This opens a race window: after setting `call_control`, kdamond may clear `ctx->kdamond` and then call `kdamond_call()` with `cancel=true`, processing the request. If `damon_is_running()` subsequently returns false, `damon_call()` returns `-EINVAL` without clearing `ctx->call_control`, leaving the control dangling. This prevents future `damon_call()` invocations (always `-EBUSY`) and can cause callers to wait indefinitely if the request was already completed but not cleaned up. No fix is present in this commit to close the race or to clean up on error."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "0f3e40eb5ec1",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1202
+        },
+        "commit": "38683e003153f7abfa612d7b7fe147efa4624af2",
+        "commit_short": "38683e003153",
+        "commit_msg": "mm/damon/schemes: prioritize regions within the quotas\n\nThis makes DAMON apply schemes to regions having higher priority",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 563,
+        "code_snippet": "commit 38683e003153f7abfa612d7b7fe147efa4624af2\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Nov 5 13:47:33 2021 -0700\n\n    mm/damon/schemes: prioritize regions within the quotas\n    \n    This makes DAMON apply schemes to regions having higher priority first,\n    if it cannot apply schemes to all regions due to the quotas.\n    \n    The prioritization function should be implemented in the monitoring\n    primitives.  Those would commonly calculate the priority of the region\n    using attribut",
+        "exists": false,
+        "reason": "The commit only modifies scheme prioritization logic (adding weights, scoring, histogram) and does not touch the damon_call() or kdamond termination code that is the root cause of the race condition. The vulnerable construct is absent from this diff."
+      }
+    },
+    {
+      "bic_found": "42b7491af14cbba2393329ce43d508a957bd94fa",
+      "depth": 3
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1597
+        },
+        "commit": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+        "commit_short": "f9132fbc2e83",
+        "commit_msg": "mm/damon/core: remove call_control in inactive contexts\n\nIf damon_call() is executed against a DAMON context that is not",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1455,
+        "code_snippet": "commit f9132fbc2e83baf2c45a77043672a63a675c9394\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Tue Dec 30 17:23:13 2025 -0800\n\n    mm/damon/core: remove call_control in inactive contexts\n    \n    If damon_call() is executed against a DAMON context that is not running,\n    the function returns error while keeping the damon_call_control object\n    linked to the context's call_controls list.  Let's suppose the object is\n    deallocated after the damon_call(), and yet another damon_call() is\n    exec",
+        "exists": false,
+        "reason": "The commit introduces a new function damon_call_handle_inactive_ctx() to clean up orphaned call_controls when damon_call() is called on an inactive context, and moves kdamond_call(ctx, true) before clearing ctx->kdamond in kdamond_fn(). These changes prevent the race where a new request could be added after cancellation but before pointer clear, eliminating the deadlock and use-after-free vulnerabilities."
+      }
+    },
+    {
+      "bic_found": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1634
+        },
+        "commit": "42b7491af14cbba2393329ce43d508a957bd94fa",
+        "commit_short": "42b7491af14c",
+        "commit_msg": "mm/damon/core: introduce damon_call()\n\nIntroduce a new DAMON core API function, damon_call().  It aims to replace\nsome d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1206,
+        "code_snippet": "commit 42b7491af14cbba2393329ce43d508a957bd94fa\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Jan 3 09:43:53 2025 -0800\n\n    mm/damon/core: introduce damon_call()\n    \n    Introduce a new DAMON core API function, damon_call().  It aims to replace\n    some damon_callback usages that access damon_ctx of ongoing kdamond with\n    additional synchronizations.  It receives a function pointer, let the\n    parallel kdamond invokes the function, and returns after the invocation is\n    finished, or ca",
+        "exists": true,
+        "reason": "The commit introduces damon_call() which sets ctx->call_control under call_control_lock, then checks ctx->kdamond under a different lock (kdamond_lock). This creates a race window where a new request can be added after kdamond has already processed or canceled all pending requests but before it clears the kdamond pointer, leading to indefinite wait. The code does not include any fix for this race, so the vulnerable construct is present and unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0f3e40eb5ec1",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1206
+        },
+        "commit": "38683e003153f7abfa612d7b7fe147efa4624af2",
+        "commit_short": "38683e003153",
+        "commit_msg": "mm/damon/schemes: prioritize regions within the quotas\n\nThis makes DAMON apply schemes to regions having higher priority",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 567,
+        "code_snippet": "commit 38683e003153f7abfa612d7b7fe147efa4624af2\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Nov 5 13:47:33 2021 -0700\n\n    mm/damon/schemes: prioritize regions within the quotas\n    \n    This makes DAMON apply schemes to regions having higher priority first,\n    if it cannot apply schemes to all regions due to the quotas.\n    \n    The prioritization function should be implemented in the monitoring\n    primitives.  Those would commonly calculate the priority of the region\n    using attribut",
+        "exists": false,
+        "reason": "The commit adds prioritization logic for DAMON schemes (histogram, min_score, etc.) and does not modify or introduce the race condition in damon_call() or related list/lock handling. The vulnerable construct is absent from this code."
+      }
+    },
+    {
+      "bic_found": "42b7491af14cbba2393329ce43d508a957bd94fa",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1638
+        },
+        "commit": "42b7491af14cbba2393329ce43d508a957bd94fa",
+        "commit_short": "42b7491af14c",
+        "commit_msg": "mm/damon/core: introduce damon_call()\n\nIntroduce a new DAMON core API function, damon_call().  It aims to replace\nsome d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1208,
+        "code_snippet": "commit 42b7491af14cbba2393329ce43d508a957bd94fa\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Jan 3 09:43:53 2025 -0800\n\n    mm/damon/core: introduce damon_call()\n    \n    Introduce a new DAMON core API function, damon_call().  It aims to replace\n    some damon_callback usages that access damon_ctx of ongoing kdamond with\n    additional synchronizations.  It receives a function pointer, let the\n    parallel kdamond invokes the function, and returns after the invocation is\n    finished, or ca",
+        "exists": true,
+        "reason": "In `damon_call()` (lines 1198-1213), the request is added under `call_control_lock` (line 1200-1203), then `damon_is_running()` (which uses `kdamond_lock`, line 1170-1173) is called outside that lock (line 1206). This creates a TOCTOU race: a request can be added after kdamond has already cancelled all pending requests (via `kdamond_call(ctx, true)` in `kdamond_fn` line 2188) but before clearing `ctx->kdamond`, causing the caller to wait indefinitely. The fix is absent because the window is not closed—`damon_is_running` is not atomically checked with the registration."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0f3e40eb5ec1",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1208
+        },
+        "commit": "38683e003153f7abfa612d7b7fe147efa4624af2",
+        "commit_short": "38683e003153",
+        "commit_msg": "mm/damon/schemes: prioritize regions within the quotas\n\nThis makes DAMON apply schemes to regions having higher priority",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 569,
+        "code_snippet": "commit 38683e003153f7abfa612d7b7fe147efa4624af2\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Nov 5 13:47:33 2021 -0700\n\n    mm/damon/schemes: prioritize regions within the quotas\n    \n    This makes DAMON apply schemes to regions having higher priority first,\n    if it cannot apply schemes to all regions due to the quotas.\n    \n    The prioritization function should be implemented in the monitoring\n    primitives.  Those would commonly calculate the priority of the region\n    using attribut",
+        "exists": false,
+        "reason": "The commit only adds prioritization logic for DAMON schemes (new fields in damos, helpers for target validation, score histogram, and min_score setting). It does not modify any code related to damon_call() or the kdamond pointer race condition. Therefore, the vulnerable construct is absent from the shown functions."
+      }
+    },
+    {
+      "bic_found": "42b7491af14cbba2393329ce43d508a957bd94fa",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1635
+        },
+        "commit": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+        "commit_short": "f9132fbc2e83",
+        "commit_msg": "mm/damon/core: remove call_control in inactive contexts\n\nIf damon_call() is executed against a DAMON context that is not",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1493,
+        "code_snippet": "commit f9132fbc2e83baf2c45a77043672a63a675c9394\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Tue Dec 30 17:23:13 2025 -0800\n\n    mm/damon/core: remove call_control in inactive contexts\n    \n    If damon_call() is executed against a DAMON context that is not running,\n    the function returns error while keeping the damon_call_control object\n    linked to the context's call_controls list.  Let's suppose the object is\n    deallocated after the damon_call(), and yet another damon_call() is\n    exec",
+        "exists": false,
+        "reason": "The commit introduces a fix for the race condition. In `damon_call()`, after adding the control to the list and checking if the context is not running, it now calls `damon_call_handle_inactive_ctx()` which iterates the call_controls list and removes the control if still present, preventing use-after-free. Previously it returned -EINVAL without cleanup. Also, in `kdamond_fn()`, the `kdamond_call(ctx, true)` is moved to before setting `ctx->kdamond = NULL`, ensuring all pending requests are cancelled before the context is marked inactive, thus eliminating the race window. The vulnerable construct (missing cleanup and wrong ordering) is no longer present, so the code is fixed."
+      }
+    },
+    {
+      "bic_found": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 3065
+        },
+        "commit": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+        "commit_short": "f9132fbc2e83",
+        "commit_msg": "mm/damon/core: remove call_control in inactive contexts\n\nIf damon_call() is executed against a DAMON context that is not",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 2787,
+        "code_snippet": "commit f9132fbc2e83baf2c45a77043672a63a675c9394\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Tue Dec 30 17:23:13 2025 -0800\n\n    mm/damon/core: remove call_control in inactive contexts\n    \n    If damon_call() is executed against a DAMON context that is not running,\n    the function returns error while keeping the damon_call_control object\n    linked to the context's call_controls list.  Let's suppose the object is\n    deallocated after the damon_call(), and yet another damon_call() is\n    exec",
+        "exists": false,
+        "reason": "The commit applies the fix: it adds damon_call_handle_inactive_ctx() to clean up pending call_controls when the context is not running (lines after 1431), modifies damon_call() to call that function instead of directly returning -EINVAL (line 1493), and moves kdamond_call(ctx, true) before clearing ctx->kdamond (lines 2787-2791). These changes prevent the race condition described in the root cause."
+      }
+    },
+    {
+      "bic_found": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1594
+        },
+        "commit": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+        "commit_short": "f9132fbc2e83",
+        "commit_msg": "mm/damon/core: remove call_control in inactive contexts\n\nIf damon_call() is executed against a DAMON context that is not",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1452,
+        "code_snippet": "commit f9132fbc2e83baf2c45a77043672a63a675c9394\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Tue Dec 30 17:23:13 2025 -0800\n\n    mm/damon/core: remove call_control in inactive contexts\n    \n    If damon_call() is executed against a DAMON context that is not running,\n    the function returns error while keeping the damon_call_control object\n    linked to the context's call_controls list.  Let's suppose the object is\n    deallocated after the damon_call(), and yet another damon_call() is\n    exec",
+        "exists": false,
+        "reason": "The commit introduces `damon_call_handle_inactive_ctx()` to clean up unhandled call control objects when the context is inactive, and moves `kdamond_call(ctx, true)` before clearing `ctx->kdamond` (line 2787-2794). These changes eliminate the race condition by ensuring that (1) any code seeing NULL `ctx->kdamond` can safely assume no pending call requests exist, and (2) unused call requests are removed from the list. The vulnerable construct (adding request and returning -EINVAL without cleanup, and calling cancellation after clearing kdamond) is no longer present."
+      }
+    },
+    {
+      "bic_found": "f9132fbc2e83baf2c45a77043672a63a675c9394",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "42b7491af14cbba2393329ce43d508a957bd94fa": 3,
+        "f9132fbc2e83baf2c45a77043672a63a675c9394": 4
+      },
+      "bic_candidates": [
+        "f9132fbc2e83baf2c45a77043672a63a675c9394",
+        "42b7491af14cbba2393329ce43d508a957bd94fa"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

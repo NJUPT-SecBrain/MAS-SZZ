@@ -1,0 +1,241 @@
+{
+  "cveid": "CVE-2026-53262",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a213a8950414c684999dcf03edeea6c46ede172e"
+  ],
+  "ground_truth_bic": "fd558d186df2c13a22455373858bae634a4795af",
+  "predicted_bic": [
+    "fd558d186df2c13a22455373858bae634a4795af",
+    "528534f0deda05c668756313a22974429a9df05a"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 41791,
+  "root_cause": {
+    "text": "The `pppol2tp_ioctl()` function directly dereferenced `sock->sk->sk_user_data` to obtain the session pointer without holding a reference count, allowing concurrent socket close operations to free the session structure via workqueue while the ioctl thread was blocked in `copy_from_user()`, resulting in use-after-free.",
+    "evidence": "The patch replaces direct pointer reads (`session = sock->sk->sk_user_data`) with a reference-counted helper (`session = pppol2tp_sock_to_session(sock->sk)`) and ensures `l2tp_session_put()` is called on all return paths. The CVE description explicitly states that a controllable sleep during `copy_from_user()` could trigger `pppol2tp_session_close()` asynchronously, which frees the l2tp_session structure via `l2tp_session_del_work` workqueue, causing the ioctl thread to dereference a stale pointer upon resuming.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/l2tp/l2tp_ppp.c",
+      "lineno": 1052,
+      "content": "session = sock->sk->sk_user_data;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/l2tp/l2tp_ppp.c",
+      "lineno": 1097,
+      "content": "if (copy_from_user(&stats, (void __user *)arg, sizeof(stats)))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `pppol2tp_ioctl()` function directly dereferenced `sock->sk->sk_user_data` to obtain the session pointer without holding a reference count, allowing concurrent socket close operations to free the session structure via workqueue while the ioctl thread was blocked in `copy_from_user()`, resulting in use-after-free.",
+      "evidence_points": "The patch replaces direct pointer reads (`session = sock->sk->sk_user_data`) with a reference-counted helper (`session = pppol2tp_sock_to_session(sock->sk)`) and ensures `l2tp_session_put()` is called on all return paths. The CVE description explicitly states that a controllable sleep during `copy_from_user()` could trigger `pppol2tp_session_close()` asynchronously, which frees the l2tp_session structure via `l2tp_session_del_work` workqueue, causing the ioctl thread to dereference a stale pointer upon resuming."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/l2tp/l2tp_ppp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/l2tp/l2tp_ppp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix resource leak by ensuring session reference is properly released on all error paths through centralized error handling and cleanup.",
+        "what": "Refactored pppol2tp_ioctl() to consolidate session validation into a single upfront check, move session retrieval outside the switch statement, introduce an err variable for centralized error handling, replace early returns with break statements and err assignments, and add a comment explaining validation scope.",
+        "how": "The function now retrieves and validates the session once at the beginning for all commands that require it, rather than repeating validation in multiple case branches. Error paths now set err and break to a common exit point instead of returning immediately, enabling proper cleanup (session reference release via l2tp_session_put) before function exit. The WARN_ON macro is replaced with a regular condition check."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix resource leak by ensuring l2tp_session reference is properly released on all error paths in pppol2tp_ioctl.",
+        "what": "Modified error handling in pppol2tp_ioctl function: (1) changed direct return statements to assign error codes to 'err' variable and use break statements, (2) added session reference cleanup with l2tp_session_put(session) before function exit, (3) changed final return from hardcoded 0 to return err variable.",
+        "how": "This change ensures proper resource cleanup by guaranteeing that l2tp_session_put(session) is called before any function exit path, preventing reference count leaks. Previously, early return statements would skip the cleanup. The consolidated exit path through a single return statement at the end now properly releases the session reference regardless of which error condition occurred."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix resource leak by ensuring l2tp_session reference is properly released on all error paths in pppol2tp_ioctl."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix resource leak by ensuring l2tp_session reference is properly released on all error paths in pppol2tp_ioctl.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses resource leaks through proper reference counting cleanup on error paths, but does not address the core vulnerability: the lack of reference count protection when initially dereferencing `sock->sk->sk_user_data`. The root cause requires holding a reference count during the entire ioctl operation to prevent concurrent freeing, not just ensuring cleanup on error paths. This group's focus on error path cleanup is a separate issue from the use-after-free caused by unprotected concurrent access."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/l2tp/l2tp_ppp.c",
+            "lineno": 1052,
+            "content": "session = sock->sk->sk_user_data;",
+            "rationale": "This statement directly dereferences sock->sk->sk_user_data without acquiring a reference count on the session. This is the root cause of the use-after-free vulnerability, as the session can be freed by concurrent socket close operations via workqueue while the ioctl thread holds only a pointer without a reference."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/l2tp/l2tp_ppp.c",
+            "lineno": 1052,
+            "content": "session = sock->sk->sk_user_data;",
+            "rationale": "Second occurrence at line 1069. Same vulnerability: obtains session pointer without reference counting, allowing concurrent freeing during blocking operations like copy_from_user()."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/l2tp/l2tp_ppp.c",
+            "lineno": 1052,
+            "content": "session = sock->sk->sk_user_data;",
+            "rationale": "Third occurrence at line 1085. Same vulnerability: dereferences sk_user_data without holding a reference, enabling use-after-free when session is freed concurrently."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/l2tp/l2tp_ppp.c",
+            "lineno": 1097,
+            "content": "if (copy_from_user(&stats, (void __user *)arg, sizeof(stats)))",
+            "rationale": "This blocking copy_from_user() call occurs after obtaining the unprotected session pointer. During this blocking operation, the session can be freed by concurrent socket close, leading to use-after-free when the function resumes and accesses session->tunnel at line 1103."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/l2tp/l2tp_ppp.c",
+            "stmt_text": "session = sock->sk->sk_user_data;",
+            "location": "hunk",
+            "explanation": "This statement directly dereferences sock->sk->sk_user_data without acquiring a reference count on the session object. This is the root cause of the use-after-free vulnerability. The session pointer is obtained without holding a reference, allowing concurrent socket close operations via workqueue to free the session structure while the ioctl thread holds only an unprotected pointer. This occurs at multiple locations (lines 1052, 1069, 1085) in the pppol2tp_ioctl() function, and the vulnerability is triggered when blocking operations like copy_from_user() occur after this dereference, during which the session can be freed concurrently."
+          },
+          {
+            "vuln_file": "net/l2tp/l2tp_ppp.c",
+            "stmt_text": "if (copy_from_user(&stats, (void __user *)arg, sizeof(stats)))",
+            "location": "hunk",
+            "explanation": "This blocking copy_from_user() call at line 1097 occurs after obtaining the unprotected session pointer without reference counting. During this blocking operation, the ioctl thread can be preempted and the session can be freed by concurrent socket close operations. When the function resumes and accesses session->tunnel at line 1103, it performs a use-after-free access on the freed session structure."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2a58899d1100",
+          "anchor_file": "net/l2tp/l2tp_ppp.c",
+          "anchor_lineno": 1052
+        },
+        "commit": "79e6760e64d1b69a20af4d97ead291159d4c11c2",
+        "commit_short": "79e6760e64d1",
+        "commit_msg": "l2tp: handle PPPIOC[GS]MRU and PPPIOC[GS]FLAGS in pppol2tp_ioctl()\n\nLet pppol2tp_ioctl() handle ioctl commands directly.",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/l2tp/l2tp_ppp.c",
+        "display_lineno": 1171,
+        "code_snippet": "commit 79e6760e64d1b69a20af4d97ead291159d4c11c2\nAuthor: Guillaume Nault <g.nault@alphalink.fr>\nDate:   Fri Aug 10 13:21:58 2018 +0200\n\n    l2tp: handle PPPIOC[GS]MRU and PPPIOC[GS]FLAGS in pppol2tp_ioctl()\n    \n    Let pppol2tp_ioctl() handle ioctl commands directly. It still relies on\n    pppol2tp_{session,tunnel}_ioctl() for PPPIOCGL2TPSTATS.\n    \n    Signed-off-by: Guillaume Nault <g.nault@alphalink.fr>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/l2tp/l2tp_ppp.c",
+        "exists": true,
+        "reason": "The vulnerable construct is clearly present in this commit. The function directly dereferences `sock->sk->sk_user_data` to obtain the session pointer without holding any reference count or lock protection. Specifically, at lines 1169, 1185, and 1199, the code performs `session = sock->sk->sk_user_data;` followed by a null check, but there is no mechanism to prevent concurrent socket close operations from freeing the session structure. The vulnerability exists because: (1) the session pointer is obtained without incrementing a reference count, (2) there is no lock held during the subsequent operations that access session fields (e.g., `session->session_id`, `session->peer_session_id`, `session->tunnel`), and (3) the code can be blocked in `copy_from_user()` or `put_user()` calls (lines 1179, 1191) while a concurrent close operation via workqueue could free the session. The fix would require holding a reference to the session or protecting access with appropriate locking, neither of which is present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bdd0292f96e4",
+          "anchor_file": "net/l2tp/l2tp_ppp.c",
+          "anchor_lineno": 1171
+        },
+        "commit": "fd558d186df2c13a22455373858bae634a4795af",
+        "commit_short": "fd558d186df2",
+        "commit_msg": "l2tp: Split pppol2tp patch into separate l2tp and ppp parts\n\nThis patch splits the pppol2tp driver into separate L2TP an",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/l2tp/l2tp_ppp.c",
+        "display_lineno": 1027,
+        "code_snippet": "commit fd558d186df2c13a22455373858bae634a4795af\nAuthor: James Chapman <jchapman@katalix.com>\nDate:   Fri Apr 2 06:18:33 2010 +0000\n\n    l2tp: Split pppol2tp patch into separate l2tp and ppp parts\n    \n    This patch splits the pppol2tp driver into separate L2TP and PPP parts\n    to prepare for L2TPv3 support. In L2TPv3, protocols other than PPP can\n    be carried, so this split creates a common L2TP core that will handle\n    the common L2TP bits which protocol support modules such as PPP will\n  ",
+        "exists": true,
+        "reason": "The `pppol2tp_ioctl()` function at line 1411 calls `pppol2tp_sock_to_session(sk)` which dereferences `sk->sk_user_data` to obtain the session pointer. The helper function `pppol2tp_sock_to_session()` (lines 109-124) performs `sock_hold(sk)` but does NOT hold a reference to the session itself. The session pointer is obtained via direct dereference: `session = (struct l2tp_session *)(sk->sk_user_data)` without incrementing any session refcount. This allows a concurrent socket close via `pppol2tp_session_close()` or workqueue to free the session structure while `pppol2tp_ioctl()` is blocked in operations like `copy_from_user()` (line 1445, 1451, etc.), resulting in use-after-free when the ioctl handler later accesses the session. The code lacks proper session reference counting protection during the ioctl operation, making it vulnerable to the described race condition."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "fd558d186df2c13a22455373858bae634a4795af",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2a58899d1100",
+          "anchor_file": "net/l2tp/l2tp_ppp.c",
+          "anchor_lineno": 1097
+        },
+        "commit": "528534f0deda05c668756313a22974429a9df05a",
+        "commit_short": "528534f0deda",
+        "commit_msg": "l2tp: remove pppol2tp_tunnel_ioctl()\n\nHandle PPPIOCGL2TPSTATS in pppol2tp_ioctl() if the socket represents a\ntunnel. Thi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/l2tp/l2tp_ppp.c",
+        "display_lineno": 1163,
+        "code_snippet": "commit 528534f0deda05c668756313a22974429a9df05a\nAuthor: Guillaume Nault <g.nault@alphalink.fr>\nDate:   Fri Aug 10 13:22:00 2018 +0200\n\n    l2tp: remove pppol2tp_tunnel_ioctl()\n    \n    Handle PPPIOCGL2TPSTATS in pppol2tp_ioctl() if the socket represents a\n    tunnel. This one is a bit special because the caller may use the tunnel\n    socket to retrieve statistics of one of its sessions. If the session_id\n    is set, the corresponding session's statistics are returned, instead of\n    those of the",
+        "exists": false,
+        "reason": "This commit actually FIXES the use-after-free vulnerability rather than introducing it. The vulnerability root cause describes dereferencing `sock->sk->sk_user_data` without holding a reference count during `copy_from_user()`. In this commit, the code is refactored to call `copy_from_user()` BEFORE accessing the session/tunnel structure (line 1165-1167: copy happens first), and when accessing the tunnel via `session->tunnel`, the session is already held with a reference (obtained earlier in the function via `sk->sk_user_data`). The new `pppol2tp_tunnel_copy_stats()` helper properly acquires session references via `l2tp_tunnel_get_session()` (line 1053) and releases them with `l2tp_session_dec_refcount()` (lines 1057, 1060, 1067), preventing the use-after-free condition. The refactoring moves the dangerous `copy_from_user()` call to occur before dereferencing tunnel structures, and ensures proper reference counting is maintained throughout. This is a fix commit, not a bug-introducing commit."
+      }
+    },
+    {
+      "bic_found": "528534f0deda05c668756313a22974429a9df05a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "fd558d186df2c13a22455373858bae634a4795af": 1,
+        "528534f0deda05c668756313a22974429a9df05a": 1
+      },
+      "bic_candidates": [
+        "fd558d186df2c13a22455373858bae634a4795af",
+        "528534f0deda05c668756313a22974429a9df05a"
+      ]
+    }
+  ],
+  "used_fallback": true,
+  "error": ""
+}

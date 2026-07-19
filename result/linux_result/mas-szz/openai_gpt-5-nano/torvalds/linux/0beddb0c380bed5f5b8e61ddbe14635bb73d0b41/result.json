@@ -1,0 +1,338 @@
+{
+  "cveid": "CVE-2026-46111",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "0beddb0c380bed5f5b8e61ddbe14635bb73d0b41"
+  ],
+  "ground_truth_bic": "eca0ae4aea66914515e5e3098ea051b518ee5316",
+  "predicted_bic": [
+    "eca0ae4aea66914515e5e3098ea051b518ee5316"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 46131,
+  "root_cause": {
+    "text": "The Bluetooth hci_conn BIG creation path passed a raw `struct hci_conn *` across an asynchronous `hci_cmd_sync_queue()` boundary without taking a reference or re-validating it under `hci_dev_lock()`, allowing `create_big_complete()` to dereference a stale connection after `hci_connect_cfm()`/`hci_conn_del()` freed it.",
+    "evidence": "The patch adds `hci_conn_get(conn)` when queueing `create_big_sync`, `hci_conn_put(conn)` in `create_big_complete`, `hci_conn_valid()` checks in both `create_big_sync()` and `create_big_complete()`, and the commit/CVE explicitly state that previously \"`create_big_complete()` would unconditionally dereference the conn pointer on error, causing a use-after-free via `hci_connect_cfm()` and `hci_conn_del()`.\"",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/bluetooth/hci_conn.c",
+      "lineno": 2339,
+      "content": "err = hci_cmd_sync_queue(hdev, create_big_sync, conn,",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/bluetooth/hci_conn.c",
+      "lineno": 2209,
+      "content": "hci_connect_cfm(conn, err);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/bluetooth/hci_conn.c",
+      "lineno": 2210,
+      "content": "hci_conn_del(conn);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The Bluetooth hci_conn BIG creation path passed a raw `struct hci_conn *` across an asynchronous `hci_cmd_sync_queue()` boundary without taking a reference or re-validating it under `hci_dev_lock()`, allowing `create_big_complete()` to dereference a stale connection after `hci_connect_cfm()`/`hci_conn_del()` freed it.",
+      "evidence_points": "The patch adds `hci_conn_get(conn)` when queueing `create_big_sync`, `hci_conn_put(conn)` in `create_big_complete`, `hci_conn_valid()` checks in both `create_big_sync()` and `create_big_complete()`, and the commit/CVE explicitly state that previously \"`create_big_complete()` would unconditionally dereference the conn pointer on error, causing a use-after-free via `hci_connect_cfm()` and `hci_conn_del()`.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/bluetooth/hci_conn.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/bluetooth/hci_conn.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/bluetooth/hci_conn.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a connection validity check in create_big_sync() to cancel BIG sync creation when the HCI connection is invalid.",
+        "what": "A new early-return check was added at the start of create_big_sync() to call hci_conn_valid(hdev, conn), and if it returns false the function now returns -ECANCELED before processing qos->bcast.out.phys and setting flags.",
+        "how": "At runtime, the function now aborts when the provided HCI connection is no longer valid, preventing the rest of the BIG sync creation logic from running with an invalid connection and avoiding operations based on stale or invalid state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix BIG creation completion handling by ignoring canceled operations, validating the connection under device lock, and releasing the connection reference safely.",
+        "what": "The function `create_big_complete` was changed to add an early check for `err == -ECANCELED` that jumps to a new `done` label, to acquire the device lock with `hci_dev_lock(hdev)` before operating on the connection, to validate the connection with `hci_conn_valid(hdev, conn)` and skip further handling via a new `unlock` label if invalid, and to add matching cleanup labels that call `hci_dev_unlock(hdev)` and `hci_conn_put(conn)` before returning.",
+        "how": "At runtime, the function now avoids processing a canceled BIG creation as an error path, ensures connection error handling runs while the HCI device is locked, prevents use of an invalid or stale `conn` pointer before calling confirmation and deletion routines, and guarantees the connection reference is released on exit."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Take and release a reference around queued BIG creation so the BIS connection stays alive for async use without leaking on queue failure.",
+        "what": "The call to hci_cmd_sync_queue in hci_connect_bis was changed to pass hci_conn_get(conn) instead of conn directly, and the error path after a failed queue operation was updated to add a matching hci_conn_put(conn) after hci_conn_drop(conn).",
+        "how": "This increments the connection object's reference count before handing it to the asynchronous queued command path, ensuring the hci_conn remains valid while the queued work may still use it. On queue failure, the added hci_conn_put balances that extra reference so the object is not leaked."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a connection validity check in create_big_sync() to cancel BIG sync creation when the HCI connection is invalid."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Take and release a reference around queued BIG creation so the BIS connection stays alive for async use without leaking on queue failure."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure asynchronous BIG creation manages BIS connection lifetime correctly by validating canceled/valid operations and taking and releasing references safely across queueing and completion.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly targets the vulnerable BIG creation/sync path by validating the HCI connection before proceeding, which addresses the stale/freed hci_conn usage across the asynchronous command queue boundary described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly fix the root cause by protecting the BIS hci_conn across the asynchronous hci_cmd_sync_queue() boundary: they take a reference before queueing, validate the operation/connection under hci_dev_lock() on completion, ignore canceled work, and release the reference safely, preventing stale dereference after the connection may have been deleted."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "net/bluetooth/hci_conn.c",
+            "lineno": 2339,
+            "content": "err = hci_cmd_sync_queue(hdev, create_big_sync, conn,",
+            "rationale": "This queues asynchronous work while passing the raw struct hci_conn * as callback data without taking a reference first, which is the core lifetime bug described in the root cause."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/bluetooth/hci_conn.c",
+            "lineno": 2209,
+            "content": "hci_connect_cfm(conn, err);",
+            "rationale": "On error, this completion path operates on conn after the async boundary without first re-validating that the connection is still alive under hci_dev_lock(), enabling use of a stale pointer."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/bluetooth/hci_conn.c",
+            "lineno": 2210,
+            "content": "hci_conn_del(conn);",
+            "rationale": "This dereferences and deletes conn in the async completion path without ensuring the pointer is still valid, directly embodying the stale-connection use-after-free risk."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/bluetooth/hci_conn.c",
+            "stmt_text": "err = hci_cmd_sync_queue(hdev, create_big_sync, conn,",
+            "location": "hunk",
+            "explanation": "This statement is the root lifetime bug: it passes a raw struct hci_conn * across an asynchronous hci_cmd_sync_queue() boundary without first taking a reference, so the queued completion can later observe a freed connection."
+          },
+          {
+            "vuln_file": "net/bluetooth/hci_conn.c",
+            "stmt_text": "hci_connect_cfm(conn, err);",
+            "location": "hunk",
+            "explanation": "This async completion-path dereference uses conn after the queued boundary without re-validating that the connection is still alive under hci_dev_lock(), enabling use of a stale pointer if the connection was deleted meanwhile."
+          },
+          {
+            "vuln_file": "net/bluetooth/hci_conn.c",
+            "stmt_text": "hci_conn_del(conn);",
+            "location": "hunk",
+            "explanation": "This statement further operates on the same potentially stale conn in the async completion path, making the use-after-free condition directly exploitable when the connection was already freed before completion runs."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b819db93d73f",
+          "anchor_file": "net/bluetooth/hci_conn.c",
+          "anchor_lineno": 2339
+        },
+        "commit": "eca0ae4aea66914515e5e3098ea051b518ee5316",
+        "commit_short": "eca0ae4aea66",
+        "commit_msg": "Bluetooth: Add initial implementation of BIS connections\n\nThis adds initial support for BIS/BIG which includes:\n\n== Broa",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_conn.c",
+        "display_lineno": 2066,
+        "code_snippet": "commit eca0ae4aea66914515e5e3098ea051b518ee5316\nAuthor: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>\nDate:   Wed Mar 9 13:22:20 2022 -0800\n\n    Bluetooth: Add initial implementation of BIS connections\n    \n    This adds initial support for BIS/BIG which includes:\n    \n    == Broadcaster role: Setup a periodic advertising and create a BIG ==\n    \n    > tools/isotest -s 00:00:00:00:00:00\n    isotest[63]: Connected [00:00:00:00:00:00]\n    isotest[63]: QoS BIG 0x00 BIS 0x00 Packing 0x00 Framing",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full BIG creation path, including queuing async work and the completion callback. The vulnerable construct is present in `hci_connect_bis()` and `create_big_complete()`. In `hci_connect_bis()`, the code passes a raw `struct hci_conn *` as async callback data across `hci_cmd_sync_queue(hdev, create_big_sync, conn, create_big_complete);`. The queued worker `create_big_sync()` also directly dereferences that pointer (`struct hci_conn *conn = data; struct bt_iso_qos *qos = &conn->iso_qos; ... conn->le_per_adv_data_len ... conn->le_per_adv_data`). The completion callback `create_big_complete()` again dereferences the same raw pointer: `struct hci_conn *conn = data; ... hci_connect_cfm(conn, err); hci_conn_del(conn);`. There is no extra reference taken specifically for the async queue object before passing `conn` into `hci_cmd_sync_queue`, and no re-lookup / re-validation of the connection under `hci_dev_lock()` in `create_big_complete()`. Although `hci_add_bis()` does call `hci_conn_hold(conn);`, the shown completion path does not pair this with safe lifetime validation of the queued callback data, and the root cause described is exactly the use of a raw `struct hci_conn *` across the async `hci_cmd_sync_queue()` boundary without revalidation. Therefore the vulnerable logic is present, and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ccf74f2390d6",
+          "anchor_file": "net/bluetooth/hci_conn.c",
+          "anchor_lineno": 2066
+        },
+        "commit": "73d80deb7bdf0171f22e76dc2429c1f99eff90e2",
+        "commit_short": "73d80deb7bdf",
+        "commit_msg": "Bluetooth: prioritizing data over HCI\n\nThis implement priority based scheduler using skbuffer priority set via\nSO_PRIORI",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_conn.c",
+        "display_lineno": 962,
+        "code_snippet": "commit 73d80deb7bdf0171f22e76dc2429c1f99eff90e2\nAuthor: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>\nDate:   Wed Nov 2 15:52:01 2011 +0200\n\n    Bluetooth: prioritizing data over HCI\n    \n    This implement priority based scheduler using skbuffer priority set via\n    SO_PRIORITY socket option.\n    \n    It introduces hci_chan_hash (list of HCI Channel/hci_chan) per connection,\n    each item in this list refer to a L2CAP connection and it is used to\n    queue the data for transmission.\n    \n  ",
+        "exists": false,
+        "reason": "The provided function body only allocates an hci_chan and attaches it to a connection: `chan = kzalloc(...)`, `chan->conn = conn;`, and `hci_chan_hash_add(conn, chan);`. The stated root cause is specifically about the BIG creation path passing a raw `struct hci_conn *` across an asynchronous `hci_cmd_sync_queue()` boundary without taking a reference or re-validating it under `hci_dev_lock()`, leading to `create_big_complete()` dereferencing a stale connection. None of that async queueing, reference handling, locking, or `create_big_complete()` logic is shown here. Therefore the snippet is not sufficient to determine whether the vulnerable construct is present or fixed in this commit. Since the vulnerable function/statement described in the root cause is absent from the snippet, `has_bug` is `false`, and there is no evidence of the fix either, so `is_fixed` is `false`."
+      }
+    },
+    {
+      "bic_found": "eca0ae4aea66914515e5e3098ea051b518ee5316",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b819db93d73f",
+          "anchor_file": "net/bluetooth/hci_conn.c",
+          "anchor_lineno": 2209
+        },
+        "commit": "eca0ae4aea66914515e5e3098ea051b518ee5316",
+        "commit_short": "eca0ae4aea66",
+        "commit_msg": "Bluetooth: Add initial implementation of BIS connections\n\nThis adds initial support for BIS/BIG which includes:\n\n== Broa",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_conn.c",
+        "display_lineno": 2035,
+        "code_snippet": "commit eca0ae4aea66914515e5e3098ea051b518ee5316\nAuthor: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>\nDate:   Wed Mar 9 13:22:20 2022 -0800\n\n    Bluetooth: Add initial implementation of BIS connections\n    \n    This adds initial support for BIS/BIG which includes:\n    \n    == Broadcaster role: Setup a periodic advertising and create a BIG ==\n    \n    > tools/isotest -s 00:00:00:00:00:00\n    isotest[63]: Connected [00:00:00:00:00:00]\n    isotest[63]: QoS BIG 0x00 BIS 0x00 Packing 0x00 Framing",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full BIG creation queueing path and completion callback. The vulnerable construct is present in `hci_connect_bis()` and `create_big_complete()`. In `hci_connect_bis()`, the code queues asynchronous work with a raw connection pointer: `err = hci_cmd_sync_queue(hdev, create_big_sync, conn, create_big_complete);`. The queued callback `create_big_sync()` also directly dereferences that pointer across the async boundary: `struct hci_conn *conn = data; struct bt_iso_qos *qos = &conn->iso_qos; ... return hci_le_create_big(conn, &conn->iso_qos);`. The completion handler `create_big_complete()` again dereferences the same raw pointer: `struct hci_conn *conn = data; ... hci_connect_cfm(conn, err); hci_conn_del(conn);`. There is no reference acquisition tied to the queued lifetime and no re-validation of `conn` under `hci_dev_lock()` before use in the completion path. Although `hci_add_bis()` does `hci_conn_hold(conn);`, this snippet does not show any callback-side `hci_conn_drop()`/validated lookup pattern that would constitute the fix for the described bug; instead the async queue still carries the raw `struct hci_conn *` directly. Thus the vulnerable construct is present and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ccf74f2390d6",
+          "anchor_file": "net/bluetooth/hci_conn.c",
+          "anchor_lineno": 2035
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_conn.c",
+        "display_lineno": 466,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body is not related to the described BIG creation vulnerability. The root cause mentions an asynchronous `hci_cmd_sync_queue()` path passing a raw `struct hci_conn *` to `create_big_complete()` without taking a reference or re-validating under `hci_dev_lock()`. In this snippet, the code only performs a synchronous lookup under `hci_dev_lock_bh(hdev)` (`conn = hci_conn_hash_lookup_ba(hdev, req.type, &req.bdaddr);`), copies fields from `conn` while the lock is held, unlocks, then checks `if (!conn) return -ENOENT;` and copies the local `ci` structure to userspace. There is no `hci_cmd_sync_queue()`, no BIG creation logic, no asynchronous callback boundary, and no `create_big_complete()` dereference. Because the vulnerable construct is completely absent from this function, `has_bug` is false. The snippet also does not show the specific fix described in the root cause, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "eca0ae4aea66914515e5e3098ea051b518ee5316",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b819db93d73f",
+          "anchor_file": "net/bluetooth/hci_conn.c",
+          "anchor_lineno": 2210
+        },
+        "commit": "eca0ae4aea66914515e5e3098ea051b518ee5316",
+        "commit_short": "eca0ae4aea66",
+        "commit_msg": "Bluetooth: Add initial implementation of BIS connections\n\nThis adds initial support for BIS/BIG which includes:\n\n== Broa",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_conn.c",
+        "display_lineno": 2036,
+        "code_snippet": "commit eca0ae4aea66914515e5e3098ea051b518ee5316\nAuthor: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>\nDate:   Wed Mar 9 13:22:20 2022 -0800\n\n    Bluetooth: Add initial implementation of BIS connections\n    \n    This adds initial support for BIS/BIG which includes:\n    \n    == Broadcaster role: Setup a periodic advertising and create a BIG ==\n    \n    > tools/isotest -s 00:00:00:00:00:00\n    isotest[63]: Connected [00:00:00:00:00:00]\n    isotest[63]: QoS BIG 0x00 BIS 0x00 Packing 0x00 Framing",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full BIS/BIG async setup path and the completion callback. The vulnerable construct is present in `hci_connect_bis()` and `create_big_complete()`. In `hci_connect_bis()`, the code queues asynchronous work with a raw connection pointer: `err = hci_cmd_sync_queue(hdev, create_big_sync, conn, create_big_complete);`. The queued context `data` is just `conn`; there is no extra reference taken for the async boundary beyond the earlier `hci_conn_hold(conn)` in `hci_add_bis()`, and there is no re-validation of the pointer under `hci_dev_lock()` in the completion callback. The callback `create_big_complete(struct hci_dev *hdev, void *data, int err)` immediately does `struct hci_conn *conn = data;` and on error dereferences it via `hci_connect_cfm(conn, err);` and `hci_conn_del(conn);`. This matches the root cause: a raw `struct hci_conn *` is passed across `hci_cmd_sync_queue()` and later dereferenced asynchronously without re-looking it up or validating that it is still alive. The shown code does not contain a fix such as passing stable identifiers instead of the pointer, taking a dedicated reference for the queued callback and releasing it there, or re-acquiring `hci_dev_lock()` and re-validating/looking up the connection before use in `create_big_complete()`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ccf74f2390d6",
+          "anchor_file": "net/bluetooth/hci_conn.c",
+          "anchor_lineno": 2036
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_conn.c",
+        "display_lineno": 467,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function is an ioctl-style connection info lookup path, not the BIG creation async path described in the root cause. It looks up a connection under `hci_dev_lock_bh(hdev)` via `hci_conn_hash_lookup_ba(hdev, req.type, &req.bdaddr);`, copies fields from the connection into a local `struct hci_conn_info ci` while still under the lock (`ci.handle = conn->handle;`, `ci.state = conn->state;`, etc.), then unlocks and only checks `if (!conn) return -ENOENT;` before copying the already-captured `ci` to userspace. There is no `hci_cmd_sync_queue()` boundary, no asynchronous callback, no passing of a raw `struct hci_conn *` across async execution, and no later dereference of `conn` after unlock except the null check. Therefore the vulnerable construct from the stated root cause is absent. The specific fix for that async stale-pointer bug is also not present here, but since the relevant vulnerable logic is not in this function, `has_bug` is false."
+      }
+    },
+    {
+      "bic_found": "eca0ae4aea66914515e5e3098ea051b518ee5316",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "eca0ae4aea66914515e5e3098ea051b518ee5316": 3
+      },
+      "bic_candidates": [
+        "eca0ae4aea66914515e5e3098ea051b518ee5316"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

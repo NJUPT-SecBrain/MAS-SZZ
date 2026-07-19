@@ -1,0 +1,307 @@
+{
+  "cveid": "CVE-2026-53084",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4cbee026db54cad39c39db4d356100cb133412b3"
+  ],
+  "ground_truth_bic": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+  "predicted_bic": [
+    "bee9ef4a40a277bf401be43d39ba7f7f063cf39c"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 22240,
+  "root_cause": {
+    "text": "Holding the per-VMA read lock (vm_lock) across the BPF program body in the task_vma iterator creates a lock ordering cycle (vm_lock → i_rwsem → mmap_lock → vm_lock) that can deadlock when BPF helpers acquire locks depending on mmap_lock.",
+    "evidence": "CVE description states \"Holding the per-VMA lock across the BPF program body creates a lock ordering problem when helpers acquire locks that depend on mmap_lock: vm_lock -> i_rwsem -> mmap_lock -> vm_lock\". The patch replaces the locked VMA pointer with a snapshot copied under the lock and drops the lock before returning, eliminating the lock hold across the program body.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 967,
+      "content": "kit->data->locked_vma = vma;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 969,
+      "content": "return vma;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Holding the per-VMA read lock (vm_lock) across the BPF program body in the task_vma iterator creates a lock ordering cycle (vm_lock → i_rwsem → mmap_lock → vm_lock) that can deadlock when BPF helpers acquire locks depending on mmap_lock.",
+      "evidence_points": "CVE description states \"Holding the per-VMA lock across the BPF program body creates a lock ordering problem when helpers acquire locks that depend on mmap_lock: vm_lock -> i_rwsem -> mmap_lock -> vm_lock\". The patch replaces the locked VMA pointer with a snapshot copied under the lock and drops the lock before returning, eliminating the lock hold across the program body."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace pointer to VMA with embedded snapshot to prevent use-after-free during BPF task VMA iteration.",
+        "what": "Changed 'struct vm_area_struct *locked_vma;' to 'struct vm_area_struct snapshot;' inside 'struct bpf_iter_task_vma_kern_data'.",
+        "how": "Instead of storing a pointer to a VMA, the code now stores a full copy of the VMA structure at the time of capture, ensuring the data remains valid and immune to concurrent modifications or deallocations."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "style",
+        "intent_summary": "Update comment to include fput among operations that can acquire IRQ-disabled spinlocks, improving documentation accuracy.",
+        "what": "Modified a comment in bpf_iter_task_vma_new to add 'fput' to the list of operations used by _next() and _destroy() that can take spinlocks with IRQs disabled.",
+        "how": "This change only affects the comment; no code behavior is altered. It updates documentation to accurately reflect the set of locking operations that justify the irqs-disabled context rejection."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix incorrect field initialization in bpf_iter_task_vma_new by zeroing snapshot.vm_file instead of locked_vma.",
+        "what": "Changed the assignment from `kit->data->locked_vma = NULL;` to `kit->data->snapshot.vm_file = NULL;`.",
+        "how": "At runtime, this corrects the initialization of the iterator data structure to zero out the `vm_file` field within the `snapshot` sub-structure instead of the `locked_vma` field. This ensures that the snapshot's vm_file starts as NULL, which is likely required for proper iterator operation."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix BPF task VMA iterator to return a snapshot with proper reference handling instead of a locked VMA pointer, ensuring verifier trust and safe memory management.",
+        "what": "Added static helper bpf_iter_task_vma_snapshot_reset to release vm_file reference; replaced locked_vma tracking with a snapshot copy: in bpf_iter_task_vma_next, instead of returning the locked VMA pointer, copy VMA into a snapshot field, take a reference on vm_file, release the VMA read lock, and return the snapshot.",
+        "how": "The function now returns a stable copy (snapshot) of the VMA rather than the VMA itself, avoiding reliance on the mmap read lock and ensuring proper reference counting on vm_file via get_file/fput. The read lock is released immediately after copying, shortening lock hold time."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "refactor",
+        "intent_summary": "Refactor bpf_iter_task_vma cleanup to use unified snapshot reset instead of manual VMA read lock release.",
+        "what": "Replaced conditional `vma_end_read` on `locked_vma` with unconditional call to `bpf_iter_task_vma_snapshot_reset` on the `snapshot` field of iterator data.",
+        "how": "The destroy function now resets the entire snapshot structure instead of individually releasing a read lock on a potentially locked VMA, ensuring all snapshot-related state is cleaned up in a single operation."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix BPF task VMA iterator to return a snapshot with proper reference handling instead of a locked VMA pointer, ensuring verifier trust and safe memory management."
+        },
+        {
+          "group_id": 1,
+          "category": "style",
+          "hunk_count": 1,
+          "intent": "Update comment to include fput among operations that can acquire IRQ-disabled spinlocks, improving documentation accuracy."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix incorrect field initialization in bpf_iter_task_vma_new by zeroing snapshot.vm_file instead of locked_vma."
+        },
+        {
+          "group_id": 3,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor bpf_iter_task_vma cleanup to use unified snapshot reset instead of manual VMA read lock release."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix BPF task VMA iterator to return a snapshot with proper reference handling instead of a locked VMA pointer, ensuring verifier trust and safe memory management.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by replacing the locked VMA pointer with a snapshot, which avoids holding the per-VMA read lock across the BPF program body and thus breaks the lock ordering cycle that leads to deadlock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group only updates a comment for documentation accuracy, which does not address or relate to the lock ordering cycle vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The fix changes the wrong field initialization (zeroing snapshot.vm_file instead of locked_vma) and does not address the lock ordering cycle vulnerability (vm_lock -> i_rwsem -> mmap_lock -> vm_lock)."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The group refactors the cleanup path of the task_vma iterator to use a unified snapshot reset instead of manually releasing the VMA read lock. This directly changes how the per-VMA read lock is handled, which is the core of the lock ordering cycle causing the deadlock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 969,
+            "content": "return vma;",
+            "rationale": "Returns the VMA pointer while the per-VMA read lock is still held, causing the lock to be held across the BPF program execution and enabling the lock ordering cycle."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 967,
+            "content": "kit->data->locked_vma = vma;",
+            "rationale": "Stores the locked VMA pointer, marking that the read lock is held and will only be released on the next iteration or destroy, which keeps the lock held across the BPF program body."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "kit->data->locked_vma = vma;",
+            "location": "hunk",
+            "explanation": "Stores the locked VMA pointer, marking that the per-VMA read lock (vm_lock) is held and will only be released on the next iteration or destroy. This keeps the lock held across the BPF program body, creating a lock ordering cycle (vm_lock → i_rwsem → mmap_lock → vm_lock) that can deadlock when BPF helpers acquire locks depending on mmap_lock."
+          },
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "return vma;",
+            "location": "hunk",
+            "explanation": "Returns the VMA pointer while the per-VMA read lock is still held, causing the lock to be held across the BPF program execution. This enables the lock ordering cycle (vm_lock → i_rwsem → mmap_lock → vm_lock) that can deadlock when BPF helpers acquire locks depending on mmap_lock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "bee9ef4a40a2",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 967
+        },
+        "commit": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+        "commit_short": "bee9ef4a40a2",
+        "commit_msg": "bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n\nThe open-coded task_vma iterator holds mmap_lock for the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 967
+      }
+    },
+    {
+      "bic_found": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+      "note": "blame stable (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "bee9ef4a40a2",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 969
+        },
+        "commit": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+        "commit_short": "bee9ef4a40a2",
+        "commit_msg": "bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n\nThe open-coded task_vma iterator holds mmap_lock for the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 969
+      }
+    },
+    {
+      "bic_found": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+      "note": "blame stable (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "bee9ef4a40a277bf401be43d39ba7f7f063cf39c": 2
+      },
+      "bic_candidates": [
+        "bee9ef4a40a277bf401be43d39ba7f7f063cf39c"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

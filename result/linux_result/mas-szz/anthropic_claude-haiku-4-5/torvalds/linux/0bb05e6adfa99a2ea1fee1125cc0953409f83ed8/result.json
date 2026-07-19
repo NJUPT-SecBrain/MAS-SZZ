@@ -1,0 +1,230 @@
+{
+  "cveid": "CVE-2026-46110",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "0bb05e6adfa99a2ea1fee1125cc0953409f83ed8"
+  ],
+  "ground_truth_bic": "b6cb4541853c7ee512111b0e7ddf3cb66c99c137",
+  "predicted_bic": [
+    "c1fa3212be5503d802a5c4c451dd4e673fdc603a"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 20181,
+  "root_cause": {
+    "text": "The stmmac driver's RX processing loop only checks the OWN flag to distinguish between valid (\"full\") and exhausted (\"dirty\") descriptors, failing to detect when `cur_rx` catches up to `dirty_rx` during memory allocation failures, causing NULL pointer dereference when processing descriptors with NULL buffers.",
+    "evidence": "The patch explicitly adds a check `if (unlikely(next_entry == rx_q->dirty_rx)) break;` before advancing `cur_rx` in both `stmmac_rx()` and `stmmac_rx_zc()` functions. The commit message explains that descriptors have three states (empty/full/dirty) but the code only checked OWN flag, confusing full and dirty states. When `stmmac_rx_refill()` fails to allocate memory, it leaves descriptors in the \"dirty\" state (OWN=0, buffer=NULL), and the previous partial fix (capping iterations at `dma_rx_size - 1`) was insufficient because `cur_rx` could still catch up to `dirty_rx` without cycling fully around the ring, leading to NULL dereference when the loop mistakenly processes a dirty descriptor as a full one.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+      "lineno": -1,
+      "content": "rx_q->cur_rx = STMMAC_NEXT_ENTRY(rx_q->cur_rx,\n\t\t\t\t\tpriv->dma_conf.dma_rx_size);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+      "lineno": 5733,
+      "content": "if (unlikely(status & dma_own))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The stmmac driver's RX processing loop only checks the OWN flag to distinguish between valid (\"full\") and exhausted (\"dirty\") descriptors, failing to detect when `cur_rx` catches up to `dirty_rx` during memory allocation failures, causing NULL pointer dereference when processing descriptors with NULL buffers.",
+      "evidence_points": "The patch explicitly adds a check `if (unlikely(next_entry == rx_q->dirty_rx)) break;` before advancing `cur_rx` in both `stmmac_rx()` and `stmmac_rx_zc()` functions. The commit message explains that descriptors have three states (empty/full/dirty) but the code only checked OWN flag, confusing full and dirty states. When `stmmac_rx_refill()` fails to allocate memory, it leaves descriptors in the \"dirty\" state (OWN=0, buffer=NULL), and the previous partial fix (capping iterations at `dma_rx_size - 1`) was insufficient because `cur_rx` could still catch up to `dirty_rx` without cycling fully around the ring, leading to NULL dereference when the loop mistakenly processes a dirty descriptor as a full one."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add ring buffer collision detection to prevent cur_rx from advancing into the dirty_rx region during RX zero-copy processing.",
+        "what": "Reordered three statements: (1) moved the STMMAC_NEXT_ENTRY calculation to assign directly to next_entry instead of rx_q->cur_rx, (2) added an unlikely() guard clause checking if next_entry equals rx_q->dirty_rx and breaking if true, (3) moved the rx_q->cur_rx assignment to occur after the guard check. Also reformatted the STMMAC_NEXT_ENTRY call for alignment.",
+        "how": "The change prevents the rx_q->cur_rx pointer from advancing into the dirty_rx region (which indicates unconsumed descriptors). Previously, cur_rx was updated immediately without checking for ring buffer collision; now the code validates that next_entry is safe before committing it to cur_rx. If next_entry would collide with dirty_rx, the loop breaks early, preventing potential buffer overrun or descriptor reuse violations."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove incorrect limit capping that prevented proper packet processing up to the DMA ring capacity.",
+        "what": "Removed the line that calculates `limit` as the minimum of `priv->dma_conf.dma_rx_size - 1` and the input `limit` parameter.",
+        "how": "This change removes a boundary constraint on the `limit` variable in the stmmac_rx function. Previously, the limit was capped to never exceed the DMA RX ring size minus 1. Now the limit parameter is used without this upper bound constraint, potentially allowing the function to process more packets than the DMA ring capacity in a single call."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add boundary check to prevent rx_q->cur_rx from advancing into the dirty_rx region, avoiding processing of unready DMA descriptors.",
+        "what": "Reordered the assignment of next_entry and rx_q->cur_rx, and added a guard clause that breaks the loop if next_entry equals rx_q->dirty_rx. The STMMAC_NEXT_ENTRY macro call now directly assigns to next_entry first, followed by a boundary check, and only then updates rx_q->cur_rx.",
+        "how": "This change prevents the rx_q->cur_rx pointer from advancing into the dirty_rx region (which represents unprocessed descriptors). By checking if next_entry would collide with dirty_rx before committing the update, the code avoids processing descriptors that are still owned by the DMA engine or not yet ready, preventing potential data corruption or use-after-free conditions."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add boundary check to prevent rx_q->cur_rx from advancing into the dirty_rx region, avoiding processing of unready DMA descriptors."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove incorrect limit capping that prevented proper packet processing up to the DMA ring capacity."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add boundary check to prevent rx_q->cur_rx from advancing into the dirty_rx region, avoiding processing of unready DMA descriptors.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by adding a boundary check to prevent cur_rx from advancing into the dirty_rx region. This prevents the driver from processing unready descriptors with NULL buffers when cur_rx catches up to dirty_rx during memory allocation failures, which is the exact mechanism causing the NULL pointer dereference described in the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group removes limit capping to allow processing up to DMA ring capacity, which is a performance/throughput optimization. The vulnerability root cause is about missing detection of descriptor exhaustion (when cur_rx catches up to dirty_rx) and NULL pointer dereference from unallocated buffers. Removing a limit cap does not address the core issue of detecting the catch-up condition or validating buffer pointers before dereferencing them."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+            "lineno": -1,
+            "content": "rx_q->cur_rx = STMMAC_NEXT_ENTRY(rx_q->cur_rx,\n\t\t\t\t\tpriv->dma_conf.dma_rx_size);",
+            "rationale": "This statement advances cur_rx without checking if it has caught up to dirty_rx. When memory allocation fails, dirty_rx stops advancing while cur_rx continues, causing them to collide. The loop then processes descriptors with NULL buffers, leading to NULL pointer dereference."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+            "lineno": -1,
+            "content": "rx_q->cur_rx = STMMAC_NEXT_ENTRY(rx_q->cur_rx,\n\t\t\t\t\tpriv->dma_conf.dma_rx_size);",
+            "rationale": "Same vulnerability as Hunk 0: cur_rx is advanced unconditionally after checking only the OWN flag, without verifying that cur_rx hasn't caught up to dirty_rx. This allows processing of uninitialized/unready descriptors with NULL buffers."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+            "lineno": 5733,
+            "content": "if (unlikely(status & dma_own))",
+            "rationale": "The OWN flag check alone is insufficient to detect ring buffer exhaustion. It only distinguishes between owned and processed descriptors, but cannot detect when cur_rx has caught up to dirty_rx due to allocation failures, allowing NULL descriptor processing."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+            "stmt_text": "rx_q->cur_rx = STMMAC_NEXT_ENTRY(rx_q->cur_rx,\n\t\t\t\t\tpriv->dma_conf.dma_rx_size);",
+            "location": "hunk",
+            "explanation": "This statement unconditionally advances cur_rx after only checking the OWN flag, without verifying that cur_rx hasn't caught up to dirty_rx. When memory allocation fails, dirty_rx stops advancing while cur_rx continues, causing ring buffer collision. The loop then processes descriptors with NULL buffers, leading to NULL pointer dereference."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+            "stmt_text": "if (unlikely(status & dma_own))",
+            "location": "hunk",
+            "explanation": "The OWN flag check alone is insufficient to detect ring buffer exhaustion. It only distinguishes between owned and processed descriptors, but cannot detect when cur_rx has caught up to dirty_rx due to allocation failures. This allows the loop to continue processing uninitialized descriptors with NULL buffers."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 0"
+    },
+    {
+      "bic_found": null,
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f9c52a6ba978",
+          "anchor_file": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+          "anchor_lineno": 5733
+        },
+        "commit": "c1fa3212be5503d802a5c4c451dd4e673fdc603a",
+        "commit_short": "c1fa3212be55",
+        "commit_msg": "stmmac: merge get_rx_owner into rx_status routine.\n\nThe RDES0 register can be read several times while doing RX of a\npac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/stmicro/stmmac/stmmac_main.c",
+        "display_lineno": 2212,
+        "code_snippet": "commit c1fa3212be5503d802a5c4c451dd4e673fdc603a\nAuthor: Fabrice Gasnier <fabrice.gasnier@st.com>\nDate:   Mon Feb 29 14:27:34 2016 +0100\n\n    stmmac: merge get_rx_owner into rx_status routine.\n    \n    The RDES0 register can be read several times while doing RX of a\n    packet.\n    This patch slightly improves RX path performance by reading rdes0\n    once for two operation: check rx owner, get rx status bits.\n    \n    Signed-off-by: Fabrice Gasnier <fabrice.gasnier@st.com>\n    Acked-by: Giuseppe ",
+        "exists": false,
+        "reason": "This commit moves the `rx_status()` call earlier in the loop (before the OWN flag check) and replaces the `get_rx_owner()` check with `status & dma_own`. The vulnerable construct described in the root cause is the reliance on only checking the OWN flag to distinguish between valid and exhausted descriptors without detecting when `cur_rx` catches up to `dirty_rx`. This commit does NOT introduce that vulnerability - it merely refactors the order of operations for performance. The fundamental issue (lack of a `cur_rx == dirty_rx` check) is not present in this diff because the diff doesn't show the descriptor allocation/initialization logic where that check should exist. The commit changes HOW the OWN flag is checked (via status bits instead of a separate function call) but doesn't introduce the missing boundary condition check that would constitute the bug. The vulnerable construct (missing cur_rx/dirty_rx comparison) is absent from this code snippet."
+      }
+    },
+    {
+      "bic_found": "c1fa3212be5503d802a5c4c451dd4e673fdc603a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "c1fa3212be5503d802a5c4c451dd4e673fdc603a": 1
+      },
+      "bic_candidates": [
+        "c1fa3212be5503d802a5c4c451dd4e673fdc603a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

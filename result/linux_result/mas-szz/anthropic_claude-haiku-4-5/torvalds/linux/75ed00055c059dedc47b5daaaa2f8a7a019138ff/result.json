@@ -1,0 +1,247 @@
+{
+  "cveid": "CVE-2026-45894",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "75ed00055c059dedc47b5daaaa2f8a7a019138ff"
+  ],
+  "ground_truth_bic": "0bbeb01a4fafbf8422e5c8882d461d6ac4f71e15",
+  "predicted_bic": [
+    "80b79e141da7251d6ea82573f058ee9418896465"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 20295,
+  "root_cause": {
+    "text": "The Intel VT-d IOMMU driver immediately zeroed the entire 64-byte PASID table entry while it was active (Present bit set), creating a race condition where concurrent hardware fetches could observe a torn/inconsistent state during the multi-transaction read.",
+    "evidence": "The patch demonstrates that the original code called `intel_pasid_clear_entry()` immediately to zero the entire entry, but the CVE description and spec guidance (Section 6.5.3.3) explain that hardware may fetch the 64-byte entry using multiple internal transactions (e.g., four 128-bit bursts). The fix implements a three-phase handshake: (1) clear only the Present bit with `pasid_clear_present()` and `dma_wmb()`, (2) execute invalidation flushes to ensure hardware releases cached references, and (3) only then call `intel_pasid_clear_entry()` to zero remaining fields. The addition of `dma_wmb()` in both `pasid_set_present()` and `pasid_clear_present()` ensures memory ordering constraints are respected, preventing the hardware from observing partially-written PASID entries.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/iommu/intel/pasid.c",
+      "lineno": -1,
+      "content": "memset(pe, 0, sizeof(*pe));",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/iommu/intel/pasid.h",
+      "lineno": 237,
+      "content": "pasid_set_bits(&pe->val[0], 1 << 0, 1);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The Intel VT-d IOMMU driver immediately zeroed the entire 64-byte PASID table entry while it was active (Present bit set), creating a race condition where concurrent hardware fetches could observe a torn/inconsistent state during the multi-transaction read.",
+      "evidence_points": "The patch demonstrates that the original code called `intel_pasid_clear_entry()` immediately to zero the entire entry, but the CVE description and spec guidance (Section 6.5.3.3) explain that hardware may fetch the 64-byte entry using multiple internal transactions (e.g., four 128-bit bursts). The fix implements a three-phase handshake: (1) clear only the Present bit with `pasid_clear_present()` and `dma_wmb()`, (2) execute invalidation flushes to ensure hardware releases cached references, and (3) only then call `intel_pasid_clear_entry()` to zero remaining fields. The addition of `dma_wmb()` in both `pasid_set_present()` and `pasid_clear_present()` ensures memory ordering constraints are respected, preventing the hardware from observing partially-written PASID entries."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/iommu/intel/pasid.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Simplify PASID entry teardown by directly clearing the present bit of the PTE instead of calling a higher-level clearing function.",
+        "what": "Replaced a call to `intel_pasid_clear_entry(dev, pasid, fault_ignore)` with a call to `pasid_clear_present(pte)` in the `intel_pasid_tear_down_entry` function.",
+        "how": "This changes how a PASID entry is cleared during teardown. Instead of invoking a higher-level function that takes device and PASID parameters and handles fault ignore settings, the code now directly clears the present bit of the page table entry (pte) object. This is a lower-level, more direct operation that modifies only the presence flag of the already-obtained PTE."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear PASID entry and flush CPU cache on non-coherent IOMMUs to prevent stale entry reuse after TLB invalidation.",
+        "what": "Added three lines after devtlb_invalidation_with_pasid() call: (1) a call to intel_pasid_clear_entry() with fault_ignore parameter, (2) a conditional cache flush using clflush_cache_range() when the IOMMU lacks coherency, and (3) a blank line for spacing.",
+        "how": "This change ensures that after invalidating device TLB entries, the PASID entry itself is explicitly cleared from memory, and if the IOMMU is non-coherent, the CPU cache is flushed to guarantee the cleared entry is visible to hardware. This prevents stale PASID entries from being used by the IOMMU after teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add memory barriers to pasid_set_present() and introduce pasid_clear_present() with proper synchronization to enforce correct hardware-software ownership transitions for PASID table entries per VT-d specification.",
+        "what": "Added a dma_wmb() memory barrier before setting the Present bit in pasid_set_present(), and introduced a new pasid_clear_present() function that clears the Present bit and includes a dma_wmb() barrier after the operation, with detailed documentation explaining the hardware-software ownership transition semantics.",
+        "how": "The dma_wmb() barriers ensure proper memory ordering between CPU writes to PASID table entries and hardware visibility of those changes. In pasid_set_present(), the barrier before the bit set ensures prior entry modifications are visible before marking it present. In pasid_clear_present(), the barrier after clearing the bit ensures the hardware sees the present bit cleared before software proceeds with invalidation handshake operations, preventing race conditions between hardware and software access to the entry."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Simplify PASID entry teardown by directly clearing the present bit of the PTE instead of calling a higher-level clearing function."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear PASID entry and flush CPU cache on non-coherent IOMMUs to prevent stale entry reuse after TLB invalidation."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add memory barriers to pasid_set_present() and introduce pasid_clear_present() with proper synchronization to enforce correct hardware-software ownership transitions for PASID table entries per VT-d specification."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group simplifies teardown by directly clearing the present bit, but this does not address the core vulnerability. The root cause is that the entire 64-byte PASID table entry is zeroed while active, causing a race condition with concurrent hardware reads. Simply changing which function clears the present bit does not prevent the subsequent zeroing of the remaining entry fields or eliminate the torn read vulnerability. The fix would need to ensure atomic updates or proper synchronization during the entire entry teardown, not just refactor how the present bit is cleared."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by implementing proper PASID entry clearing with cache flushing. The root cause involves a race condition from immediately zeroing the entire entry while active. This group's intent to clear the PASID entry and flush CPU cache on non-coherent IOMMUs is a direct mitigation that prevents stale/inconsistent entry states during hardware access, which is the core issue described in the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by introducing proper synchronization mechanisms (memory barriers) and a dedicated pasid_clear_present() function to prevent torn reads during PASID table entry modifications. This enforces correct hardware-software ownership transitions and prevents the race condition where hardware could observe inconsistent state while entries are being zeroed."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/iommu/intel/pasid.h",
+            "lineno": 237,
+            "content": "pasid_set_bits(&pe->val[0], 1 << 0, 1);",
+            "rationale": "This statement sets the Present bit (bit 0) without memory barriers or synchronization. The root cause indicates the vulnerability occurs when the entire 64-byte PASID entry is zeroed while active. The lack of proper synchronization in pasid_set_present() means there's no corresponding pasid_clear_present() with barriers to safely clear the Present bit before zeroing the entry, allowing hardware to observe torn/inconsistent state during concurrent reads."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/iommu/intel/pasid.c",
+            "lineno": 289,
+            "content": "devtlb_invalidation_with_pasid(iommu, dev, pasid);",
+            "rationale": "This TLB invalidation occurs after the PASID entry has been zeroed (in the missing code between lines 292 and the actual clearing), but without first clearing the Present bit with proper memory barriers. The race condition exists because hardware can still fetch the entry during this window, observing inconsistent state between the zeroed content and the still-set Present bit."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 0
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/iommu/intel/pasid.c",
+            "stmt_text": "memset(pe, 0, sizeof(*pe));",
+            "location": "hunk",
+            "explanation": "This statement immediately zeroes the entire 64-byte PASID table entry while the Present bit is still set (active). This creates a race condition where concurrent hardware fetches can observe a torn/inconsistent state during the multi-transaction read. The vulnerability occurs because the entry is cleared without first clearing the Present bit with proper memory barriers to signal to hardware that the entry is no longer valid."
+          },
+          {
+            "vuln_file": "drivers/iommu/intel/pasid.h",
+            "stmt_text": "pasid_set_bits(&pe->val[0], 1 << 0, 1);",
+            "location": "hunk",
+            "explanation": "This statement sets the Present bit without memory barriers or synchronization. The root cause indicates the vulnerability stems from the lack of a corresponding pasid_clear_present() function with proper memory barriers to safely clear the Present bit before zeroing the entry. Without this synchronization, hardware can observe the entry being zeroed while the Present bit remains set, leading to inconsistent state during concurrent reads."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 0"
+    },
+    {
+      "bic_found": null,
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "04b1b069f151",
+          "anchor_file": "drivers/iommu/intel/pasid.h",
+          "anchor_lineno": 237
+        },
+        "commit": "80b79e141da7251d6ea82573f058ee9418896465",
+        "commit_short": "80b79e141da7",
+        "commit_msg": "iommu/vt-d: Move inline helpers to header files\n\nMove inline helpers to header files so that other files can use them\nwi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/intel/pasid.h",
+        "display_lineno": 238,
+        "code_snippet": "commit 80b79e141da7251d6ea82573f058ee9418896465\nAuthor: Lu Baolu <baolu.lu@linux.intel.com>\nDate:   Mon Dec 18 15:34:45 2023 +0800\n\n    iommu/vt-d: Move inline helpers to header files\n    \n    Move inline helpers to header files so that other files can use them\n    without duplicating the code.\n    \n    Signed-off-by: Lu Baolu <baolu.lu@linux.intel.com>\n    Reviewed-by: Kevin Tian <kevin.tian@intel.com>\n    Link: https://lore.kernel.org/r/20231116015048.29675-5-baolu.lu@linux.intel.com\n    Signe",
+        "exists": true,
+        "reason": "The commit introduces the `pasid_clear_entry()` function (lines 89-97) which immediately zeroes all 8 64-bit fields of the PASID entry using sequential WRITE_ONCE calls without first clearing the Present bit (Bit 0). The vulnerability root cause describes that the entry is zeroed 'while it was active (Present bit set)', creating a race condition where hardware can observe torn/inconsistent state during multi-transaction reads. The function performs: WRITE_ONCE(pe->val[0], 0) first, which clears the Present bit along with other fields in a single write, but this happens simultaneously with clearing other fields (val[1] through val[7]) in subsequent writes. This creates a window where hardware fetches could see an inconsistent 64-byte entry state. The fix would require clearing the Present bit first, then issuing a barrier/TLB flush, then clearing the remaining fields - none of which is present in this code."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "80b79e141da7251d6ea82573f058ee9418896465",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "80b79e141da7251d6ea82573f058ee9418896465": 1
+      },
+      "bic_candidates": [
+        "80b79e141da7251d6ea82573f058ee9418896465"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

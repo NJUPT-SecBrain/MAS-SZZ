@@ -1,0 +1,285 @@
+{
+  "cveid": "CVE-2026-52991",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a5b98009f16d8a5fb4a8ff9a193f5735515c38fa"
+  ],
+  "ground_truth_bic": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+  "predicted_bic": [
+    "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+    "a06247c6804f1a7c86a2e5398a4c1f1db1471848"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 26634,
+  "root_cause": {
+    "text": "pressure_write() in the cgroup/psi path accessed struct kernfs_open_file->priv (cgroup_file_ctx) outside proper synchronization with cgroup_file_release(), allowing of->priv to be freed or cleared concurrently during cgroup removal/file drain and causing UAF or NULL dereference.",
+    "evidence": "The patch moves `ctx = of->priv` to after `cgroup_kn_lock_live(of->kn, false)`, keeps all `of->priv`-related checks under that protected region until `cgroup_kn_unlock()`, adds `if (!ctx) return -ENODEV`, and removes the prior unsynchronized early access `struct cgroup_file_ctx *ctx = of->priv;`; the commit message explicitly states that “operations involving of->priv executed within pressure_write() are not entirely covered by the protection of cgroup_mutex,” while `cgroup_file_release()` does `kfree(ctx); of->priv = NULL`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/cgroup/cgroup.c",
+      "lineno": 3937,
+      "content": "struct cgroup_file_ctx *ctx = of->priv;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/cgroup/cgroup.c",
+      "lineno": 3936,
+      "content": "if (ctx->psi.trigger) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/cgroup/cgroup.c",
+      "lineno": 3962,
+      "content": "smp_store_release(&ctx->psi.trigger, new);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "pressure_write() in the cgroup/psi path accessed struct kernfs_open_file->priv (cgroup_file_ctx) outside proper synchronization with cgroup_file_release(), allowing of->priv to be freed or cleared concurrently during cgroup removal/file drain and causing UAF or NULL dereference.",
+      "evidence_points": "The patch moves `ctx = of->priv` to after `cgroup_kn_lock_live(of->kn, false)`, keeps all `of->priv`-related checks under that protected region until `cgroup_kn_unlock()`, adds `if (!ctx) return -ENODEV`, and removes the prior unsynchronized early access `struct cgroup_file_ctx *ctx = of->priv;`; the commit message explicitly states that “operations involving of->priv executed within pressure_write() are not entirely covered by the protection of cgroup_mutex,” while `cgroup_file_release()` does `kfree(ctx); of->priv = NULL`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/cgroup/cgroup.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a null check for the cgroup file context and centralize locked error exits in `pressure_write()` to avoid invalid dereferences and ensure proper unlock handling.",
+        "what": "The function `pressure_write()` changes `ctx` from being initialized directly from `of->priv` at declaration to being assigned after `cgroup_kn_lock_live()` succeeds, adds a new local variable `ret` initialized to 0, introduces a null check for `ctx` that returns `-ENODEV` via a shared `out_unlock` path, replaces several direct early returns on error (`-EBUSY` and `PTR_ERR(new)`) with assignments to `ret` followed by `goto out_unlock`, removes the explicit `cgroup_get(cgrp)` and all matching `cgroup_put(cgrp)` calls, and adds a common `out_unlock:` label that calls `cgroup_kn_unlock(of->kn)` before returning either `ret` or `nbytes`.",
+        "how": "At runtime, the function now validates that `of->priv` is present before dereferencing it, preventing a null-pointer dereference. It also ensures the kernfs node lock is consistently released on all exit paths after `cgroup_kn_lock_live()` succeeds. By removing the extra cgroup reference get/put pair, the function relies only on the lock-based liveness protection instead of taking a separate reference, while preserving successful trigger creation behavior and still rejecting duplicate triggers or trigger creation failures."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a null check for the cgroup file context and centralize locked error exits in `pressure_write()` to avoid invalid dereferences and ensure proper unlock handling."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly touches pressure_write() and adds handling for a missing cgroup_file_ctx (of->priv), which is the object involved in the race with cgroup_file_release(). Preventing invalid dereference/NULL access there is aligned with the reported root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/cgroup/cgroup.c",
+            "lineno": 3937,
+            "content": "struct cgroup_file_ctx *ctx = of->priv;",
+            "rationale": "This reads of->priv without synchronization against cgroup_file_release(), which can concurrently clear or free the cgroup_file_ctx, making subsequent ctx dereferences a UAF or NULL dereference."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/cgroup/cgroup.c",
+            "lineno": 3936,
+            "content": "if (ctx->psi.trigger) {",
+            "rationale": "This dereferences ctx obtained from of->priv before ensuring the context is still valid under proper synchronization, directly triggering the vulnerable UAF/NULL-deref condition."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/cgroup/cgroup.c",
+            "lineno": 3962,
+            "content": "smp_store_release(&ctx->psi.trigger, new);",
+            "rationale": "This writes through ctx after it was fetched from of->priv without protection from concurrent release, so a freed or cleared ctx can be written to, causing UAF."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/cgroup/cgroup.c",
+            "stmt_text": "struct cgroup_file_ctx *ctx = of->priv;",
+            "location": "hunk",
+            "explanation": "This is the root unsynchronized access: pressure_write() reads of->priv without coordination with cgroup_file_release(), which can concurrently clear or free the cgroup_file_ctx. That stale or NULL ctx is then used later, enabling UAF or NULL dereference."
+          },
+          {
+            "vuln_file": "kernel/cgroup/cgroup.c",
+            "stmt_text": "if (ctx->psi.trigger) {",
+            "location": "hunk",
+            "explanation": "This dereferences ctx that was obtained from of->priv without proper synchronization. If cgroup_file_release() has concurrently freed or cleared the context, this line can trigger the observed UAF or NULL dereference."
+          },
+          {
+            "vuln_file": "kernel/cgroup/cgroup.c",
+            "stmt_text": "smp_store_release(&ctx->psi.trigger, new);",
+            "location": "hunk",
+            "explanation": "This writes through ctx after the unsynchronized fetch from of->priv. If the context was concurrently released, this becomes a write through freed memory, directly contributing to the UAF condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d730905bc3c0",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3937
+        },
+        "commit": "0d2b5955b36250a9428c832664f2079cbf723bec",
+        "commit_short": "0d2b5955b362",
+        "commit_msg": "cgroup: Allocate cgroup_file_ctx for kernfs_open_file->priv\n\nof->priv is currently used by each interface file implement",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3633,
+        "code_snippet": "commit 0d2b5955b36250a9428c832664f2079cbf723bec\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Thu Jan 6 11:02:29 2022 -1000\n\n    cgroup: Allocate cgroup_file_ctx for kernfs_open_file->priv\n    \n    of->priv is currently used by each interface file implementation to store\n    private information. This patch collects the current two private data usages\n    into struct cgroup_file_ctx which is allocated and freed by the common path.\n    This allows generic private data which applies to multiple files, ",
+        "exists": true,
+        "reason": "The shown function bodies are sufficient to decide. In this commit, `cgroup_pressure_write()` now begins with `struct cgroup_file_ctx *ctx = of->priv;` and later uses `psi_trigger_replace(&ctx->psi.trigger, new);`. Likewise, `cgroup_pressure_poll()` and `cgroup_pressure_release()` dereference `of->priv` through a local `ctx`. The root cause is access to `kernfs_open_file->priv` outside synchronization with `cgroup_file_release()`, allowing concurrent free/clear. This commit explicitly makes `of->priv` point to a heap-allocated `cgroup_file_ctx` in `cgroup_file_open()` via `ctx = kzalloc(...); of->priv = ctx;` and frees it in `cgroup_file_release()` via `struct cgroup_file_ctx *ctx = of->priv; ... kfree(ctx);`. There is no added locking, reference protection, or revalidation around the read of `of->priv` in `cgroup_pressure_write()` before dereferencing `ctx->psi.trigger`. Thus the vulnerable construct remains present: `pressure_write()` still accesses `of->priv` unsafely and the common release path can free that object concurrently. The fix for the described race is not present in this snippet."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "1756d7994ad8",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3633
+        },
+        "commit": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+        "commit_short": "0e94682b73bf",
+        "commit_msg": "psi: introduce psi monitor\n\nPsi monitor aims to provide a low-latency short-term pressure detection\nmechanism configurab",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3557,
+        "code_snippet": "commit 0e94682b73bfa6c44c98af7a26771c9c08c055d5\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Tue May 14 15:41:15 2019 -0700\n\n    psi: introduce psi monitor\n    \n    Psi monitor aims to provide a low-latency short-term pressure detection\n    mechanism configurable by users.  It allows users to monitor psi metrics\n    growth and trigger events whenever a metric raises above user-defined\n    threshold within user-defined time window.\n    \n    Time window and threshold are both expressed i",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full pressure write/poll/release handling introduced by this commit, including all accesses to `of->priv`. The vulnerable construct is present in `cgroup_pressure_write()`: it calls `psi_trigger_replace(&of->priv, new);` directly on `of->priv` with no synchronization against the release path. The root cause states that `pressure_write()` accessed `struct kernfs_open_file->priv` outside proper synchronization with `cgroup_file_release()`, allowing concurrent free/clear. This commit introduces exactly that unsynchronized access pattern. The matching release path is also shown: `static void cgroup_pressure_release(struct kernfs_open_file *of) { psi_trigger_replace(&of->priv, NULL); }`, which can concurrently clear/free the same `of->priv`. Likewise `cgroup_pressure_poll()` passes `&of->priv` to `psi_trigger_poll(&of->priv, of->file, pt);`, reinforcing that this code relies on direct unsynchronized `of->priv` manipulation. There is no visible locking, no grabbing of a `cgroup_file_ctx`, no serialization with release, and no protected access wrapper around `of->priv`. Therefore the bug is present, and the fix is not yet included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "8af0c18af142",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3557
+        },
+        "commit": "76f969e8948d82e78e1bc4beb6b9465908e74873",
+        "commit_short": "76f969e8948d",
+        "commit_msg": "cgroup: cgroup v2 freezer\n\nCgroup v1 implements the freezer controller, which provides an ability\nto stop the workload i",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3555,
+        "code_snippet": "commit 76f969e8948d82e78e1bc4beb6b9465908e74873\nAuthor: Roman Gushchin <roman.gushchin@linux.dev>\nDate:   Fri Apr 19 10:03:04 2019 -0700\n\n    cgroup: cgroup v2 freezer\n    \n    Cgroup v1 implements the freezer controller, which provides an ability\n    to stop the workload in a cgroup and temporarily free up some\n    resources (cpu, io, network bandwidth and, potentially, memory)\n    for some other tasks. Cgroup v2 lacks this functionality.\n    \n    This patch implements freezer for cgroup v2.\n  ",
+        "exists": false,
+        "reason": "The provided function body is a simple seq_file show handler: it gets `struct cgroup *cgrp = seq_css(seq)->cgroup;`, prints `cgrp->freezer.freeze` with `seq_printf(seq, \"%d\\n\", cgrp->freezer.freeze);`, and returns 0. The stated root cause is specifically about `pressure_write()` in the cgroup/psi path accessing `struct kernfs_open_file->priv` without proper synchronization against `cgroup_file_release()`. This snippet does not reference `pressure_write()`, `kernfs_open_file`, `of->priv`, `cgroup_file_ctx`, PSI, or any release/drain synchronization. Therefore the vulnerable construct is absent in this function (`has_bug=false`). There is also no evidence of the specific synchronization fix here (`is_fixed=false`), but the relevant logic is simply not present. The function body is sufficient to determine that this function is unrelated to the described vulnerable construct."
+      }
+    },
+    {
+      "bic_found": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d730905bc3c0",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3936
+        },
+        "commit": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+        "commit_short": "0e94682b73bf",
+        "commit_msg": "psi: introduce psi monitor\n\nPsi monitor aims to provide a low-latency short-term pressure detection\nmechanism configurab",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3556,
+        "code_snippet": "commit 0e94682b73bfa6c44c98af7a26771c9c08c055d5\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Tue May 14 15:41:15 2019 -0700\n\n    psi: introduce psi monitor\n    \n    Psi monitor aims to provide a low-latency short-term pressure detection\n    mechanism configurable by users.  It allows users to monitor psi metrics\n    growth and trigger events whenever a metric raises above user-defined\n    threshold within user-defined time window.\n    \n    Time window and threshold are both expressed i",
+        "exists": true,
+        "reason": "The added function body is sufficient to determine the issue. In `cgroup_pressure_write()`, the code operates on `of->priv` directly via `psi_trigger_replace(&of->priv, new);` after dropping the kernfs/cgroup lock (`cgroup_kn_unlock(of->kn);`). The root cause states that `pressure_write()` accessed `struct kernfs_open_file->priv` outside synchronization with `cgroup_file_release()`, allowing concurrent free/clear during cgroup removal or file drain. This commit introduces exactly that pattern: the write path uses `of->priv` with no visible synchronization against release, while the release callback `cgroup_pressure_release()` also modifies the same field with `psi_trigger_replace(&of->priv, NULL);`. Thus the vulnerable construct is present: concurrent unsynchronized access/replacement of `of->priv` in write and release paths. No fix is present here, because there is no locking, pinning of `of->priv` context, or other coordination between `cgroup_pressure_write()` and `cgroup_pressure_release()`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8af0c18af142",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3556
+        },
+        "commit": "76f969e8948d82e78e1bc4beb6b9465908e74873",
+        "commit_short": "76f969e8948d",
+        "commit_msg": "cgroup: cgroup v2 freezer\n\nCgroup v1 implements the freezer controller, which provides an ability\nto stop the workload i",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3554,
+        "code_snippet": "commit 76f969e8948d82e78e1bc4beb6b9465908e74873\nAuthor: Roman Gushchin <roman.gushchin@linux.dev>\nDate:   Fri Apr 19 10:03:04 2019 -0700\n\n    cgroup: cgroup v2 freezer\n    \n    Cgroup v1 implements the freezer controller, which provides an ability\n    to stop the workload in a cgroup and temporarily free up some\n    resources (cpu, io, network bandwidth and, potentially, memory)\n    for some other tasks. Cgroup v2 lacks this functionality.\n    \n    This patch implements freezer for cgroup v2.\n  ",
+        "exists": false,
+        "reason": "The root cause is specifically about a PSI write path using `struct kernfs_open_file->priv` without proper synchronization against `cgroup_file_release()`, leading to UAF/NULL dereference. In the shown commit, the only newly added write handler is `cgroup_freeze_write()`, and it does not access `of->priv` at all. Instead, it parses input with `kstrtoint(...)`, then obtains the cgroup through `cgroup_kn_lock_live(of->kn, false)`, calls `cgroup_freeze(cgrp, freeze)`, and finally `cgroup_kn_unlock(of->kn)`. There is no dereference of `of->priv`, no PSI `pressure_write()` logic, and no synchronization pattern involving `kernfs_open_file->priv` here. Because the vulnerable construct described in the root cause is absent from this function body, `has_bug` is false. Likewise, the snippet does not show the later fix for the PSI `pressure_write()` race either; it is simply unrelated code, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d730905bc3c0",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3962
+        },
+        "commit": "a06247c6804f1a7c86a2e5398a4c1f1db1471848",
+        "commit_short": "a06247c6804f",
+        "commit_msg": "psi: Fix uaf issue when psi trigger is destroyed while being polled\n\nWith write operation on psi files replacing old tri",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3659,
+        "code_snippet": "commit a06247c6804f1a7c86a2e5398a4c1f1db1471848\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Tue Jan 11 15:23:09 2022 -0800\n\n    psi: Fix uaf issue when psi trigger is destroyed while being polled\n    \n    With write operation on psi files replacing old trigger with a new one,\n    the lifetime of its waitqueue is totally arbitrary. Overwriting an\n    existing trigger causes its waitqueue to be freed and pending poll()\n    will stumble on trigger->event_wait which was destroyed.\n    Fix",
+        "exists": false,
+        "reason": "The shown function body changes are sufficient to assess this commit version. The root cause described is unsafe access to `of->priv` / `ctx` outside synchronization with release, but in the provided snippet the relevant pressure-write logic already contains the fix for the trigger lifetime issue introduced by overwriting an existing trigger on the same file descriptor. Specifically, `cgroup_pressure_write()` now checks `if (ctx->psi.trigger) { ... return -EBUSY; }`, with the comment `/* Allow only one trigger per file descriptor */`, which prevents replacing an existing trigger. The old vulnerable behavior is absent because the previous `psi_trigger_replace(&ctx->psi.trigger, new);` call has been removed and replaced with `smp_store_release(&ctx->psi.trigger, new);`, meaning a new trigger is only installed when none already exists. Also, `cgroup_pressure_release()` no longer does `psi_trigger_replace(&ctx->psi.trigger, NULL);` and instead directly calls `psi_trigger_destroy(ctx->psi.trigger);`, consistent with the commit message's fix. Therefore, this commit version already contains the fix and does not contain the vulnerable construct of redefining/replacing an existing trigger."
+      }
+    },
+    {
+      "bic_found": "a06247c6804f1a7c86a2e5398a4c1f1db1471848",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "0e94682b73bfa6c44c98af7a26771c9c08c055d5": 2,
+        "a06247c6804f1a7c86a2e5398a4c1f1db1471848": 1
+      },
+      "bic_candidates": [
+        "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+        "a06247c6804f1a7c86a2e5398a4c1f1db1471848"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

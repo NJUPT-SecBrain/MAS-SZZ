@@ -1,0 +1,392 @@
+{
+  "cveid": "CVE-2026-53269",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "2fcba19caaeb2a33017459d3430f057967bb91b6"
+  ],
+  "ground_truth_bic": "ad49d86e07a497e834cb06f2b151dccd75f8e148",
+  "predicted_bic": [
+    "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 64266,
+  "root_cause": {
+    "text": "The synproxy hook reference counters (`snet->hook_ref4`/`hook_ref6`) in `nf_synproxy_ipv4_init/fini` and `nf_synproxy_ipv6_init/fini` were updated without any synchronization, allowing concurrent iptables/nftables first-use registration and teardown to race and corrupt the netfilter hook registration state.",
+    "evidence": "The patch adds a global `static DEFINE_MUTEX(synproxy_mutex);` and wraps both `nf_register_net_hooks()`/`nf_unregister_net_hooks()` paths and the `hook_ref4`/`hook_ref6` increments/decrements with `mutex_lock()`/`mutex_unlock()`, and the CVE description explicitly says the hooks are “register[ed] on-demand” and “if done concurrently they can race each other.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/netfilter/nf_synproxy_core.c",
+      "lineno": 771,
+      "content": "if (snet->hook_ref4 == 0) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/netfilter/nf_synproxy_core.c",
+      "lineno": 781,
+      "content": "snet->hook_ref4++;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/netfilter/nf_synproxy_core.c",
+      "lineno": 788,
+      "content": "snet->hook_ref4--;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/netfilter/nf_synproxy_core.c",
+      "lineno": 771,
+      "content": "if (snet->hook_ref4 == 0)",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/netfilter/nf_synproxy_core.c",
+      "lineno": 771,
+      "content": "if (snet->hook_ref6 == 0) {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The synproxy hook reference counters (`snet->hook_ref4`/`hook_ref6`) in `nf_synproxy_ipv4_init/fini` and `nf_synproxy_ipv6_init/fini` were updated without any synchronization, allowing concurrent iptables/nftables first-use registration and teardown to race and corrupt the netfilter hook registration state.",
+      "evidence_points": "The patch adds a global `static DEFINE_MUTEX(synproxy_mutex);` and wraps both `nf_register_net_hooks()`/`nf_unregister_net_hooks()` paths and the `hook_ref4`/`hook_ref6` increments/decrements with `mutex_lock()`/`mutex_unlock()`, and the CVE description explicitly says the hooks are “register[ed] on-demand” and “if done concurrently they can race each other.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/netfilter/nf_synproxy_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/netfilter/nf_synproxy_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/netfilter/nf_synproxy_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a mutex to protect synproxy operations from concurrent access.",
+        "what": "A new file-scope mutex is declared with `static DEFINE_MUTEX(synproxy_mutex);` near the existing synproxy netfilter declarations.",
+        "how": "This adds a shared lock that can be used to serialize access to synproxy-related code paths, preventing concurrent execution from racing on shared state or initialization paths."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect IPv4 synproxy hook reference management with a mutex to fix races in hook registration and unregistration.",
+        "what": "The IPv4 synproxy init and fini functions were wrapped with synproxy_mutex locking and unlocking. In nf_synproxy_ipv4_init(), the error variable was initialized to 0, registration failure now jumps to a common unlock/return path instead of returning immediately, and the function returns err after unlocking. In nf_synproxy_ipv4_fini(), a mutex lock is taken before decrementing hook_ref4 and conditionally unregistering hooks, and the mutex is released afterward.",
+        "how": "This change serializes updates to hook_ref4 and the corresponding net hook registration/unregistration, preventing races between concurrent init and fini callers. It ensures that hook registration is only performed once when the first reference is added and that unregistration happens safely when the last reference is removed, avoiding inconsistent reference counts or double register/unregister behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Serialize IPv6 synproxy hook registration and teardown with a mutex to prevent races in hook reference counting and net hook management.",
+        "what": "The IPv6 synproxy init function now initializes `err` to 0, acquires `synproxy_mutex` before checking and updating `hook_ref6`, and uses a `goto out` path to release the mutex before returning on registration failure. The fini function now also acquires `synproxy_mutex` before decrementing `hook_ref6` and potentially unregistering hooks, then releases the mutex afterward.",
+        "how": "This makes the IPv6 hook reference count updates and hook registration/unregistration mutually exclusive, preventing concurrent init/fini races that could lead to double registration, double unregistration, or inconsistent `hook_ref6` state. It also preserves correct error propagation if hook registration fails."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a mutex to protect synproxy operations from concurrent access."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Protect IPv4 synproxy hook reference management with a mutex to fix races in hook registration and unregistration."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Serialize IPv6 synproxy hook registration and teardown with a mutex to prevent races in hook reference counting and net hook management."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change explicitly adds a mutex to protect synproxy operations from concurrent access, which directly addresses the unsynchronized updates to the synproxy hook reference counters and the resulting race condition in hook registration state."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the reported race in synproxy hook reference counting by adding synchronization around IPv4 hook registration/unregistration, which matches the vulnerability root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the reported race in synproxy hook reference counting and hook registration by adding mutex-based serialization for IPv6 registration/teardown, which matches the vulnerability root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/netfilter/nf_synproxy_core.c",
+            "lineno": 771,
+            "content": "if (snet->hook_ref4 == 0) {",
+            "rationale": "This first-use check is part of the unsynchronized hook reference management; concurrent callers can both observe zero and race into double registration or inconsistent state."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/netfilter/nf_synproxy_core.c",
+            "lineno": 781,
+            "content": "snet->hook_ref4++;",
+            "rationale": "The reference counter is incremented without any locking, so concurrent init/teardown can corrupt hook_ref4 and break the register/unregister balance."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/netfilter/nf_synproxy_core.c",
+            "lineno": 788,
+            "content": "snet->hook_ref4--;",
+            "rationale": "The decrement is also unsynchronized, allowing races with concurrent init/fini paths that can underflow the counter or trigger premature unregistration."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/netfilter/nf_synproxy_core.c",
+            "lineno": 774,
+            "content": "if (snet->hook_ref4 == 0)",
+            "rationale": "This zero check controls teardown without synchronization, so racing updates can cause unregister to run at the wrong time or multiple times."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/netfilter/nf_synproxy_core.c",
+            "lineno": 771,
+            "content": "if (snet->hook_ref6 == 0) {",
+            "rationale": "The IPv6 first-use registration check is similarly unsynchronized, enabling concurrent registration races on the hook reference counter."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/netfilter/nf_synproxy_core.c",
+            "stmt_text": "if (snet->hook_ref4 == 0) {",
+            "location": "hunk",
+            "explanation": "This first-use check is performed without synchronization, so concurrent callers can both see zero and race into hook registration, corrupting the IPv4 hook reference state."
+          },
+          {
+            "vuln_file": "net/netfilter/nf_synproxy_core.c",
+            "stmt_text": "snet->hook_ref4++;",
+            "location": "hunk",
+            "explanation": "The IPv4 hook reference counter is incremented without locking, allowing races between init and fini paths that can corrupt the registration balance."
+          },
+          {
+            "vuln_file": "net/netfilter/nf_synproxy_core.c",
+            "stmt_text": "snet->hook_ref4--;",
+            "location": "hunk",
+            "explanation": "The IPv4 hook reference counter is decremented without synchronization, which can race with concurrent updates and lead to premature unregistration or counter corruption."
+          },
+          {
+            "vuln_file": "net/netfilter/nf_synproxy_core.c",
+            "stmt_text": "if (snet->hook_ref4 == 0)",
+            "location": "hunk",
+            "explanation": "This teardown zero-check is unsynchronized, so concurrent updates can cause unregister to happen at the wrong time or more than once."
+          },
+          {
+            "vuln_file": "net/netfilter/nf_synproxy_core.c",
+            "stmt_text": "if (snet->hook_ref6 == 0) {",
+            "location": "hunk",
+            "explanation": "This IPv6 first-use registration check is also unsynchronized, enabling concurrent callers to race and corrupt the hook reference management state."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "36d29ceec32c",
+          "anchor_file": "net/netfilter/nf_synproxy_core.c",
+          "anchor_lineno": 771
+        },
+        "commit": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+        "commit_short": "d7f9b2f18eae",
+        "commit_msg": "netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n\nAdd common functions into nf_synproxy_co",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_synproxy_core.c",
+        "display_lineno": 790,
+        "code_snippet": "commit d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d\nAuthor: Fernando Fernandez Mancera <ffmancera@riseup.net>\nDate:   Fri Jun 7 02:36:07 2019 +0200\n\n    netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n    \n    Add common functions into nf_synproxy_core.c to prepare for nftables support.\n    The prototypes of the functions used by {ipt, ip6t}_SYNPROXY are in the new\n    file nf_synproxy.h\n    \n    Signed-off-by: Fernando Fernandez Mancera <ffmancera@riseup.net>\n    Sign",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the unsynchronized update of the synproxy hook reference counters (`snet->hook_ref4` / `snet->hook_ref6`) in init/fini paths. This snippet shows those exact functions, e.g. `if (snet->hook_ref4 == 0) { ... nf_register_net_hooks(...); } snet->hook_ref4++;` and `snet->hook_ref4--; if (snet->hook_ref4 == 0) nf_unregister_net_hooks(...);` (same pattern for IPv6). There is no locking, atomic operation, or other synchronization around the counter updates. However, this commit is an extraction/refactor and the code shown does not indicate the concurrent first-use registration/teardown race condition itself being introduced or exercised here; it only reveals the later-prone reference counting pattern. Since the vulnerable race is about concurrent registration/teardown state corruption and the shown body lacks the larger context of who calls these functions and under what concurrency, the diff alone is not enough to conclusively label this specific commit as bug-introducing for that race."
+      }
+    },
+    {
+      "bic_found": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "36d29ceec32c",
+          "anchor_file": "net/netfilter/nf_synproxy_core.c",
+          "anchor_lineno": 781
+        },
+        "commit": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+        "commit_short": "d7f9b2f18eae",
+        "commit_msg": "netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n\nAdd common functions into nf_synproxy_co",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_synproxy_core.c",
+        "display_lineno": 800,
+        "code_snippet": "commit d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d\nAuthor: Fernando Fernandez Mancera <ffmancera@riseup.net>\nDate:   Fri Jun 7 02:36:07 2019 +0200\n\n    netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n    \n    Add common functions into nf_synproxy_core.c to prepare for nftables support.\n    The prototypes of the functions used by {ipt, ip6t}_SYNPROXY are in the new\n    file nf_synproxy.h\n    \n    Signed-off-by: Fernando Fernandez Mancera <ffmancera@riseup.net>\n    Sign",
+        "exists": true,
+        "reason": "The snippet clearly contains the vulnerable first-use registration/teardown counters updated without synchronization. In IPv4: `if (snet->hook_ref4 == 0) { err = nf_register_net_hooks(...); ... } snet->hook_ref4++;` and `nf_synproxy_ipv4_fini()` does `snet->hook_ref4--; if (snet->hook_ref4 == 0) nf_unregister_net_hooks(...)`. IPv6 has the same pattern with `hook_ref6`. There is no locking, atomic operation, or other synchronization around these increments/decrements, so concurrent init/fini calls can race exactly as described. The fix is not present here because the code still uses plain `++/--` and `== 0` checks with no protection."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "36d29ceec32c",
+          "anchor_file": "net/netfilter/nf_synproxy_core.c",
+          "anchor_lineno": 788
+        },
+        "commit": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+        "commit_short": "d7f9b2f18eae",
+        "commit_msg": "netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n\nAdd common functions into nf_synproxy_co",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_synproxy_core.c",
+        "display_lineno": 807,
+        "code_snippet": "commit d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d\nAuthor: Fernando Fernandez Mancera <ffmancera@riseup.net>\nDate:   Fri Jun 7 02:36:07 2019 +0200\n\n    netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n    \n    Add common functions into nf_synproxy_core.c to prepare for nftables support.\n    The prototypes of the functions used by {ipt, ip6t}_SYNPROXY are in the new\n    file nf_synproxy.h\n    \n    Signed-off-by: Fernando Fernandez Mancera <ffmancera@riseup.net>\n    Sign",
+        "exists": false,
+        "reason": "The provided function bodies show the new common SYNPROXY infrastructure and the IPv4/IPv6 init/fini helpers, including the hook reference counter updates. However, the vulnerable race described in the root cause is about unsynchronized concurrent registration/teardown of `snet->hook_ref4`/`hook_ref6` in `nf_synproxy_ipv4_init/fini` and `nf_synproxy_ipv6_init/fini`. In this snippet those functions are present and still do plain, unsynchronized increments/decrements: `if (snet->hook_ref4 == 0) { ... } snet->hook_ref4++;` and `snet->hook_ref4--; if (snet->hook_ref4 == 0) nf_unregister_net_hooks(...)` (same pattern for `hook_ref6`). Since there is no locking, atomic operation, or other synchronization visible, the race-prone construct is present. But this commit is the extraction commit introducing these helpers, not the fix, so the code does not already contain corrective handling."
+      }
+    },
+    {
+      "bic_found": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "36d29ceec32c",
+          "anchor_file": "net/netfilter/nf_synproxy_core.c",
+          "anchor_lineno": 771
+        },
+        "commit": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+        "commit_short": "d7f9b2f18eae",
+        "commit_msg": "netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n\nAdd common functions into nf_synproxy_co",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_synproxy_core.c",
+        "display_lineno": 790,
+        "code_snippet": "commit d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d\nAuthor: Fernando Fernandez Mancera <ffmancera@riseup.net>\nDate:   Fri Jun 7 02:36:07 2019 +0200\n\n    netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n    \n    Add common functions into nf_synproxy_core.c to prepare for nftables support.\n    The prototypes of the functions used by {ipt, ip6t}_SYNPROXY are in the new\n    file nf_synproxy.h\n    \n    Signed-off-by: Fernando Fernandez Mancera <ffmancera@riseup.net>\n    Sign",
+        "exists": true,
+        "reason": "The snippet clearly shows the vulnerable reference-counter pattern in the new common init/fini helpers. In both IPv4 and IPv6 paths, the hook registration is guarded only by an unsynchronized counter check: `if (snet->hook_ref4 == 0) { err = nf_register_net_hooks(...); ... }` followed by `snet->hook_ref4++;`, and similarly `if (snet->hook_ref6 == 0) { ... }` followed by `snet->hook_ref6++;`. The teardown is also unsynchronized: `snet->hook_ref4--; if (snet->hook_ref4 == 0) nf_unregister_net_hooks(...)` and the same for `hook_ref6`. This matches the root cause exactly: concurrent first-use registration/teardown can race and corrupt netfilter hook state. There is no locking, atomic operation, or other synchronization present here, so the fix is not yet included in this commit."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "36d29ceec32c",
+          "anchor_file": "net/netfilter/nf_synproxy_core.c",
+          "anchor_lineno": 771
+        },
+        "commit": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+        "commit_short": "d7f9b2f18eae",
+        "commit_msg": "netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n\nAdd common functions into nf_synproxy_co",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_synproxy_core.c",
+        "display_lineno": 790,
+        "code_snippet": "commit d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d\nAuthor: Fernando Fernandez Mancera <ffmancera@riseup.net>\nDate:   Fri Jun 7 02:36:07 2019 +0200\n\n    netfilter: synproxy: extract SYNPROXY infrastructure from {ipt, ip6t}_SYNPROXY\n    \n    Add common functions into nf_synproxy_core.c to prepare for nftables support.\n    The prototypes of the functions used by {ipt, ip6t}_SYNPROXY are in the new\n    file nf_synproxy.h\n    \n    Signed-off-by: Fernando Fernandez Mancera <ffmancera@riseup.net>\n    Sign",
+        "exists": true,
+        "reason": "The snippet clearly contains the vulnerable refcount updates with no synchronization. In both IPv4 and IPv6 init/fini paths, the code does a check-then-act on shared counters: `if (snet->hook_ref4 == 0) { err = nf_register_net_hooks(...); }` followed by `snet->hook_ref4++;`, and `snet->hook_ref4--; if (snet->hook_ref4 == 0) nf_unregister_net_hooks(...)`. The same pattern appears for IPv6 with `hook_ref6`. This matches the root cause: concurrent first-use registration and teardown can race and corrupt hook registration state. There is no locking, atomic operation, or other synchronization in these functions, so the fix is not present here."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d": 5
+      },
+      "bic_candidates": [
+        "d7f9b2f18eaef74b4f948c7e24e3a8f796f0c90d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

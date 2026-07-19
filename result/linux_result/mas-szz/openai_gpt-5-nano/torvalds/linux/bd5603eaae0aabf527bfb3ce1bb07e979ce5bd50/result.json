@@ -1,0 +1,398 @@
+{
+  "cveid": "CVE-2025-68821",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "bd5603eaae0aabf527bfb3ce1bb07e979ce5bd50"
+  ],
+  "ground_truth_bic": "e26ee4efbc79610b20e7abe9d96c87f33dacc1ff",
+  "predicted_bic": [
+    "7678ac50615d9c7a491d9861e020e4f5f71b594c",
+    "e26ee4efbc79610b20e7abe9d96c87f33dacc1ff"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 32461,
+  "root_cause": {
+    "text": "In FUSE file open/release handling, commit e26ee4efbc79 made regular files with `fc->no_open` skip allocating `ff->args->release_args`, so `fuse_prepare_release()` no longer held an inode reference for in-flight readahead, allowing the inode to be evicted during reclaim and deadlocking in `fuse_evict_inode()`.",
+    "evidence": "The commit message explicitly says \"`fuse_prepare_release()` now skips grabbing the reference on the inode,\" making eviction possible during inflight readahead, and the patch changes `fuse_file_open()` from `fuse_file_alloc(fm, open)` to `fuse_file_alloc(fm, release)` with a comment that `release_args` must still be allocated \"so we can hold an inode reference ... even if `fc->no_open` is set\" to prevent reclaim deadlock.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/fuse/file.c",
+      "lineno": 135,
+      "content": "ff = fuse_file_alloc(fm, open);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fuse/file.c",
+      "lineno": 156,
+      "content": "kfree(ff->args);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fuse/file.c",
+      "lineno": 157,
+      "content": "ff->args = NULL;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In FUSE file open/release handling, commit e26ee4efbc79 made regular files with `fc->no_open` skip allocating `ff->args->release_args`, so `fuse_prepare_release()` no longer held an inode reference for in-flight readahead, allowing the inode to be evicted during reclaim and deadlocking in `fuse_evict_inode()`.",
+      "evidence_points": "The commit message explicitly says \"`fuse_prepare_release()` now skips grabbing the reference on the inode,\" making eviction possible during inflight readahead, and the patch changes `fuse_file_open()` from `fuse_file_alloc(fm, open)` to `fuse_file_alloc(fm, release)` with a comment that `release_args` must still be allocated \"so we can hold an inode reference ... even if `fc->no_open` is set\" to prevent reclaim deadlock."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/fuse/file.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/fuse/file.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/fuse/file.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle FUSE_RELEASE locally when no_open is enabled and correct the related opendir comment.",
+        "what": "The diff updates a comment in fuse_file_put() to say 'opendir' instead of 'open' for the !args case, and adds a new conditional branch before the sync check: when args->opcode == FUSE_RELEASE and ff->fm->fc->no_open is true, it calls fuse_release_end(ff->fm, args, 0) directly.",
+        "how": "At runtime, release handling now explicitly completes FUSE_RELEASE requests locally when the filesystem connection indicates no open support, instead of falling through to the normal synchronous or asynchronous request path. This prevents attempting a server-side release operation in the no_open case while still finalizing local release bookkeeping. The comment correction also aligns the documented behavior with the actual opendir-related case."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Allocate FUSE file release state even when open is skipped so pending file operations retain inode references and reclaim deadlocks are avoided.",
+        "what": "A new boolean variable `release` is introduced and set to `!isdir || open`, and the call to `fuse_file_alloc()` is changed from passing `open` to passing `release`; an explanatory comment is also added describing why release arguments must still be allocated even when `fc->no_open` is set.",
+        "how": "This makes `fuse_file_alloc()` allocate release-related state for non-directory files even when the open operation is skipped due to `fc->no_open`, ensuring release handling can still hold the inode reference during pending in-flight operations and preventing a reclaim-induced deadlock during scenarios such as readahead."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix incorrect cleanup on unsupported open handling by freeing `ff->args` only for directory opens while still marking unsupported open/opendir operations.",
+        "what": "The code changes the else branch after a failed open/opendir request probe by moving the `kfree(ff->args); ff->args = NULL;` cleanup so it executes only inside the `if (isdir)` block, while `fc->no_opendir = 1` remains in that block and `fc->no_open = 1` remains in the `else` block with added braces around both branches.",
+        "how": "At runtime, argument storage for `ff->args` is now freed only when handling the directory-open case (`isdir`), instead of being freed for both directory and non-directory cases. This preserves `ff->args` for regular file opens while still disabling future unsupported operations via `fc->no_opendir` or `fc->no_open`, preventing incorrect cleanup/state loss in the non-directory path."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Allocate FUSE file release state even when open is skipped so pending file operations retain inode references and reclaim deadlocks are avoided."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix incorrect cleanup on unsupported open handling by freeing `ff->args` only for directory opens while still marking unsupported open/opendir operations."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure FUSE release handling works correctly when open/opendir is skipped by creating and handling local release state so inode references are preserved and related deadlock risks are avoided.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: when no_open/opendir skips open, release state was not allocated/handled, so release lacked the inode reference needed for in-flight operations. Adding local release handling and allocating release state preserves inode references and prevents the reclaim/deadlock scenario described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly concerns unsupported FUSE open handling and `ff->args` lifetime. Since the root cause is that `no_open` regular-file opens stopped allocating/retaining release-related state in `ff->args`, causing missing inode references during release, a fix that changes when `ff->args` is freed for unsupported open/opendir handling is directly tied to that bug."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/fuse/file.c",
+            "lineno": 135,
+            "content": "ff = fuse_file_alloc(fm, open);",
+            "rationale": "Passing 'open' into fuse_file_alloc() makes regular files with fc->no_open skip allocating release state when open is unsupported. That omission means no release_args/inode reference is retained for in-flight readahead, enabling inode eviction and the deadlock described."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/fuse/file.c",
+            "lineno": 156,
+            "content": "kfree(ff->args);",
+            "rationale": "This explicitly frees the per-file args/release state in the unsupported-open path, reinforcing the lack of release handling state for no_open files and contributing directly to loss of the inode reference needed during pending I/O."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/fuse/file.c",
+            "lineno": 157,
+            "content": "ff->args = NULL;",
+            "rationale": "Nulling ff->args after freeing it removes any possibility of later release preparation carrying inode references for files whose open was skipped, matching the root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/fuse/file.c",
+            "stmt_text": "ff = fuse_file_alloc(fm, open);",
+            "location": "hunk",
+            "explanation": "This statement passes the runtime 'open' flag into fuse_file_alloc(), causing regular files in the fc->no_open case to skip allocation of ff->args/release_args. As a result, fuse_prepare_release() cannot retain the inode reference needed while readahead or other I/O is still in flight, enabling inode eviction and the reclaim deadlock."
+          },
+          {
+            "vuln_file": "fs/fuse/file.c",
+            "stmt_text": "kfree(ff->args);",
+            "location": "hunk",
+            "explanation": "In the unsupported-open path, this frees the per-file args structure that would otherwise carry release state, including the mechanism later used to hold an inode reference for pending operations. That directly contributes to the missing release handling for no_open files described in the root cause."
+          },
+          {
+            "vuln_file": "fs/fuse/file.c",
+            "stmt_text": "ff->args = NULL;",
+            "location": "hunk",
+            "explanation": "After freeing ff->args, this clears the pointer and ensures no release state remains available. That prevents later release preparation from preserving an inode reference for files whose open was skipped, matching the root cause of inode eviction during in-flight readahead."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e9a6fb0bcdd7",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 135
+        },
+        "commit": "e26ee4efbc79610b20e7abe9d96c87f33dacc1ff",
+        "commit_short": "e26ee4efbc79",
+        "commit_msg": "fuse: allocate ff->release_args only if release is needed\n\nThis removed the need to pass isdir argument to fuse_put_file",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 139,
+        "code_snippet": "commit e26ee4efbc79610b20e7abe9d96c87f33dacc1ff\nAuthor: Amir Goldstein <amir73il@gmail.com>\nDate:   Thu Feb 1 15:30:05 2024 +0200\n\n    fuse: allocate ff->release_args only if release is needed\n    \n    This removed the need to pass isdir argument to fuse_put_file().\n    \n    Signed-off-by: Amir Goldstein <amir73il@gmail.com>\n    Signed-off-by: Miklos Szeredi <mszeredi@redhat.com>\n\ndiff --git a/fs/fuse/file.c b/fs/fuse/file.c\nindex 1b403350a5d5..bdda420f5acf 100644\n--- a/fs/fuse/file.c\n+++ b/fs/f",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the exact open/release allocation and inode-holding logic. The vulnerable construct is present: `fuse_file_alloc()` now allocates `ff->release_args` only when `release` is true, and `fuse_file_open()` sets `bool open = isdir ? !fc->no_opendir : !fc->no_open;` then calls `ff = fuse_file_alloc(fm, open);`. For regular files with `fc->no_open` set, `open` is false, so `ff->release_args` is not allocated. Later, `fuse_prepare_release()` explicitly does `struct fuse_release_args *ra = ff->release_args;` and then `if (!ra) return;`, so no release args are prepared and, critically, the inode reference is not taken. The inode-holding fix would be the `ra->inode = sync ? NULL : igrab(&fi->inode);` path being executed for in-flight async release/readahead cases, but here that code is skipped entirely when `ra` is NULL. This matches the root cause: for `fc->no_open` regular files, release args are skipped, so `fuse_prepare_release()` no longer holds an inode reference, allowing eviction during reclaim. Therefore the bug is introduced here and the fix is not present in this commit version."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0c9d708953d0",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 139
+        },
+        "commit": "91fe96b403f8a0a4a8a045a39b1bd549b0da7941",
+        "commit_short": "91fe96b403f8",
+        "commit_msg": "fuse: create fuse_do_open() helper for CUSE\n\nCreate a helper for sending an OPEN request that doesn't need a struct\ninod",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 115,
+        "code_snippet": "commit 91fe96b403f8a0a4a8a045a39b1bd549b0da7941\nAuthor: Miklos Szeredi <mszeredi@suse.cz>\nDate:   Tue Apr 28 16:56:37 2009 +0200\n\n    fuse: create fuse_do_open() helper for CUSE\n    \n    Create a helper for sending an OPEN request that doesn't need a struct\n    inode pointer.\n    \n    Signed-off-by: Miklos Szeredi <mszeredi@suse.cz>\n\ndiff --git a/fs/fuse/file.c b/fs/fuse/file.c\nindex d9458cace425..6bdaa55ae613 100644\n--- a/fs/fuse/file.c\n+++ b/fs/fuse/file.c\n@@ -15,10 +15,9 @@\n \n static const st",
+        "exists": false,
+        "reason": "The shown helper only allocates and initializes a `struct fuse_file` and sends the OPEN request: `ff = fuse_file_alloc(fc);`, `err = fuse_send_open(fc, nodeid, file, opcode, &outarg);`, then stores `fh`, `nodeid`, and `open_flags` into `ff` and assigns `file->private_data = fuse_file_get(ff);`. The root cause described is specifically about release handling: regular files with `fc->no_open` skipping allocation of `ff->args->release_args`, which means `fuse_prepare_release()` would not hold an inode reference. This function does not reference `fc->no_open`, does not allocate or skip `ff->args->release_args`, and does not contain release-path logic or inode ref handling. Therefore the vulnerable construct is absent from this function body. Likewise, the fix is also not present here, because there is no corrective handling related to release args or inode references in this helper."
+      }
+    },
+    {
+      "bic_found": "e26ee4efbc79610b20e7abe9d96c87f33dacc1ff",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e9a6fb0bcdd7",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 156
+        },
+        "commit": "fc8ff397b2a91590031ae08534de627f957005cb",
+        "commit_short": "fc8ff397b2a9",
+        "commit_msg": "fuse: prepare for opening file in passthrough mode\n\nIn preparation for opening file in passthrough mode, store the\nfuse_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 156,
+        "code_snippet": "commit fc8ff397b2a91590031ae08534de627f957005cb\nAuthor: Amir Goldstein <amir73il@gmail.com>\nDate:   Fri Feb 9 17:03:55 2024 +0200\n\n    fuse: prepare for opening file in passthrough mode\n    \n    In preparation for opening file in passthrough mode, store the\n    fuse_open_out argument in ff->args to be passed into fuse_file_io_open()\n    with the optional backing_id member.\n    \n    This will be used for setting up passthrough to backing file on open\n    reply with FOPEN_PASSTHROUGH flag and a va",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the exact allocation/freeing and release-preparation logic relevant to the root cause. This commit changes release argument storage from a dedicated allocation to `ff->args`. In `fuse_file_alloc()`, when `release` is true, it now allocates only `ff->args` (`ff->args = kzalloc(sizeof(*ff->args), GFP_KERNEL_ACCOUNT);`) instead of `ff->release_args`. In `fuse_file_open()`, on `-ENOSYS` (the no-open path), it explicitly frees and nulls that storage: `kfree(ff->args); ff->args = NULL;` and sets `fc->no_open = 1` for regular files. However, later code still assumes release args exist via `struct fuse_release_args *ra = &ff->args->release_args;` in both `fuse_prepare_release()` and `fuse_file_release()`. The intended inode-holding logic is in `fuse_prepare_release()`: `ra->inode = igrab(&fi->inode);`, which is exactly the protection described in the root cause. But because the no-open path sets `ff->args = NULL`, regular files with `fc->no_open` no longer have allocated `release_args`, so that inode reference cannot be retained for in-flight release/readahead handling. There is no fix here to preserve/allocate release args for the no-open case; instead the commit keeps the vulnerable behavior by dropping `ff->args` entirely on `-ENOSYS`. Therefore the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "44350256ab94",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 156
+        },
+        "commit": "7678ac50615d9c7a491d9861e020e4f5f71b594c",
+        "commit_short": "7678ac50615d",
+        "commit_msg": "fuse: support clients that don't implement 'open'\n\nopen/release operations require userspace transitions to keep track\no",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 171,
+        "code_snippet": "commit 7678ac50615d9c7a491d9861e020e4f5f71b594c\nAuthor: Andrew Gallagher <agallagher@fb.com>\nDate:   Tue Nov 5 16:05:52 2013 +0100\n\n    fuse: support clients that don't implement 'open'\n    \n    open/release operations require userspace transitions to keep track\n    of the open count and to perform any FS-specific setup.  However,\n    for some purely read-only FSs which don't need to perform any setup\n    at open/release time, we can avoid the performance overhead of\n    calling into userspace f",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact open-path logic for the `fc->no_open` case. The vulnerable construct is present: when `!fc->no_open || isdir` is false for a regular file with `fc->no_open` set, the function skips the normal open/userspace path entirely and just leaves the default fields set (`ff->fh = 0;` and `ff->open_flags = FOPEN_KEEP_CACHE; /* Default for no-open */`). In that path, the code only does `ff->nodeid = nodeid;` and `file->private_data = fuse_file_get(ff);` before returning, with no handling that would allocate/setup release tracking for later `fuse_prepare_release()`. This matches the root cause description: regular files with `fc->no_open` skip the open/release setup needed so release args are not allocated, meaning no inode reference is held for in-flight readahead. There is no visible fix in this function for the `fc->no_open` regular-file path—no alternate release-arg allocation, no inode reference acquisition, and no special handling before `return 0;`—so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "451418fc928b",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 171
+        },
+        "commit": "91fe96b403f8a0a4a8a045a39b1bd549b0da7941",
+        "commit_short": "91fe96b403f8",
+        "commit_msg": "fuse: create fuse_do_open() helper for CUSE\n\nCreate a helper for sending an OPEN request that doesn't need a struct\ninod",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 131,
+        "code_snippet": "commit 91fe96b403f8a0a4a8a045a39b1bd549b0da7941\nAuthor: Miklos Szeredi <mszeredi@suse.cz>\nDate:   Tue Apr 28 16:56:37 2009 +0200\n\n    fuse: create fuse_do_open() helper for CUSE\n    \n    Create a helper for sending an OPEN request that doesn't need a struct\n    inode pointer.\n    \n    Signed-off-by: Miklos Szeredi <mszeredi@suse.cz>\n\ndiff --git a/fs/fuse/file.c b/fs/fuse/file.c\nindex d9458cace425..6bdaa55ae613 100644\n--- a/fs/fuse/file.c\n+++ b/fs/fuse/file.c\n@@ -15,10 +15,9 @@\n \n static const st",
+        "exists": false,
+        "reason": "The root cause concerns later FUSE logic where regular files with `fc->no_open` skip allocating `ff->args->release_args`, which in turn breaks inode reference holding in `fuse_prepare_release()`. This snippet only shows open-path refactoring: introduction of `fuse_do_open()`, the changed `fuse_send_open()` signature, and `fuse_open_common()` calling `fuse_do_open()`. There is no `fc->no_open` check anywhere in the shown code, no `release_args` allocation or omission, and no `fuse_prepare_release()` logic. The open path here still allocates a `struct fuse_file` via `ff = fuse_file_alloc(fc);` and sets `file->private_data = fuse_file_get(ff);`, but that is not the vulnerable construct described. Therefore the vulnerable construct is absent from this function body/diff, so `has_bug` is false. The fix is also not present, because there is no code here adding the missing release/inode-reference handling tied to `fc->no_open` and `fuse_prepare_release()`."
+      }
+    },
+    {
+      "bic_found": "7678ac50615d9c7a491d9861e020e4f5f71b594c",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e9a6fb0bcdd7",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 157
+        },
+        "commit": "fc8ff397b2a91590031ae08534de627f957005cb",
+        "commit_short": "fc8ff397b2a9",
+        "commit_msg": "fuse: prepare for opening file in passthrough mode\n\nIn preparation for opening file in passthrough mode, store the\nfuse_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 157,
+        "code_snippet": "commit fc8ff397b2a91590031ae08534de627f957005cb\nAuthor: Amir Goldstein <amir73il@gmail.com>\nDate:   Fri Feb 9 17:03:55 2024 +0200\n\n    fuse: prepare for opening file in passthrough mode\n    \n    In preparation for opening file in passthrough mode, store the\n    fuse_open_out argument in ff->args to be passed into fuse_file_io_open()\n    with the optional backing_id member.\n    \n    This will be used for setting up passthrough to backing file on open\n    reply with FOPEN_PASSTHROUGH flag and a va",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the exact allocation/freeing and release-preparation logic relevant to whether release_args exists and whether fuse_prepare_release() can hold an inode reference. This commit changes allocation from a dedicated release_args object to a generic ff->args object: in fuse_file_alloc(), when release is true, it now does `ff->args = kzalloc(sizeof(*ff->args), GFP_KERNEL_ACCOUNT);` instead of allocating `ff->release_args`. In fuse_file_open(), on `-ENOSYS` (the no_open case), it explicitly frees that storage and nulls it: `kfree(ff->args); ff->args = NULL; ... fc->no_open = 1;`. Later, fuse_prepare_release() assumes release args live inside `ff->args` via `struct fuse_release_args *ra = &ff->args->release_args;`, but then immediately has `if (!ra) return;`, which is ineffective because `ra` is the address of a subfield expression, not a check of `ff->args`. More importantly for the root cause, after the no_open path sets `ff->args = NULL`, there is no allocated `release_args` storage preserved for regular files with `fc->no_open`. Thus the release path no longer has valid dedicated release_args storage to retain `ra->inode = igrab(&fi->inode);` for in-flight release/readahead lifetime management. This matches the stated root cause: regular files with no_open skip/lose allocation of release_args. The fix is not present here; instead, this commit contains the problematic behavior by freeing and nulling `ff->args` in the no_open case rather than ensuring release_args remains available."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "44350256ab94",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 157
+        },
+        "commit": "d9a9ea94f748f47b1d75c6c5e33edcf74476c445",
+        "commit_short": "d9a9ea94f748",
+        "commit_msg": "fuse: support clients that don't implement 'opendir'\n\nAllow filesystems to return ENOSYS from opendir, preventing the ke",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 137,
+        "code_snippet": "commit d9a9ea94f748f47b1d75c6c5e33edcf74476c445\nAuthor: Chad Austin <chadaustin@fb.com>\nDate:   Mon Jan 7 16:53:17 2019 -0800\n\n    fuse: support clients that don't implement 'opendir'\n    \n    Allow filesystems to return ENOSYS from opendir, preventing the kernel from\n    sending opendir and releasedir messages in the future. This avoids\n    userspace transitions when filesystems don't need to keep track of state\n    per directory handle.\n    \n    A new capability flag, FUSE_NO_OPENDIR_SUPPORT, ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the open/no-open handling that is central to the root cause. In `fuse_do_open()`, the regular-file path still skips open handling when `fc->no_open` is set: `if (isdir ? !fc->no_opendir : !fc->no_open) { ... }`, meaning for non-directories the condition remains controlled by `!fc->no_open`. If open is skipped for regular files, `ff->open_flags` is left at the default and no normal open/release setup is performed. In `fuse_file_put()`, the regular-file no-open path still drops the release request entirely: `if (isdir ? ff->fc->no_opendir : ff->fc->no_open) { /* Drop the release request when client does not implement 'open' */ fuse_request_free(req); kfree(ff); }`. For non-directories this is equivalent to the old `ff->fc->no_open` behavior. The described fix would require preserving correct release/inode-reference handling for regular files even when `no_open` is set; this commit does not add such handling and only extends the same skip/drop logic to directories via `no_opendir`. Therefore the vulnerable construct is present for regular files, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "2f7b6f5bed01",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 137
+        },
+        "commit": "7678ac50615d9c7a491d9861e020e4f5f71b594c",
+        "commit_short": "7678ac50615d",
+        "commit_msg": "fuse: support clients that don't implement 'open'\n\nopen/release operations require userspace transitions to keep track\no",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 173,
+        "code_snippet": "commit 7678ac50615d9c7a491d9861e020e4f5f71b594c\nAuthor: Andrew Gallagher <agallagher@fb.com>\nDate:   Tue Nov 5 16:05:52 2013 +0100\n\n    fuse: support clients that don't implement 'open'\n    \n    open/release operations require userspace transitions to keep track\n    of the open count and to perform any FS-specific setup.  However,\n    for some purely read-only FSs which don't need to perform any setup\n    at open/release time, we can avoid the performance overhead of\n    calling into userspace f",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact open/release handling introduced by this commit. The vulnerable construct is present in both `fuse_do_open()` and `fuse_file_put()`. In `fuse_do_open()`, when `!fc->no_open || isdir` is false, or when `fuse_send_open()` returns `-ENOSYS` for a non-directory, the code sets `ff->fh = 0; ff->open_flags = FOPEN_KEEP_CACHE;` and may set `fc->no_open = 1`, but it does not show any special preparation of release state for this no-open case. In `fuse_file_put()`, the new branch `if (ff->fc->no_open) { ... path_put(&req->misc.release.path); fuse_put_request(ff->fc, req); }` explicitly drops the release request instead of sending it. This matches the root cause: for regular files with `fc->no_open`, open/release handling is bypassed, so the normal release request bookkeeping is skipped. The fix described in the root cause would require still allocating/preparing `ff->args->release_args` (or equivalent inode-ref-holding release state) even when `no_open` is active, so that `fuse_prepare_release()` retains the inode reference during in-flight readahead. No such protective handling appears here; instead the code optimizes away open/release for `no_open` files. Therefore the vulnerable logic is present and the fix is not."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "451418fc928b",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 173
+        },
+        "commit": "91fe96b403f8a0a4a8a045a39b1bd549b0da7941",
+        "commit_short": "91fe96b403f8",
+        "commit_msg": "fuse: create fuse_do_open() helper for CUSE\n\nCreate a helper for sending an OPEN request that doesn't need a struct\ninod",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 132,
+        "code_snippet": "commit 91fe96b403f8a0a4a8a045a39b1bd549b0da7941\nAuthor: Miklos Szeredi <mszeredi@suse.cz>\nDate:   Tue Apr 28 16:56:37 2009 +0200\n\n    fuse: create fuse_do_open() helper for CUSE\n    \n    Create a helper for sending an OPEN request that doesn't need a struct\n    inode pointer.\n    \n    Signed-off-by: Miklos Szeredi <mszeredi@suse.cz>\n\ndiff --git a/fs/fuse/file.c b/fs/fuse/file.c\nindex d9458cace425..6bdaa55ae613 100644\n--- a/fs/fuse/file.c\n+++ b/fs/fuse/file.c\n@@ -15,10 +15,9 @@\n \n static const st",
+        "exists": false,
+        "reason": "The shown code is sufficient because it contains the open-path logic relevant to whether a regular file open skips allocation/setup based on `fc->no_open`. In this commit, `fuse_do_open()` always allocates a `struct fuse_file` with `ff = fuse_file_alloc(fc);` and then always sends an OPEN request via `err = fuse_send_open(fc, nodeid, file, opcode, &outarg);`. There is no conditional check for `fc->no_open`, no special fast-path that skips open handling, and no logic here that would omit release-related state allocation for regular files. The root cause describes a later regression where regular files with `fc->no_open` skipped allocating `ff->args->release_args`, but this function body does not contain any `no_open` handling at all. Therefore the vulnerable construct is absent in this snippet (`has_bug=false`). At the same time, the later fix described in the root cause—ensuring release/inode-reference handling even when `no_open` is set—is also not present here as explicit handling, so `is_fixed=false`."
+      }
+    },
+    {
+      "bic_found": "7678ac50615d9c7a491d9861e020e4f5f71b594c",
+      "depth": 3
+    },
+    {
+      "bic_votes": {
+        "e26ee4efbc79610b20e7abe9d96c87f33dacc1ff": 1,
+        "7678ac50615d9c7a491d9861e020e4f5f71b594c": 2
+      },
+      "bic_candidates": [
+        "7678ac50615d9c7a491d9861e020e4f5f71b594c",
+        "e26ee4efbc79610b20e7abe9d96c87f33dacc1ff"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

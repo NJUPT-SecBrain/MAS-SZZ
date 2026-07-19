@@ -1,0 +1,208 @@
+{
+  "cveid": "CVE-2026-52919",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "94f3b133168d1c49895e7cc6afbcf1cc0b354602"
+  ],
+  "ground_truth_bic": "33a3bb4a3345bb511f9c69c913da95d4693e2a4e",
+  "predicted_bic": [
+    "33a3bb4a3345bb511f9c69c913da95d4693e2a4e"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 13,
+  "llm_tokens": 37350,
+  "root_cause": {
+    "text": "In batman-adv's throughput meter, the shared `tp_vars->sending` atomic state was managed with unconditional decrements in `batadv_tp_sender_shutdown()` and related sender error handling, allowing multiple shutdown paths to underflow the counter below zero instead of performing a one-time 1→0 transition.",
+    "evidence": "The patch replaces `atomic_dec_and_test(&tp_vars->sending)` with `atomic_xchg(&tp_vars->sending, 0)` in both `batadv_tp_sender_shutdown()` and `batadv_tp_send()`, while the CVE/commit message explicitly states that multiple paths can call shutdown, causing `sending` to underflow to `-1`, and that because sender logic treats any non-zero value as active, this leaves a zombie kthread running and leads to use-after-free on interface removal.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/batman-adv/tp_meter.c",
+      "lineno": 454,
+      "content": "if (!atomic_dec_and_test(&tp_vars->sending))",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/batman-adv/tp_meter.c",
+      "lineno": 888,
+      "content": "if (atomic_dec_and_test(&tp_vars->sending))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In batman-adv's throughput meter, the shared `tp_vars->sending` atomic state was managed with unconditional decrements in `batadv_tp_sender_shutdown()` and related sender error handling, allowing multiple shutdown paths to underflow the counter below zero instead of performing a one-time 1→0 transition.",
+      "evidence_points": "The patch replaces `atomic_dec_and_test(&tp_vars->sending)` with `atomic_xchg(&tp_vars->sending, 0)` in both `batadv_tp_sender_shutdown()` and `batadv_tp_send()`, while the CVE/commit message explicitly states that multiple paths can call shutdown, causing `sending` to underflow to `-1`, and that because sender logic treats any non-zero value as active, this leaves a zombie kthread running and leads to use-after-free on interface removal."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/batman-adv/tp_meter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/batman-adv/tp_meter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix sender shutdown to atomically clear the sending flag and only run shutdown logic once when the sender was actually active.",
+        "what": "The shutdown condition in batadv_tp_sender_shutdown() was changed from using atomic_dec_and_test(&tp_vars->sending) to using atomic_xchg(&tp_vars->sending, 0) != 1, so the function now atomically sets sending to 0 and returns unless the previous value was exactly 1.",
+        "how": "At runtime, this prevents the sending state counter/flag from being decremented below its intended value and makes shutdown behave like a one-time transition from active to inactive. The function now only proceeds when sending was previously 1, avoiding repeated shutdown side effects or incorrect state changes caused by multiple callers decrementing the atomic variable."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Atomically set the sending state to stopped on send failure to avoid counter races and ensure the error reason is recorded only once.",
+        "what": "The code replaces the condition `atomic_dec_and_test(&tp_vars->sending)` with `atomic_xchg(&tp_vars->sending, 0) == 1` in the error-handling path of `batadv_tp_send()` before assigning `tp_vars->reason = err`.",
+        "how": "Instead of decrementing the `sending` atomic counter and testing whether it reached zero, the code now atomically forces `sending` to 0 and checks whether its previous value was 1. This prevents further decrements or races around stopping state, ensuring only the thread that observes the expected active state records the error reason while making the sender state definitively stopped."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Atomically set the sending state to stopped on send failure to avoid counter races and ensure the error reason is recorded only once."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Make sender failure/shutdown handling atomic so the sending state is cleared exactly once and related shutdown/error bookkeeping only occurs when transitioning from active to stopped.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by replacing unconditional sender-state decrements with atomic one-time transitions from active to stopped, ensuring shutdown/error handling and bookkeeping only happen once and preventing underflow/races on tp_vars->sending."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/batman-adv/tp_meter.c",
+            "lineno": 454,
+            "content": "if (!atomic_dec_and_test(&tp_vars->sending))",
+            "rationale": "This shutdown path unconditionally decrements the shared sending counter and only then checks whether it reached zero, so repeated shutdown calls can drive the state below zero instead of enforcing a one-time active-to-stopped transition."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/batman-adv/tp_meter.c",
+            "lineno": 888,
+            "content": "if (atomic_dec_and_test(&tp_vars->sending))",
+            "rationale": "This sender error path also performs an unconditional decrement of the shared sending state, racing with other shutdown paths and contributing to underflow when more than one path attempts to stop the sender."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/batman-adv/tp_meter.c",
+            "stmt_text": "if (!atomic_dec_and_test(&tp_vars->sending))",
+            "location": "hunk",
+            "explanation": "This shutdown path unconditionally decrements the shared sending state before testing it. If shutdown is invoked more than once or races with other stop paths, the counter can be decremented below zero instead of performing a one-time transition from active to stopped."
+          },
+          {
+            "vuln_file": "net/batman-adv/tp_meter.c",
+            "stmt_text": "if (atomic_dec_and_test(&tp_vars->sending))",
+            "location": "hunk",
+            "explanation": "This sender error handling path also unconditionally decrements tp_vars->sending. When combined with the shutdown path, multiple stop attempts can race and underflow the shared state, causing the stopped transition and error recording logic to be triggered incorrectly."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ba9d20ee9076",
+          "anchor_file": "net/batman-adv/tp_meter.c",
+          "anchor_lineno": 454
+        },
+        "commit": "33a3bb4a3345bb511f9c69c913da95d4693e2a4e",
+        "commit_short": "33a3bb4a3345",
+        "commit_msg": "batman-adv: throughput meter implementation\n\nThe throughput meter module is a simple, kernel-space replacement for\nthrou",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/batman-adv/tp_meter.c",
+        "display_lineno": 442,
+        "code_snippet": "commit 33a3bb4a3345bb511f9c69c913da95d4693e2a4e\nAuthor: Antonio Quartulli <antonio@mandelbit.com>\nDate:   Thu May 5 13:09:43 2016 +0200\n\n    batman-adv: throughput meter implementation\n    \n    The throughput meter module is a simple, kernel-space replacement for\n    throughtput measurements tool like iperf and netperf. It is intended to\n    approximate TCP behaviour.\n    \n    It is invoked through batctl: the protocol is connection oriented, with\n    cumulative acknowledgment and a dynamic-size",
+        "exists": true,
+        "reason": "The relevant sender state logic is fully visible in this snippet, so it is sufficient to decide. The vulnerable construct is present in `batadv_tp_sender_shutdown()`: `if (!atomic_dec_and_test(&tp_vars->sending)) return; tp_vars->reason = reason;`. This unconditionally decrements `tp_vars->sending` on every shutdown attempt, and only sets the reason when the decrement reaches zero. Because multiple shutdown paths exist, repeated calls can decrement the counter below zero instead of enforcing a one-time 1->0 transition. The snippet shows several independent callers: `batadv_tp_sender_finish()` calls `batadv_tp_sender_shutdown(tp_vars, BATADV_TP_REASON_COMPLETE);`, `batadv_tp_sender_timeout()` calls it on unreachable destination, and `batadv_tp_stop()` also calls it. Additionally, `batadv_tp_send()` contains separate sender error handling with another unconditional decrement: `if (atomic_dec_and_test(&tp_vars->sending)) tp_vars->reason = err;`. These multiple paths match the root cause description of underflowing the shared `sending` atomic state. There is no fix present such as a compare-and-exchange / add-unless / check-and-set ensuring only a single transition from 1 to 0, so the code is vulnerable and not yet fixed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "33a3bb4a3345bb511f9c69c913da95d4693e2a4e",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ba9d20ee9076",
+          "anchor_file": "net/batman-adv/tp_meter.c",
+          "anchor_lineno": 888
+        },
+        "commit": "33a3bb4a3345bb511f9c69c913da95d4693e2a4e",
+        "commit_short": "33a3bb4a3345",
+        "commit_msg": "batman-adv: throughput meter implementation\n\nThe throughput meter module is a simple, kernel-space replacement for\nthrou",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/batman-adv/tp_meter.c",
+        "display_lineno": 881,
+        "code_snippet": "commit 33a3bb4a3345bb511f9c69c913da95d4693e2a4e\nAuthor: Antonio Quartulli <antonio@mandelbit.com>\nDate:   Thu May 5 13:09:43 2016 +0200\n\n    batman-adv: throughput meter implementation\n    \n    The throughput meter module is a simple, kernel-space replacement for\n    throughtput measurements tool like iperf and netperf. It is intended to\n    approximate TCP behaviour.\n    \n    It is invoked through batctl: the protocol is connection oriented, with\n    cumulative acknowledgment and a dynamic-size",
+        "exists": true,
+        "reason": "The relevant sender-state logic is fully visible in this snippet. The vulnerable construct is present in `batadv_tp_sender_shutdown()`: `if (!atomic_dec_and_test(&tp_vars->sending)) return; tp_vars->reason = reason;`. This performs an unconditional decrement on the shared `tp_vars->sending` state every time shutdown is requested, rather than enforcing a one-time 1->0 transition. Multiple callers can invoke shutdown: `batadv_tp_sender_finish()` calls `batadv_tp_sender_shutdown(...)`, `batadv_tp_sender_timeout()` calls it when `tp_vars->rto >= BATADV_TP_MAX_RTO`, and `batadv_tp_stop()` also calls it. In addition, `batadv_tp_send()` has separate sender error handling with another unconditional decrement: `if (atomic_dec_and_test(&tp_vars->sending)) tp_vars->reason = err;`. Because these paths are independent, repeated shutdown/error handling can decrement `sending` below zero instead of only transitioning once from 1 to 0. There is no fix here such as guarding with compare-and-swap, `atomic_cmpxchg`, `atomic_xchg`, or checking that the state was 1 before changing it. Therefore this commit contains the bug and does not contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "33a3bb4a3345bb511f9c69c913da95d4693e2a4e",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "33a3bb4a3345bb511f9c69c913da95d4693e2a4e": 2
+      },
+      "bic_candidates": [
+        "33a3bb4a3345bb511f9c69c913da95d4693e2a4e"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

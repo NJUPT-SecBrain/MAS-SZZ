@@ -1,0 +1,307 @@
+{
+  "cveid": "CVE-2026-53024",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "84265cbd96b97058ef67e3f8be3933667a000835"
+  ],
+  "ground_truth_bic": "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4",
+  "predicted_bic": [
+    "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4",
+    "512cc327625651260b2ba885b63cf2cf14ff54d1"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 28031,
+  "root_cause": {
+    "text": "The `raw_write()` function accesses the `gb_connection` object without synchronization against the `gb_raw_disconnect()` function, which frees the connection, resulting in a use-after-free when write is called after disconnect.",
+    "evidence": "The patch adds a read-write semaphore (`disconnect_lock`) and a `disconnected` flag to synchronize access between `raw_write()` and `gb_raw_disconnect()`. The `raw_write()` function now acquires a read lock and checks the `disconnected` flag before calling `gb_raw_send()`, which internally calls `gb_operation_sync()` with the connection object. Meanwhile, `gb_raw_disconnect()` acquires a write lock and sets the `disconnected` flag before calling `gb_connection_destroy()`. This prevents `raw_write()` from using a freed connection object by ensuring these operations are mutually exclusive.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/staging/greybus/raw.c",
+      "lineno": 280,
+      "content": "retval = gb_raw_send(raw, count, buf);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/staging/greybus/raw.c",
+      "lineno": 277,
+      "content": "if (count > MAX_PACKET_SIZE)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/staging/greybus/raw.c",
+      "lineno": 239,
+      "content": "gb_connection_destroy(connection);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `raw_write()` function accesses the `gb_connection` object without synchronization against the `gb_raw_disconnect()` function, which frees the connection, resulting in a use-after-free when write is called after disconnect.",
+      "evidence_points": "The patch adds a read-write semaphore (`disconnect_lock`) and a `disconnected` flag to synchronize access between `raw_write()` and `gb_raw_disconnect()`. The `raw_write()` function now acquires a read lock and checks the `disconnected` flag before calling `gb_raw_send()`, which internally calls `gb_operation_sync()` with the connection object. Meanwhile, `gb_raw_disconnect()` acquires a write lock and sets the `disconnected` flag before calling `gb_connection_destroy()`. This prevents `raw_write()` from using a freed connection object by ensuring these operations are mutually exclusive."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/staging/greybus/raw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/staging/greybus/raw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/staging/greybus/raw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/staging/greybus/raw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add disconnect synchronization primitives (rw_semaphore and state flag) to prevent race conditions during device disconnection.",
+        "what": "Added two new fields to the gb_raw struct: a read-write semaphore named 'disconnect_lock' and a boolean flag named 'disconnected'.",
+        "how": "These additions enable synchronization of disconnect operations and tracking of disconnection state. The rw_semaphore allows multiple readers or exclusive writers to coordinate access during disconnect scenarios, while the boolean flag provides a simple state indicator for whether the device has been disconnected. This prevents race conditions and allows other code paths to check disconnection status."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize the disconnect_lock read-write semaphore during device probe to prevent undefined behavior from uninitialized synchronization primitives.",
+        "what": "Added a single line `init_rwsem(&raw->disconnect_lock);` after the `mutex_init(&raw->list_lock);` call in the gb_raw_probe function to initialize a read-write semaphore.",
+        "how": "This change initializes the disconnect_lock read-write semaphore during device probe, ensuring the synchronization primitive is properly set up before the raw device structure is used. Without this initialization, any subsequent operations attempting to acquire this lock would operate on uninitialized memory, causing undefined behavior or crashes."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add write-locked synchronization to atomically mark the raw device as disconnected during the disconnect sequence, preventing race conditions with concurrent access.",
+        "what": "Added a write-locked critical section in gb_raw_disconnect() that sets raw->disconnected to true between cdev_device_del() and gb_connection_disable() calls.",
+        "how": "This change introduces synchronization to mark the device as disconnected while holding a write lock on disconnect_lock. This prevents concurrent access to the raw device during the disconnection sequence and signals to other code paths (likely protected by read locks on the same lock) that the device is no longer available."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "guard",
+        "intent_summary": "Add synchronization and disconnection checking to prevent race conditions during raw device write operations by protecting the critical section with a read lock and ensuring proper cleanup.",
+        "what": "Added a read lock (down_read/up_read) around the gb_raw_send() call with a disconnection check. Changed early returns to use a goto exit pattern that ensures the lock is always released. The return value is now stored in retval and returned after lock release.",
+        "how": "The function now acquires a read lock on raw->disconnect_lock before performing the send operation and checks if the device is disconnected, returning -ENODEV if so. All code paths now converge at an exit label that releases the lock, preventing potential use-after-free or race conditions where the device could be disconnected while a write operation is in progress. The lock ensures mutual exclusion with disconnect operations."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 3,
+          "intent": "Add synchronization and disconnection checking to prevent race conditions during raw device write operations by protecting the critical section with a read lock and ensuring proper cleanup."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize the disconnect_lock read-write semaphore during device probe to prevent undefined behavior from uninitialized synchronization primitives."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Implement synchronization primitives and disconnection checking to prevent race conditions during raw device operations by using read/write locks to protect critical sections.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "This group directly addresses the use-after-free vulnerability by implementing synchronization primitives (rw_semaphore) and disconnection state checking. The changes protect the `raw_write()` function with read locks and add disconnection checks, preventing concurrent access to the freed `gb_connection` object. Hunk 0 introduces the synchronization infrastructure, Hunk 2 ensures atomic disconnection marking, and Hunk 3 applies these protections to the vulnerable write path - all core elements needed to fix the race condition between `raw_write()` and `gb_raw_disconnect()`."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "This group directly addresses the vulnerability root cause by introducing the synchronization primitive (disconnect_lock) that is necessary to protect against the use-after-free condition. Initializing the read-write semaphore during device probe is a foundational step that enables proper synchronization between raw_write() and gb_raw_disconnect() to prevent concurrent access to the freed gb_connection object."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "drivers/staging/greybus/raw.c",
+            "lineno": 280,
+            "content": "retval = gb_raw_send(raw, count, buf);",
+            "rationale": "This statement accesses the `raw` connection object without synchronization protection. Since `gb_raw_disconnect()` can free the connection concurrently, this access is vulnerable to use-after-free if disconnect occurs between the function entry and this statement execution."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "drivers/staging/greybus/raw.c",
+            "lineno": 277,
+            "content": "if (count > MAX_PACKET_SIZE)",
+            "rationale": "The raw_write() function begins processing without any synchronization check. The `raw` pointer and its associated `gb_connection` object can be freed by `gb_raw_disconnect()` at any point during execution, making all subsequent operations vulnerable to use-after-free."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/staging/greybus/raw.c",
+            "lineno": 239,
+            "content": "gb_connection_destroy(connection);",
+            "rationale": "This statement destroys the connection without proper synchronization against concurrent readers in `raw_write()`. The connection can still be accessed by in-flight write operations that lack read-lock protection, causing use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/staging/greybus/raw.c",
+            "stmt_text": "retval = gb_raw_send(raw, count, buf);",
+            "location": "hunk",
+            "explanation": "This statement directly accesses the `raw` connection object without synchronization protection. Since `gb_raw_disconnect()` can free the connection concurrently, this call is vulnerable to use-after-free if disconnect occurs between function entry and execution of this statement."
+          },
+          {
+            "vuln_file": "drivers/staging/greybus/raw.c",
+            "stmt_text": "if (count > MAX_PACKET_SIZE)",
+            "location": "hunk",
+            "explanation": "The raw_write() function begins processing the `raw` pointer without any synchronization check or disconnection validation. The `raw` pointer and its associated `gb_connection` object can be freed by `gb_raw_disconnect()` at any point during execution, making this and all subsequent operations vulnerable to use-after-free."
+          },
+          {
+            "vuln_file": "drivers/staging/greybus/raw.c",
+            "stmt_text": "gb_connection_destroy(connection);",
+            "location": "hunk",
+            "explanation": "This statement destroys the connection without proper synchronization against concurrent readers in `raw_write()`. In-flight write operations that lack read-lock protection can still access the connection after this destruction, causing use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "983cc2c7efbc",
+          "anchor_file": "drivers/staging/greybus/raw.c",
+          "anchor_lineno": 280
+        },
+        "commit": "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4",
+        "commit_short": "e806c7fb8e9b",
+        "commit_msg": "greybus: raw: add raw greybus kernel driver\n\nThis adds a driver that implements the greybus Raw protocol as\nspecified.\n\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/staging/greybus/raw.c",
+        "display_lineno": 281,
+        "code_snippet": "commit e806c7fb8e9bae87fc23958c3789f2c2f96f54a4\nAuthor: Greg Kroah-Hartman <gregkh@google.com>\nDate:   Fri May 8 15:50:17 2015 +0200\n\n    greybus: raw: add raw greybus kernel driver\n    \n    This adds a driver that implements the greybus Raw protocol as\n    specified.\n    \n    It preserves the message boundries by only allowing a read to receive\n    a \"full\" message, and any write() call also is passed in a single\n    greybus request.\n    \n    Totally untested, given that we have no raw firmware",
+        "exists": true,
+        "reason": "The `raw_write()` function (lines 267-280) accesses `raw->connection` indirectly through `gb_raw_send(raw, count, buf)` which then uses `struct gb_connection *connection = raw->connection;` (line 155). However, there is no synchronization mechanism protecting against concurrent access with `gb_raw_connection_exit()` (lines 213-231). The `gb_raw_connection_exit()` function frees the `gb_raw` structure via `kfree(raw)` at line 230, but `raw_write()` can be called by userspace at any time through the character device interface. If `raw_write()` is called after the device is disconnected and `gb_raw_connection_exit()` executes, the `raw` pointer in `file->private_data` becomes a dangling pointer, leading to use-after-free when accessing `raw->connection` in `gb_raw_send()`. The code contains a FIXME comment at line 215 acknowledging this issue: '// FIXME - handle removing a connection when the char device node is open.' There is no reference counting, no flag to mark the connection as invalid, and no mutex protecting the `raw` structure from being freed while file operations are in progress."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "983cc2c7efbc",
+          "anchor_file": "drivers/staging/greybus/raw.c",
+          "anchor_lineno": 277
+        },
+        "commit": "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4",
+        "commit_short": "e806c7fb8e9b",
+        "commit_msg": "greybus: raw: add raw greybus kernel driver\n\nThis adds a driver that implements the greybus Raw protocol as\nspecified.\n\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/staging/greybus/raw.c",
+        "display_lineno": 278,
+        "code_snippet": "commit e806c7fb8e9bae87fc23958c3789f2c2f96f54a4\nAuthor: Greg Kroah-Hartman <gregkh@google.com>\nDate:   Fri May 8 15:50:17 2015 +0200\n\n    greybus: raw: add raw greybus kernel driver\n    \n    This adds a driver that implements the greybus Raw protocol as\n    specified.\n    \n    It preserves the message boundries by only allowing a read to receive\n    a \"full\" message, and any write() call also is passed in a single\n    greybus request.\n    \n    Totally untested, given that we have no raw firmware",
+        "exists": true,
+        "reason": "The `raw_write()` function (lines 268-281) accesses `raw->connection` through the `gb_raw_send()` function (line 277) without any synchronization mechanism. The `gb_raw_send()` function directly uses `raw->connection` at line 147 to call `gb_operation_sync()`. However, the `gb_raw_connection_exit()` function (lines 213-232) can be called concurrently, which frees the `gb_raw` structure via `kfree(raw)` at line 231. There is no locking, reference counting, or null-pointer checks to prevent `raw_write()` from accessing a freed `gb_connection` object after `gb_raw_connection_exit()` has been called. The vulnerability exists because: (1) `raw_write()` does not check if the connection is still valid, (2) there is no mutex or other synchronization protecting access to `raw->connection` between write operations and disconnect, and (3) the FIXME comment at line 214 explicitly acknowledges this issue: '// FIXME - handle removing a connection when the char device node is open.'"
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "983cc2c7efbc",
+          "anchor_file": "drivers/staging/greybus/raw.c",
+          "anchor_lineno": 239
+        },
+        "commit": "512cc327625651260b2ba885b63cf2cf14ff54d1",
+        "commit_short": "512cc3276256",
+        "commit_msg": "greybus: raw: convert to bundle driver\n\nConvert the legacy raw protocol driver to a bundle driver.\n\nThis also fixes a po",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/staging/greybus/raw.c",
+        "display_lineno": 238,
+        "code_snippet": "commit 512cc327625651260b2ba885b63cf2cf14ff54d1\nAuthor: Viresh Kumar <viresh.kumar@linaro.org>\nDate:   Mon Feb 15 10:47:27 2016 +0530\n\n    greybus: raw: convert to bundle driver\n    \n    Convert the legacy raw protocol driver to a bundle driver.\n    \n    This also fixes a potential crash should a (malicious) module have sent\n    an early request before the private data had been initialised.\n    \n    Signed-off-by: Viresh Kumar <viresh.kumar@linaro.org>\n    Reviewed-by: Johan Hovold <johan@hovold",
+        "exists": false,
+        "reason": "This commit converts the raw driver from a legacy protocol driver to a bundle driver, which actually FIXES the use-after-free vulnerability described in the root cause. The key changes are: (1) The request handler now uses `greybus_get_drvdata(connection->bundle)` instead of `connection->private` to access the gb_raw object, establishing proper lifecycle management through the bundle driver framework. (2) The probe function (`gb_raw_probe`) now properly initializes the connection with `gb_connection_create()` and enables it with `gb_connection_enable()` before the character device is created. (3) The disconnect function (`gb_raw_disconnect`) properly disables and destroys the connection with `gb_connection_disable()` and `gb_connection_destroy()` before freeing resources. (4) The bundle driver framework ensures that the disconnect callback is properly synchronized with probe, preventing the race condition where `raw_write()` could access a freed connection. The vulnerable construct (accessing `connection->private` without synchronization) is not present in this version - it has been replaced with the safer bundle driver pattern that provides proper lifecycle management and synchronization."
+      }
+    },
+    {
+      "bic_found": "512cc327625651260b2ba885b63cf2cf14ff54d1",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4": 2,
+        "512cc327625651260b2ba885b63cf2cf14ff54d1": 1
+      },
+      "bic_candidates": [
+        "e806c7fb8e9bae87fc23958c3789f2c2f96f54a4",
+        "512cc327625651260b2ba885b63cf2cf14ff54d1"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

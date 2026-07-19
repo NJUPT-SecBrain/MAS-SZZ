@@ -1,0 +1,278 @@
+{
+  "cveid": "CVE-2026-43181",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6766f59012301f1bf3f46c6e7149caca45d92309"
+  ],
+  "ground_truth_bic": "1cd53df733c21ae0d344a2dec941a3e2a06fefd9",
+  "predicted_bic": [
+    "2028f854b3f5b3816cd5d5dd83057a873eddc4d6",
+    "fd19792851db77e74cff4e2dc772d25a83cdc34d",
+    "20d9b3b5f2749673e1b5e9c8b0846ff6deff4032"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 25072,
+  "root_cause": {
+    "text": "The gpiochip_sysfs_unregister() function was unregistering the parent device before unexporting GPIO descriptors, causing gpiod_to_gpio_device() to fail in gpiod_unexport() and preventing the final reference from being dropped on exported GPIO sysfs attributes.",
+    "evidence": "The patch moves the device_unregister() calls to occur AFTER the loop that calls gpiod_unexport_unlocked() on all exported GPIOs. The CVE description explicitly states: \"once we remove the parent device, we can no longer associate the descriptor with it in gpiod_unexport() and never drop the final reference.\" The patch also introduces an unlocked variant of gpiod_unexport() and ensures all exported GPIOs are removed with sysfs_lock held before unregistering the parent device, preventing the race condition where gpiod_to_gpio_device() would return NULL after device removal.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpio/gpiolib-sysfs.c",
+      "lineno": 1065,
+      "content": "device_unregister(data->cdev_id);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpio/gpiolib-sysfs.c",
+      "lineno": 1063,
+      "content": "device_unregister(data->cdev_base);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpio/gpiolib-sysfs.c",
+      "lineno": 1077,
+      "content": "gpiod_unexport(desc);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The gpiochip_sysfs_unregister() function was unregistering the parent device before unexporting GPIO descriptors, causing gpiod_to_gpio_device() to fail in gpiod_unexport() and preventing the final reference from being dropped on exported GPIO sysfs attributes.",
+      "evidence_points": "The patch moves the device_unregister() calls to occur AFTER the loop that calls gpiod_unexport_unlocked() on all exported GPIOs. The CVE description explicitly states: \"once we remove the parent device, we can no longer associate the descriptor with it in gpiod_unexport() and never drop the final reference.\" The patch also introduces an unlocked variant of gpiod_unexport() and ensures all exported GPIOs are removed with sysfs_lock held before unregistering the parent device, preventing the race condition where gpiod_to_gpio_device() would return NULL after device removal."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpio/gpiolib-sysfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpio/gpiolib-sysfs.c",
+        "complete": true,
+        "missing": [
+          "Reasoning:**",
+          "Guard mechanism refactored: `scoped_guard(mutex, &sysfs_lock) { ... }` → `guard(mutex)(&sysfs_lock);` (flattened scope)",
+          "Function call changed: `gpiod_unexport(desc)` → `gpiod_unexport_unlocked(desc)` (variant without internal locking)",
+          "Code block reordering: device unregister/kfree moved outside the mutex guard scope",
+          "srcu guard added/maintained for chip dereferencing",
+          "`gdev_get_data()`, `gpiod_unexport()`, `gpiod_unexport_unlocked()`, `gpiod_free()`, `device_unregister()`, `kfree()` are all standard kernel functions",
+          "`guard()` and `scoped_guard()` are kernel guard macros",
+          "`srcu_dereference()`, `for_each_gpio_desc_with_flag()` are standard kernel utilities",
+          "All variables (`data`, `chip`, `desc`, `gdev`) are clearly declared or passed as parameters"
+        ]
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Extract unexport logic into an unlocked helper function to enable mutex-safe code reuse and improve separation of concerns.",
+        "what": "Refactored gpiod_unexport() by extracting the core logic into a new static helper function gpiod_unexport_unlocked(). The original function's scoped_guard(mutex) block was removed and replaced with an explicit guard(mutex) call in the wrapper. The helper function assumes the mutex is already held and performs all the unexport operations without the null check or mutex management.",
+        "how": "This change separates concerns: gpiod_unexport() now handles parameter validation and mutex acquisition, while gpiod_unexport_unlocked() performs the actual unexport logic. The functional behavior remains identical at runtime—the mutex is still held during the critical section—but the code structure allows the unlocked variant to be called from other contexts where the mutex is already held, reducing lock contention and enabling code reuse."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Refactor locking strategy to use guard macros consistently and reorder cleanup operations to execute after srcu-protected gpio descriptor unregistration, while using the unlocked variant of gpiod_unexport to avoid nested locking.",
+        "what": "Restructured mutex locking from scoped_guard block to explicit guard() call; moved data cleanup code outside the srcu guard block to execute after gpio descriptor unregistration; changed gpiod_unexport() call to gpiod_unexport_unlocked() variant; reordered code sections with device_unregister and kfree operations moved to function end.",
+        "how": "The mutex lock is now acquired at function entry via guard(srcu) macro instead of scoped block, extending lock scope to cover the entire function. Data cleanup (device_unregister, kfree) now executes after the srcu-protected gpio descriptor loop completes, rather than before it. The gpiod_unexport_unlocked variant avoids redundant locking since the srcu guard already protects the operation. This changes the lock ordering and timing of resource cleanup operations."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Extract unexport logic into an unlocked helper function to enable mutex-safe code reuse and improve separation of concerns."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor locking strategy to use guard macros consistently and reorder cleanup operations to execute after srcu-protected gpio descriptor unregistration, while using the unlocked variant of gpiod_unexport to avoid nested locking."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "This group extracts unexport logic into a helper function for code reuse and separation of concerns, which is a refactoring change. The vulnerability root cause requires fixing the order of operations (unregistering parent device before unexporting GPIO descriptors), not extracting existing logic into helper functions. While extraction might be a preparatory step, the core issue of incorrect operation ordering is not addressed by this refactoring alone."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by reordering cleanup operations to ensure GPIO descriptors are unexported before the parent device is unregistered. This prevents gpiod_to_gpio_device() from failing in gpiod_unexport() and allows proper reference dropping on exported GPIO sysfs attributes. The use of unlocked gpiod_unexport variant also prevents nested locking issues that would arise from the corrected ordering."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpio/gpiolib-sysfs.c",
+            "lineno": 1065,
+            "content": "device_unregister(data->cdev_id);",
+            "rationale": "This line unregisters the parent device (cdev_id) before the SRCU-protected section that unexports GPIO descriptors. When gpiod_unexport() is called later, gpiod_to_gpio_device() fails because the parent device has already been unregistered, preventing proper cleanup of exported GPIO sysfs attributes."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpio/gpiolib-sysfs.c",
+            "lineno": 1063,
+            "content": "device_unregister(data->cdev_base);",
+            "rationale": "This line unregisters the legacy base device before the SRCU-protected section that unexports GPIO descriptors. Similar to cdev_id, unregistering the parent device prematurely causes gpiod_to_gpio_device() to fail in subsequent gpiod_unexport() calls."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpio/gpiolib-sysfs.c",
+            "lineno": 1077,
+            "content": "gpiod_unexport(desc);",
+            "rationale": "This call to gpiod_unexport() occurs after the parent device has been unregistered (lines 1063, 1065), causing gpiod_to_gpio_device() to fail and preventing the final reference from being dropped on exported GPIO sysfs attributes. The fix reorders this to occur before device_unregister()."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpio/gpiolib-sysfs.c",
+            "stmt_text": "device_unregister(data->cdev_id);",
+            "location": "hunk",
+            "explanation": "This statement unregisters the parent device (cdev_id) before the SRCU-protected section that calls gpiod_unexport(). When gpiod_unexport() is subsequently called, gpiod_to_gpio_device() fails because the parent device has already been unregistered, preventing proper cleanup and reference dropping on exported GPIO sysfs attributes."
+          },
+          {
+            "vuln_file": "drivers/gpio/gpiolib-sysfs.c",
+            "stmt_text": "device_unregister(data->cdev_base);",
+            "location": "hunk",
+            "explanation": "This statement unregisters the legacy base device before the SRCU-protected section that calls gpiod_unexport(). Unregistering the parent device prematurely causes gpiod_to_gpio_device() to fail in subsequent gpiod_unexport() calls, preventing proper cleanup of exported GPIO sysfs attributes."
+          },
+          {
+            "vuln_file": "drivers/gpio/gpiolib-sysfs.c",
+            "stmt_text": "gpiod_unexport(desc);",
+            "location": "hunk",
+            "explanation": "This call to gpiod_unexport() occurs after the parent devices have been unregistered (lines 1063, 1065), causing gpiod_to_gpio_device() to fail within gpiod_unexport() and preventing the final reference from being dropped on exported GPIO sysfs attributes. The vulnerable ordering places device unregistration before descriptor unexporting."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ff91965ad8b2",
+          "anchor_file": "drivers/gpio/gpiolib-sysfs.c",
+          "anchor_lineno": 1065
+        },
+        "commit": "2028f854b3f5b3816cd5d5dd83057a873eddc4d6",
+        "commit_short": "2028f854b3f5",
+        "commit_msg": "gpio: sysfs: add a parallel class device for each GPIO chip using device IDs\n\nIn order to enable moving away from the gl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpio/gpiolib-sysfs.c",
+        "display_lineno": 900,
+        "code_snippet": "commit 2028f854b3f5b3816cd5d5dd83057a873eddc4d6\nAuthor: Bartosz Golaszewski <brgl@kernel.org>\nDate:   Fri Jul 4 14:58:49 2025 +0200\n\n    gpio: sysfs: add a parallel class device for each GPIO chip using device IDs\n    \n    In order to enable moving away from the global GPIO numberspace-based\n    exporting of lines over sysfs: add a parallel, per-chip entry under\n    /sys/class/gpio/ for every registered GPIO chip, denoted by device ID\n    in the file name and not its base GPIO number.\n    \n    C",
+        "exists": false,
+        "reason": "This commit introduces new functionality for per-chip GPIO export/unexport via sysfs (the 'chipX' device). The vulnerability root cause describes an issue where gpiochip_sysfs_unregister() unregisters the parent device before unexporting GPIO descriptors, causing gpiod_to_gpio_device() to fail. However, in this commit, the gpiochip_sysfs_unregister() function (lines 897-903) shows: it calls device_unregister(data->cdev_base) first, then device_unregister(data->cdev_id), and finally kfree(data). The commit does NOT show the parent device being unregistered in this function - it only unregisters the class devices (cdev_base and cdev_id). The new export_gpio_desc() and unexport_gpio_desc() functions (lines 439-493) are properly implemented with correct GPIO descriptor handling. This commit is introducing new sysfs infrastructure but does not contain the vulnerable construct described in the root cause (unregistering parent device before unexporting descriptors). The vulnerable pattern is simply not present in this code."
+      }
+    },
+    {
+      "bic_found": "2028f854b3f5b3816cd5d5dd83057a873eddc4d6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ff91965ad8b2",
+          "anchor_file": "drivers/gpio/gpiolib-sysfs.c",
+          "anchor_lineno": 1063
+        },
+        "commit": "fd19792851db77e74cff4e2dc772d25a83cdc34d",
+        "commit_short": "fd19792851db",
+        "commit_msg": "gpio: sysfs: remove the mockdev pointer from struct gpio_device\n\nThe usage of the mockdev pointer in struct gpio_device ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpio/gpiolib-sysfs.c",
+        "display_lineno": 802,
+        "code_snippet": "commit fd19792851db77e74cff4e2dc772d25a83cdc34d\nAuthor: Bartosz Golaszewski <brgl@kernel.org>\nDate:   Tue Jun 10 16:38:21 2025 +0200\n\n    gpio: sysfs: remove the mockdev pointer from struct gpio_device\n    \n    The usage of the mockdev pointer in struct gpio_device is limited to the\n    GPIO sysfs code. There's no reason to keep it in this top-level\n    structure. Create a separate structure containing the reference to the\n    GPIO device and the dummy class device that will be passed to\n    dev",
+        "exists": false,
+        "reason": "This commit refactors the GPIO sysfs code by removing the mockdev pointer from struct gpio_device and replacing it with a separate gpiodev_data structure. The key change in gpiochip_sysfs_unregister() shows that the function now: (1) retrieves the gpiodev_data via gdev_get_data(gdev) which uses class_find_device() to locate the device, (2) unregisters the device with device_unregister(data->cdev_base), and (3) frees the data structure. Critically, the removal of the check '!gdev->mockdev' in gpiod_export() (lines 618-623 removed) means the function no longer prematurely fails when the parent device is unregistered. The gdev_get_data() function uses class_find_device() which will still work even after the parent device is unregistered, because it searches the gpio_class device list directly. This fixes the vulnerability where gpiod_to_gpio_device() would fail because the parent device was unregistered before GPIO descriptors were unexported. The commit properly protects all GPIO class operations with the sysfs_lock as stated in the commit message."
+      }
+    },
+    {
+      "bic_found": "fd19792851db77e74cff4e2dc772d25a83cdc34d",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ff91965ad8b2",
+          "anchor_file": "drivers/gpio/gpiolib-sysfs.c",
+          "anchor_lineno": 1077
+        },
+        "commit": "20d9b3b5f2749673e1b5e9c8b0846ff6deff4032",
+        "commit_short": "20d9b3b5f274",
+        "commit_msg": "gpiolib: sysfs: Do unexport GPIO when user asks for it\n\nIt seems that sysfs interface implicitly relied on the gpiod_fre",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpio/gpiolib-sysfs.c",
+        "display_lineno": 786,
+        "code_snippet": "commit 20d9b3b5f2749673e1b5e9c8b0846ff6deff4032\nAuthor: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\nDate:   Mon Aug 14 14:26:15 2023 +0300\n\n    gpiolib: sysfs: Do unexport GPIO when user asks for it\n    \n    It seems that sysfs interface implicitly relied on the gpiod_free() to\n    unexport the line. This is logically incorrect as core gpiolib should\n    not deal with sysfs so instead of restoring it, let's call\n    gpiod_unexport() from sysfs code.\n    \n    Fixes: b0ce9ce408b6 (\"gpiolib",
+        "exists": false,
+        "reason": "This commit FIXES the vulnerability rather than introducing it. The root cause was that gpiochip_sysfs_unregister() was calling gpiod_free(desc) without first calling gpiod_unexport(desc), which prevented proper cleanup of exported GPIO sysfs attributes. The diff shows the fix being applied: (1) In unexport_store() at line 518, gpiod_unexport(desc) is now called BEFORE gpiod_free(desc); (2) In gpiochip_sysfs_unregister() at lines 785-787, gpiod_unexport(desc) is now called BEFORE gpiod_free(desc) in the loop. Both changes ensure that GPIO descriptors are properly unexported before being freed, allowing gpiod_to_gpio_device() to succeed in gpiod_unexport() and properly drop the final reference on exported GPIO sysfs attributes. This commit is a Bug-Fixing Commit, not a Bug-Introducing Commit."
+      }
+    },
+    {
+      "bic_found": "20d9b3b5f2749673e1b5e9c8b0846ff6deff4032",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "2028f854b3f5b3816cd5d5dd83057a873eddc4d6": 1,
+        "fd19792851db77e74cff4e2dc772d25a83cdc34d": 1,
+        "20d9b3b5f2749673e1b5e9c8b0846ff6deff4032": 1
+      },
+      "bic_candidates": [
+        "2028f854b3f5b3816cd5d5dd83057a873eddc4d6",
+        "fd19792851db77e74cff4e2dc772d25a83cdc34d",
+        "20d9b3b5f2749673e1b5e9c8b0846ff6deff4032"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

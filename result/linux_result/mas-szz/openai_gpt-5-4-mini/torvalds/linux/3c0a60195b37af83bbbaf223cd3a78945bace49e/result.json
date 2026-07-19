@@ -1,0 +1,314 @@
+{
+  "cveid": "CVE-2025-71314",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "3c0a60195b37af83bbbaf223cd3a78945bace49e"
+  ],
+  "ground_truth_bic": "5cd894e258c4b0b92b9b475309cea244e590d194",
+  "predicted_bic": [
+    "5cd894e258c4b0b92b9b475309cea244e590d194"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 38443,
+  "root_cause": {
+    "text": "The panthor GPU cache-flush path did not recover from a stuck `GPU_IRQ_CLEAN_CACHES_COMPLETED` request when `panthor_gpu_flush_caches()` timed out, leaving `pending_reqs` uncleared and lacking reset handling so subsequent flushes could not be safely retried.",
+    "evidence": "The patch adds `panthor_device_schedule_reset(ptdev);` on flush timeout, explicitly clears `ptdev->gpu->pending_reqs = 0;` in `panthor_gpu_soft_reset()`, and changes `panthor_gpu_flush_caches()` to return `-EIO` for later flush attempts instead of waiting again; the commit message says flush operations can “never complete” when the memory subsystem is blocked and that the driver must “schedule a reset” and “reset the pending_reqs” to recover.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+      "lineno": 306,
+      "content": "if (!wait_event_timeout(ptdev->gpu->reqs_acked,",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+      "lineno": 310,
+      "content": "if ((ptdev->gpu->pending_reqs & GPU_IRQ_CLEAN_CACHES_COMPLETED) != 0 &&",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+      "lineno": 314,
+      "content": "ptdev->gpu->pending_reqs &= ~GPU_IRQ_CLEAN_CACHES_COMPLETED;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+      "lineno": 320,
+      "content": "return -ETIMEDOUT;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`panthor_gpu_flush_caches()` in the Panthor DRM GPU subsystem could leave `GPU_IRQ_CLEAN_CACHES_COMPLETED` stuck in `pending_reqs` after a cache-flush timeout, with no reset recovery path, so later flushes would keep waiting or fail incorrectly instead of being cleared and retried after reset.",
+      "evidence_points": "The patch changes `panthor_gpu_flush_caches()` to return `-ETIMEDOUT`/`-EIO` and call `panthor_device_schedule_reset(ptdev)` on failure, and it adds `ptdev->gpu->pending_reqs = 0;` in `panthor_gpu_soft_reset()`, which directly shows the bug was the lack of reset/cleanup for pending cache-flush requests after a hang."
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The evidence is partly present, but the proposed root cause overstates and narrows the issue too much. The patch and CVE describe a broader recovery problem: on cache-flush timeout or repeated flush attempts after a timeout, the driver should schedule a reset, clear `pending_reqs` in the reset path, and return `-EIO` for subsequent flushes. Your root cause only focuses on `GPU_IRQ_CLEAN_CACHES_COMPLETED` being stuck in `pending_reqs` after a timeout and says there was “no reset recovery path,” which is incomplete. Also, the claim that later flushes would “keep waiting or fail incorrectly instead of being cleared and retried after reset” mixes behaviors not directly shown as the root cause in the diff; the patch specifically adds reset scheduling and `-EIO` short-circuiting, not merely clearing a stuck bit."
+      }
+    },
+    {
+      "root_cause_candidate": "The panthor GPU cache-flush path did not recover from a stuck `GPU_IRQ_CLEAN_CACHES_COMPLETED` request when `panthor_gpu_flush_caches()` timed out, leaving `pending_reqs` uncleared and lacking reset handling so subsequent flushes could not be safely retried.",
+      "evidence_points": "The patch adds `panthor_device_schedule_reset(ptdev);` on flush timeout, explicitly clears `ptdev->gpu->pending_reqs = 0;` in `panthor_gpu_soft_reset()`, and changes `panthor_gpu_flush_caches()` to return `-EIO` for later flush attempts instead of waiting again; the commit message says flush operations can “never complete” when the memory subsystem is blocked and that the driver must “schedule a reset” and “reset the pending_reqs” to recover."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpu/drm/panthor/panthor_gpu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpu/drm/panthor/panthor_gpu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Make cache flush failures explicit and trigger GPU reset on timeout or duplicate in-flight flush requests.",
+        "what": "The function panthor_gpu_flush_caches() was changed from using a local bool timedout flag to using an int ret initialized to 0. The WARN-on-duplicate check around pending_reqs was removed and replaced with a direct condition: if GPU_IRQ_CLEAN_CACHES_COMPLETED is already pending, ret is set to -EIO; otherwise the bit is set and the GPU flush command is written. After releasing the spinlock, the function now returns ret immediately if nonzero. In the timeout path, timedout is no longer set; instead ret is set to -ETIMEDOUT when the interrupt has not occurred, and the final error handling now schedules a device reset before logging the timeout message and returning ret.",
+        "how": "Runtime behavior changes so that a second overlapping cache flush request is treated as an explicit error instead of only triggering a warning, and timeout failures now both report an error and proactively schedule a GPU reset. The function still waits for completion as before, but errors are now propagated through a single return code path, and a timeout leaves the device in a recovery state rather than only logging and returning."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear pending GPU requests after a successful soft reset to avoid retaining stale request state.",
+        "what": "A single assignment was added in panthor_gpu_soft_reset(): after the timeout check and before returning success, the code now sets ptdev->gpu->pending_reqs to 0.",
+        "how": "After a GPU soft reset completes successfully, any previously tracked pending requests are cleared, so the driver no longer retains stale in-flight request state across the reset."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Make cache flush failures explicit and trigger GPU reset on timeout or duplicate in-flight flush requests."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear pending GPU requests after a successful soft reset to avoid retaining stale request state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it addresses stuck cache-flush requests, clears failure handling on timeout, and adds reset handling for duplicate or unrecoverable in-flight flushes so retries are safe."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change addresses stale pending GPU request state after reset, which is directly related to the root cause where cache-flush timeout handling left `pending_reqs` uncleared and lacked reset recovery for safe retry."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "lineno": 306,
+            "content": "if (!wait_event_timeout(ptdev->gpu->reqs_acked,",
+            "rationale": "This timeout wait is the point where the flush path can fail to recover; if the condition never becomes true, the code falls into the timeout handling path that previously did not clear the stuck pending request or trigger reset recovery."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "lineno": 310,
+            "content": "if ((ptdev->gpu->pending_reqs & GPU_IRQ_CLEAN_CACHES_COMPLETED) != 0 &&",
+            "rationale": "This check gates the timeout case, but in the pre-fix logic it only distinguished whether the request was still pending; it did not perform reset handling for the stuck cache-clean completion, allowing the stale state to remain."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "lineno": 314,
+            "content": "ptdev->gpu->pending_reqs &= ~GPU_IRQ_CLEAN_CACHES_COMPLETED;",
+            "rationale": "This is the only pre-fix statement that directly clears the pending bit, and it is executed only in the non-timeout branch; when the flush times out due to a stuck request, this cleanup is skipped, leaving the request uncleared."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "lineno": 320,
+            "content": "return -ETIMEDOUT;",
+            "rationale": "The timeout return terminates the flush path without any reset or state recovery in the pre-fix code, so a stuck GPU_IRQ_CLEAN_CACHES_COMPLETED request can persist into subsequent flush attempts."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "stmt_text": "if (!wait_event_timeout(ptdev->gpu->reqs_acked,",
+            "location": "hunk",
+            "explanation": "This timeout wait is the failure point of the cache-flush path: if the GPU never acknowledges the clean-caches request, execution moves into the timeout path that previously did not recover the stuck pending request or trigger reset handling."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "stmt_text": "if ((ptdev->gpu->pending_reqs & GPU_IRQ_CLEAN_CACHES_COMPLETED) != 0 &&",
+            "location": "hunk",
+            "explanation": "This pre-fix timeout-branch condition only checks whether the flush request is still pending, but it does not itself provide recovery for the stuck GPU_IRQ_CLEAN_CACHES_COMPLETED state, allowing the failure to persist."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "stmt_text": "ptdev->gpu->pending_reqs &= ~GPU_IRQ_CLEAN_CACHES_COMPLETED;",
+            "location": "hunk",
+            "explanation": "This is the statement that clears the pending completion bit, and in the pre-fix code it is only reached in the non-timeout branch; when the flush times out, the stale pending state is left uncleared."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+            "stmt_text": "return -ETIMEDOUT;",
+            "location": "hunk",
+            "explanation": "This return exits the flush path on timeout without any reset or retry recovery, which is the direct reason a stuck clean-caches request could remain active for subsequent flush attempts."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "151df689fb75",
+          "anchor_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+          "anchor_lineno": 306
+        },
+        "commit": "5cd894e258c4b0b92b9b475309cea244e590d194",
+        "commit_short": "5cd894e258c4",
+        "commit_msg": "drm/panthor: Add the GPU logical block\n\nHandles everything that's not related to the FW, the MMU or the\nscheduler. This ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+        "display_lineno": 394,
+        "code_snippet": "commit 5cd894e258c4b0b92b9b475309cea244e590d194\nAuthor: Boris Brezillon <boris.brezillon@collabora.com>\nDate:   Thu Feb 29 17:22:18 2024 +0100\n\n    drm/panthor: Add the GPU logical block\n    \n    Handles everything that's not related to the FW, the MMU or the\n    scheduler. This is the block dealing with the GPU property retrieval,\n    the GPU block power on/off logic, and some global operations, like\n    global cache flushing.\n    \n    v6:\n    - Add Maxime's and Heiko's acks\n    \n    v5:\n    - ",
+        "exists": false,
+        "reason": "The shown `panthor_gpu_flush_caches()` function contains the exact cache-flush timeout recovery logic relevant to the root cause. It sets `pending_reqs` before issuing the flush (`ptdev->gpu->pending_reqs |= GPU_IRQ_CLEAN_CACHES_COMPLETED;`), waits for completion, and on timeout re-checks hardware state under the lock: `if ((ptdev->gpu->pending_reqs & GPU_IRQ_CLEAN_CACHES_COMPLETED) != 0 && !(gpu_read(ptdev, GPU_INT_RAWSTAT) & GPU_IRQ_CLEAN_CACHES_COMPLETED)) timedout = true; else ptdev->gpu->pending_reqs &= ~GPU_IRQ_CLEAN_CACHES_COMPLETED;`. This means the code already clears `pending_reqs` when the interrupt bit is no longer pending in RAWSTAT, which is the fix described in the commit message. Because the vulnerable construct (leaving `pending_reqs` uncleared after timeout) is present in the logic only as a handled case and the recovery/fix is already implemented, `has_bug` is YES and `is_fixed` is YES."
+      }
+    },
+    {
+      "bic_found": "5cd894e258c4b0b92b9b475309cea244e590d194",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "151df689fb75",
+          "anchor_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+          "anchor_lineno": 310
+        },
+        "commit": "5cd894e258c4b0b92b9b475309cea244e590d194",
+        "commit_short": "5cd894e258c4",
+        "commit_msg": "drm/panthor: Add the GPU logical block\n\nHandles everything that's not related to the FW, the MMU or the\nscheduler. This ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+        "display_lineno": 398,
+        "code_snippet": "commit 5cd894e258c4b0b92b9b475309cea244e590d194\nAuthor: Boris Brezillon <boris.brezillon@collabora.com>\nDate:   Thu Feb 29 17:22:18 2024 +0100\n\n    drm/panthor: Add the GPU logical block\n    \n    Handles everything that's not related to the FW, the MMU or the\n    scheduler. This is the block dealing with the GPU property retrieval,\n    the GPU block power on/off logic, and some global operations, like\n    global cache flushing.\n    \n    v6:\n    - Add Maxime's and Heiko's acks\n    \n    v5:\n    - ",
+        "exists": false,
+        "reason": "The vulnerable cache-flush path is present, but this implementation already includes recovery logic for timeout cases. In `panthor_gpu_flush_caches()` it sets `pending_reqs` and waits on `GPU_IRQ_CLEAN_CACHES_COMPLETED`, then on timeout it rechecks hardware state: `if ((ptdev->gpu->pending_reqs & GPU_IRQ_CLEAN_CACHES_COMPLETED) != 0 && !(gpu_read(ptdev, GPU_INT_RAWSTAT) & GPU_IRQ_CLEAN_CACHES_COMPLETED)) timedout = true; else ptdev->gpu->pending_reqs &= ~GPU_IRQ_CLEAN_CACHES_COMPLETED;`. This explicitly clears `pending_reqs` when the IRQ is no longer pending in `GPU_INT_RAWSTAT`, which is the fix described in the commit message. Because the code already handles the timeout-and-stale-pending-bit case, the vulnerable construct (leaving `pending_reqs` uncleared without reset handling) is not present here."
+      }
+    },
+    {
+      "bic_found": "5cd894e258c4b0b92b9b475309cea244e590d194",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "151df689fb75",
+          "anchor_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+          "anchor_lineno": 314
+        },
+        "commit": "5cd894e258c4b0b92b9b475309cea244e590d194",
+        "commit_short": "5cd894e258c4",
+        "commit_msg": "drm/panthor: Add the GPU logical block\n\nHandles everything that's not related to the FW, the MMU or the\nscheduler. This ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+        "display_lineno": 402,
+        "code_snippet": "commit 5cd894e258c4b0b92b9b475309cea244e590d194\nAuthor: Boris Brezillon <boris.brezillon@collabora.com>\nDate:   Thu Feb 29 17:22:18 2024 +0100\n\n    drm/panthor: Add the GPU logical block\n    \n    Handles everything that's not related to the FW, the MMU or the\n    scheduler. This is the block dealing with the GPU property retrieval,\n    the GPU block power on/off logic, and some global operations, like\n    global cache flushing.\n    \n    v6:\n    - Add Maxime's and Heiko's acks\n    \n    v5:\n    - ",
+        "exists": false,
+        "reason": "The shown `panthor_gpu_flush_caches()` implementation already contains timeout recovery logic for the cache-flush request. After waiting, it rechecks `pending_reqs` under `reqs_lock` and distinguishes between a real timeout and a case where the IRQ bit has already cleared: `if ((ptdev->gpu->pending_reqs & GPU_IRQ_CLEAN_CACHES_COMPLETED) != 0 && !(gpu_read(ptdev, GPU_INT_RAWSTAT) & GPU_IRQ_CLEAN_CACHES_COMPLETED)) timedout = true; else ptdev->gpu->pending_reqs &= ~GPU_IRQ_CLEAN_CACHES_COMPLETED;`. This means it explicitly clears `pending_reqs` when the request is no longer pending, preventing the stuck state described in the root cause. The vulnerable construct (leaving `pending_reqs` uncleared on timeout with no recovery) is not present in this code, so `has_bug` is false and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "5cd894e258c4b0b92b9b475309cea244e590d194",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "151df689fb75",
+          "anchor_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+          "anchor_lineno": 320
+        },
+        "commit": "5cd894e258c4b0b92b9b475309cea244e590d194",
+        "commit_short": "5cd894e258c4",
+        "commit_msg": "drm/panthor: Add the GPU logical block\n\nHandles everything that's not related to the FW, the MMU or the\nscheduler. This ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/panthor/panthor_gpu.c",
+        "display_lineno": 408,
+        "code_snippet": "commit 5cd894e258c4b0b92b9b475309cea244e590d194\nAuthor: Boris Brezillon <boris.brezillon@collabora.com>\nDate:   Thu Feb 29 17:22:18 2024 +0100\n\n    drm/panthor: Add the GPU logical block\n    \n    Handles everything that's not related to the FW, the MMU or the\n    scheduler. This is the block dealing with the GPU property retrieval,\n    the GPU block power on/off logic, and some global operations, like\n    global cache flushing.\n    \n    v6:\n    - Add Maxime's and Heiko's acks\n    \n    v5:\n    - ",
+        "exists": false,
+        "reason": "The snippet shows the cache-flush path and its timeout handling in full. In `panthor_gpu_flush_caches()`, after waiting on `GPU_IRQ_CLEAN_CACHES_COMPLETED`, it explicitly rechecks RAWSTAT and either clears the pending bit or treats it as a real timeout: `if ((ptdev->gpu->pending_reqs & GPU_IRQ_CLEAN_CACHES_COMPLETED) != 0 && !(gpu_read(ptdev, GPU_INT_RAWSTAT) & GPU_IRQ_CLEAN_CACHES_COMPLETED)) timedout = true; else ptdev->gpu->pending_reqs &= ~GPU_IRQ_CLEAN_CACHES_COMPLETED;`. This is the recovery/fix described in the root cause, because it ensures `pending_reqs` is cleared when the interrupt bit is no longer asserted even if `wait_event_timeout()` expired. The vulnerable construct is therefore not present in this commit version, and the fix is already in place."
+      }
+    },
+    {
+      "bic_found": "5cd894e258c4b0b92b9b475309cea244e590d194",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "5cd894e258c4b0b92b9b475309cea244e590d194": 4
+      },
+      "bic_candidates": [
+        "5cd894e258c4b0b92b9b475309cea244e590d194"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

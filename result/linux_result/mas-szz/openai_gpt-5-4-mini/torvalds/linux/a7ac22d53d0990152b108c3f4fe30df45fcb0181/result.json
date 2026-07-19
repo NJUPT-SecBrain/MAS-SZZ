@@ -1,0 +1,288 @@
+{
+  "cveid": "CVE-2026-22986",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a7ac22d53d0990152b108c3f4fe30df45fcb0181"
+  ],
+  "ground_truth_bic": "47d8b4c1d868148c8fb51b785a89e58ca2d02c4d",
+  "predicted_bic": [
+    "e348544f7994d252427ed3ae637c7081cbb90f66"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 23423,
+  "root_cause": {
+    "text": "`gpiochip_add_data_with_key()` added `gdev` to the global `gpio_devices` RCU list before initializing `gdev->srcu`/`gdev->desc_srcu`, allowing another CPU in `gpio_name_to_desc()` to dereference an uninitialized `&gdev->srcu` during SRCU traversal.",
+    "evidence": "The CVE says one driver could be “traversing the srcu-protected list in `gpio_name_to_desc()`, meanwhile other has just added its gdev in `gpiodev_add_to_list_unlocked()`,” creating a window where `&gdev->srcu` is used “before the other has initialized it”; the patch fixes this by moving `rwlock_init()`, notifier init, and `init_srcu_struct(&gdev->srcu)` / `init_srcu_struct(&gdev->desc_srcu)` to occur before `gpiodev_add_to_list_unlocked()`, and by adjusting error paths accordingly.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpio/gpiolib.c",
+      "lineno": 1139,
+      "content": "ret = gpiodev_add_to_list_unlocked(gdev);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`gpiochip_add_data_with_key()` added `gdev` to the global `gpio_devices` RCU list before initializing `gdev->srcu`/`gdev->desc_srcu`, allowing another CPU in `gpio_name_to_desc()` to dereference an uninitialized `&gdev->srcu` during SRCU traversal.",
+      "evidence_points": "The CVE says one driver could be “traversing the srcu-protected list in `gpio_name_to_desc()`, meanwhile other has just added its gdev in `gpiodev_add_to_list_unlocked()`,” creating a window where `&gdev->srcu` is used “before the other has initialized it”; the patch fixes this by moving `rwlock_init()`, notifier init, and `init_srcu_struct(&gdev->srcu)` / `init_srcu_struct(&gdev->desc_srcu)` to occur before `gpiodev_add_to_list_unlocked()`, and by adjusting error paths accordingly."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpio/gpiolib.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpio/gpiolib.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/gpio/gpiolib.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/gpio/gpiolib.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/gpio/gpiolib.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "drivers/gpio/gpiolib.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize GPIO device synchronization and notifier infrastructure during registration, with cleanup on SRCU initialization failure.",
+        "what": "The function `gpiochip_add_data_with_key()` now initializes three synchronization/notifier members on `gdev` (`line_state_lock`, `line_state_notifier`, and `device_notifier`) and then initializes two SRCU structures (`gdev->srcu` and `gdev->desc_srcu`) before entering the `gpio_devices_lock` scoped guard. It also adds error handling that jumps to `err_free_label` if the first SRCU init fails, and to `err_cleanup_gdev_srcu` if the second SRCU init fails.",
+        "how": "At runtime, the GPIO device object is now prepared with its locking, notifier chains, and SRCU state earlier in the registration path. This enables safe concurrent use of line-state and device notifications, and ensures that failures during SRCU setup abort registration cleanly instead of proceeding with uninitialized synchronization primitives."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix the gpiochip add error path to use the correct cleanup label when base allocation fails.",
+        "what": "In gpiochip_add_data_with_key(), the error path after a failed base allocation lookup was changed from jumping to err_free_label to jumping to err_cleanup_desc_srcu.",
+        "how": "On failure, execution now routes through a different cleanup label, implying that an additional or more appropriate SRCU-related teardown step is performed before returning the error, avoiding an incomplete cleanup sequence."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Rework GPIO chip setup error handling and move resource initialization to ensure failed registration cleans up the correct SRCU state.",
+        "what": "The error path after `gpiodev_add_to_list_unlocked(gdev)` was changed to jump to `err_cleanup_desc_srcu` instead of `err_free_label`. In addition, the initialization block that previously set up `line_state_lock`, the notifier heads, and both `srcu` and `desc_srcu` was removed from this location.",
+        "how": "This changes the control flow so that a failure during GPIO chip list insertion now routes through a cleanup path intended for `desc_srcu` resources, rather than freeing only the label. Removing the initialization block from here means those synchronization and notifier structures are no longer initialized at this point in the function, implying they are now expected to be set up elsewhere or that this code path was reordered to avoid redundant initialization and ensure correct cleanup on failure."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix the gpiochip registration failure unwind path to remove the chip from the list before cleanup when name setup or valid-mask initialization fails.",
+        "what": "In gpiochip_add_data_with_key(), both error paths after gpiochip_set_names(gc) and gpiochip_init_valid_mask(gc) were changed from jumping to err_cleanup_desc_srcu to jumping to err_remove_from_list.",
+        "how": "On failure in either of those initialization steps, the function will now unwind through the path that removes the gpiochip from the global list instead of going directly to the descriptor SRCU cleanup path, changing the teardown order during partial registration failure."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "refactor",
+        "intent_summary": "Remove obsolete SRCU cleanup labels from the gpiochip add error path.",
+        "what": "The diff removes two error-handling labels, `err_cleanup_desc_srcu` and `err_cleanup_gdev_srcu`, along with their corresponding calls to `cleanup_srcu_struct(&gdev->desc_srcu);` and `cleanup_srcu_struct(&gdev->srcu);` from the `gpiochip_add_data_with_key()` cleanup path.",
+        "how": "If execution reaches the existing failure path, the code no longer performs explicit SRCU cleanup for `gdev->desc_srcu` and `gdev->srcu` at those labels. This changes the teardown sequence on error by skipping those two cleanup steps, leaving the remaining cleanup path intact."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Add missing cleanup of gdev SRCU resources on gpiochip_add_data_with_key() error paths.",
+        "what": "Two new error-handling labels were added in gpiochip_add_data_with_key(): err_cleanup_desc_srcu calls cleanup_srcu_struct(&gdev->desc_srcu), and err_cleanup_gdev_srcu calls cleanup_srcu_struct(&gdev->srcu), both placed before the existing err_free_label and err_free_descs cleanup paths.",
+        "how": "On failure paths that jump to these labels, the newly initialized SRCU structures associated with the gpio device are explicitly torn down before freeing the label and descriptors, preventing resource leaks or partially initialized SRCU state from persisting after an error."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Add missing cleanup of gdev SRCU resources on gpiochip_add_data_with_key() error paths."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix the gpiochip add error path to use the correct cleanup label when base allocation fails."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix the gpiochip registration failure unwind path to remove the chip from the list before cleanup when name setup or valid-mask initialization fails."
+        },
+        {
+          "group_id": 3,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove obsolete SRCU cleanup labels from the gpiochip add error path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix GPIO chip registration error handling so gdev SRCU and related notifier resources are properly initialized and cleaned up on failure paths.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address GPIO device registration and SRCU initialization/cleanup for gdev, which matches the root cause of exposing gdev to the global list before srcu/desc_srcu were initialized."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "This change only fixes an error-path cleanup label for base allocation failure. It does not address the race where gdev is published to the global gpio_devices list before srcu/desc_srcu initialization, which is the root cause of the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The change fixes failure-unwind cleanup ordering after registration errors, not the root cause of adding the gpio device to the global list before SRCU initialization. It does not address the uninitialized SRCU dereference in gpio_name_to_desc()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": false,
+        "reason": "The change only removes obsolete SRCU cleanup labels from an error path. It does not address the root cause of adding gdev to the gpio_devices list before initializing gdev->srcu/desc_srcu, nor does it change the initialization order that led to the uninitialized SRCU dereference."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpio/gpiolib.c",
+            "lineno": 1139,
+            "content": "ret = gpiodev_add_to_list_unlocked(gdev);",
+            "rationale": "This adds the GPIO device to the global list before the subsequent SRCU initializations. That ordering is the core bug: another CPU can observe the new gdev and enter gpio_name_to_desc() before gdev->srcu/gdev->desc_srcu are initialized."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpio/gpiolib.c",
+            "stmt_text": "ret = gpiodev_add_to_list_unlocked(gdev);",
+            "location": "hunk",
+            "explanation": "This statement publishes gdev to the global GPIO device list before the later SRCU fields are initialized, enabling another CPU to reach gpio_name_to_desc() and dereference uninitialized SRCU state."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "49416483a953",
+          "anchor_file": "drivers/gpio/gpiolib.c",
+          "anchor_lineno": 1139
+        },
+        "commit": "e348544f7994d252427ed3ae637c7081cbb90f66",
+        "commit_short": "e348544f7994",
+        "commit_msg": "gpio: protect the list of GPIO devices with SRCU\n\nWe're working towards removing the \"multi-function\" GPIO spinlock that",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpio/gpiolib.c",
+        "display_lineno": 923,
+        "code_snippet": "commit e348544f7994d252427ed3ae637c7081cbb90f66\nAuthor: Bartosz Golaszewski <brgl@kernel.org>\nDate:   Fri Jan 19 16:43:13 2024 +0100\n\n    gpio: protect the list of GPIO devices with SRCU\n    \n    We're working towards removing the \"multi-function\" GPIO spinlock that's\n    implemented terribly wrong. We tried using an RW-semaphore to protect\n    the list of GPIO devices but it turned out that we still have old code\n    using legacy GPIO calls that need to translate the global GPIO number to\n    t",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is that `gpiochip_add_data_with_key()` added `gdev` to the global `gpio_devices` list before initializing `gdev->srcu` / `gdev->desc_srcu`, letting another CPU traverse the list and dereference an uninitialized SRCU state. In this snippet, the add-to-list path is already moved under `scoped_guard(mutex, &gpio_devices_lock)` and the list insertion is done with RCU helpers (`list_add_rcu`, `list_add_tail_rcu`, `list_add_rcu`). More importantly, the code does not expose the old ordering bug: the function no longer uses the old spinlock-based list insertion and the list is protected with SRCU on readers (`scoped_guard(srcu, &gpio_devices_srcu)` / `list_for_each_entry_srcu(...)`). Since the snippet shows the new SRCU-based protection and not the pre-fix early-publication ordering that would allow dereferencing an uninitialized SRCU field, the vulnerable construct is absent here and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "e348544f7994d252427ed3ae637c7081cbb90f66",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e348544f7994d252427ed3ae637c7081cbb90f66": 1
+      },
+      "bic_candidates": [
+        "e348544f7994d252427ed3ae637c7081cbb90f66"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

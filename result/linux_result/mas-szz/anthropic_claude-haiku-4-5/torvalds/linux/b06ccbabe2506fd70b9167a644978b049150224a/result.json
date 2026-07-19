@@ -1,0 +1,301 @@
+{
+  "cveid": "CVE-2026-43392",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b06ccbabe2506fd70b9167a644978b049150224a"
+  ],
+  "ground_truth_bic": "8c2090c504e998c8f34ec870bae71dafcc96a6e0",
+  "predicted_bic": [
+    "f0e1a0643a59bf1f922fa209cec86a170b784f3f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 152385,
+  "root_cause": {
+    "text": "The scx_enable() function executes the READY -> ENABLED task switching loop in the calling thread's context, which gets switched from fair to ext sched_class, allowing higher-priority fair-class workloads to indefinitely starve the enable thread since fair has higher priority than ext.",
+    "evidence": "The patch moves the entire enable body from scx_enable() into scx_enable_workfn() which runs on a dedicated system-wide RT (SCHED_FIFO) kthread. The commit message explicitly states: \"During scx_enable(), the READY -> ENABLED task switching loop changes the calling thread's sched_class from fair to ext. Since fair has higher priority than ext, saturating fair-class workloads can indefinitely starve the enable thread, hanging the system.\" The fix offloads execution to an RT kthread \"which cannot be starved by either fair or ext class tasks,\" demonstrating that the root cause was the calling thread's vulnerable sched_class priority relative to fair-class workloads during the critical enable loop.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/sched/ext.c",
+      "lineno": 4978,
+      "content": "static int scx_enable(struct sched_ext_ops *ops, struct bpf_link *link)",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/sched/ext.c",
+      "lineno": 4992,
+      "content": "mutex_lock(&scx_enable_mutex);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The scx_enable() function executes the READY -> ENABLED task switching loop in the calling thread's context, which gets switched from fair to ext sched_class, allowing higher-priority fair-class workloads to indefinitely starve the enable thread since fair has higher priority than ext.",
+      "evidence_points": "The patch moves the entire enable body from scx_enable() into scx_enable_workfn() which runs on a dedicated system-wide RT (SCHED_FIFO) kthread. The commit message explicitly states: \"During scx_enable(), the READY -> ENABLED task switching loop changes the calling thread's sched_class from fair to ext. Since fair has higher priority than ext, saturating fair-class workloads can indefinitely starve the enable thread, hanging the system.\" The fix offloads execution to an RT kthread \"which cannot be starved by either fair or ext class tasks,\" demonstrating that the root cause was the calling thread's vulnerable sched_class priority relative to fair-class workloads during the critical enable loop."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/sched/ext.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/sched/ext.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/sched/ext.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Offload scx_enable() to a dedicated RT kthread to prevent caller starvation during fair-to-ext sched_class transition and avoid potential system hangs.",
+        "what": "Refactored scx_enable() function by extracting it into a new scx_enable_workfn() work function and introducing a scx_enable_cmd structure to hold parameters. Removed the isolcpus compatibility check from the beginning of the function logic. Added a detailed comment explaining why the enable operation is offloaded to a dedicated RT kthread.",
+        "how": "The change defers the scheduler extension enable operation to execute asynchronously on a dedicated kthread instead of running synchronously in the caller's context. This prevents the calling thread from being starved when its sched_class switches from fair to ext during the READY->ENABLED transition, which could cause system hangs under fair-class saturation. The isolcpus check removal shifts validation responsibility elsewhere in the call chain."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Refactor scx_enable() to return status via cmd->ret output parameter instead of function return value, changing from int return to void return.",
+        "what": "Changed the function return mechanism from returning an integer value directly to storing the result in a cmd->ret field and returning void. Specifically: replaced 'return 0;' with 'cmd->ret = 0; return;' on the success path, and replaced 'return ret;' with 'cmd->ret = ret; return;' on the error path.",
+        "how": "The function scx_enable() now uses an output parameter (cmd->ret) to communicate return values to the caller instead of using the function's return value. This allows the function to return void while still conveying success/failure status through the cmd structure. The caller must now check cmd->ret instead of the function's return value."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Refactor scx_enable() to execute asynchronously via a dedicated kthread worker while adding isolcpus compatibility validation and maintaining synchronous caller semantics.",
+        "what": "The diff replaces a simple `return 0;` statement with `cmd->ret = 0;` in what appears to be a work function, then adds a new `scx_enable()` function that creates a static kthread worker, validates CPU isolation compatibility, initializes a command structure, queues work to the helper thread, and returns the result from the command.",
+        "how": "The change refactors `scx_enable()` to execute its core logic asynchronously via a dedicated kthread worker instead of synchronously in the caller's context. The new function validates isolcpus compatibility upfront, lazily initializes a static helper worker thread with FIFO scheduling, packages the operation parameters into a command structure, queues it to the worker, waits for completion, and returns the result. This enables non-blocking execution and proper isolation handling while maintaining synchronous semantics to the caller."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Offload scx_enable() to a dedicated RT kthread to prevent caller starvation during fair-to-ext sched_class transition and avoid potential system hangs."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor scx_enable() to return status via cmd->ret output parameter instead of function return value, changing from int return to void return."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor scx_enable() to execute asynchronously via a dedicated kthread worker while adding isolcpus compatibility validation and maintaining synchronous caller semantics."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by offloading scx_enable() execution to a dedicated RT kthread. This prevents the caller from being switched to ext sched_class (lower priority) where it can be starved by fair-class workloads. By executing in an RT kthread instead, the enable operation completes with higher priority, eliminating the starvation vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "This group only refactors the return mechanism of scx_enable() (from int return to void with cmd->ret parameter). It does not address the core vulnerability: the scheduling priority inversion where the enable thread gets switched to ext sched_class and starved by higher-priority fair-class workloads. The refactoring is a style/interface change that doesn't mitigate or fix the starvation issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by refactoring scx_enable() to execute asynchronously via a dedicated kthread worker instead of in the calling thread's context. This prevents the calling thread from being switched to ext sched_class where it could be starved by higher-priority fair-class workloads. By moving the READY -> ENABLED task switching loop to a separate kthread, the vulnerability's starvation mechanism is eliminated."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/sched/ext.c",
+            "lineno": 4978,
+            "content": "static int scx_enable(struct sched_ext_ops *ops, struct bpf_link *link)",
+            "rationale": "The scx_enable() function executes the READY -> ENABLED task switching loop in the calling thread's context. Since the function switches the calling thread from fair to ext sched_class, and fair has higher priority than ext, higher-priority fair-class workloads can starve the enable thread, causing potential system hangs."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/sched/ext.c",
+            "lineno": 4992,
+            "content": "mutex_lock(&scx_enable_mutex);",
+            "rationale": "This mutex lock in the calling thread's context keeps the thread blocked while it performs the sched_class transition. The calling thread remains in fair class during this critical section, making it vulnerable to starvation by other fair-class workloads with higher priority."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/sched/ext.c",
+            "stmt_text": "static int scx_enable(struct sched_ext_ops *ops, struct bpf_link *link)",
+            "location": "hunk",
+            "explanation": "This function executes the READY -> ENABLED task switching loop in the calling thread's context. The calling thread gets switched from fair to ext sched_class within this function, but during the transition, it remains vulnerable to starvation by higher-priority fair-class workloads since fair has higher priority than ext. This can cause indefinite starvation and system hangs."
+          },
+          {
+            "vuln_file": "kernel/sched/ext.c",
+            "stmt_text": "mutex_lock(&scx_enable_mutex);",
+            "location": "hunk",
+            "explanation": "This mutex lock is acquired in the calling thread's context while the thread is still in fair sched_class. The lock keeps the thread blocked during the critical sched_class transition period, making it vulnerable to starvation by other fair-class workloads with higher priority, as the calling thread cannot progress to ext class until after the mutex is released."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1336b579f607",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 4978
+        },
+        "commit": "1a2469403eb26c1c8b9555fc6bb91ccc6e9fc948",
+        "commit_short": "1a2469403eb2",
+        "commit_msg": "sched_ext: Drop \"ops\" from scx_ops_{init|exit|enable|disable}[_task]() and friends\n\nThe tag \"ops\" is used for two differ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 5246,
+        "code_snippet": "commit 1a2469403eb26c1c8b9555fc6bb91ccc6e9fc948\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Fri Apr 4 08:52:49 2025 -1000\n\n    sched_ext: Drop \"ops\" from scx_ops_{init|exit|enable|disable}[_task]() and friends\n    \n    The tag \"ops\" is used for two different purposes. First, to indicate that\n    the entity is directly related to the operations such as flags carried in\n    sched_ext_ops. Second, to indicate that the entity applies to something\n    global such as enable or bypass states. The second ",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the READY -> ENABLED task switching loop (lines 5489-5510). At line 5481, `static_branch_enable(&__scx_enabled)` is called, which enables the SCX scheduler. Then the loop at lines 5490-5508 executes the task state transitions from READY to ENABLED by calling `sched_deq_and_put_task()` and `sched_enq_and_set_task()` to switch tasks to the ext sched_class. Critically, this entire loop executes in the calling thread's context (the enable thread) while that thread itself has been switched to the ext sched_class (lower priority than fair). The vulnerability root cause states that higher-priority fair-class workloads can indefinitely starve the enable thread since fair has higher priority than ext. The code shows no mechanism to prevent this starvation - the enable thread is not protected with elevated priority (e.g., RT priority) during this critical section. The loop simply iterates through all tasks and switches them without any protection for the enable thread itself from being starved by fair-class tasks."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "c5f22258f5f6",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 5246
+        },
+        "commit": "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+        "commit_short": "f0e1a0643a59",
+        "commit_msg": "sched_ext: Implement BPF extensible scheduler class\n\nImplement a new scheduler class sched_ext (SCX), which allows sched",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 3022,
+        "code_snippet": "commit f0e1a0643a59bf1f922fa209cec86a170b784f3f\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Tue Jun 18 10:09:17 2024 -1000\n\n    sched_ext: Implement BPF extensible scheduler class\n    \n    Implement a new scheduler class sched_ext (SCX), which allows scheduling\n    policies to be implemented as BPF programs to achieve the following:\n    \n    1. Ease of experimentation and exploration: Enabling rapid iteration of new\n       scheduling policies.\n    \n    2. Customization: Building application-specif",
+        "exists": true,
+        "reason": "The vulnerability root cause describes that scx_enable() executes the READY -> ENABLED task switching loop in the calling thread's context, which gets switched from fair to ext sched_class, allowing higher-priority fair-class workloads to indefinitely starve the enable thread. Examining the scx_ops_enable() function (lines 3913-4055), the critical section occurs at lines 3995-4035 where the READY -> ENABLED transitions happen. Specifically, at line 4000, preempt_disable() is called, and then the loop at lines 4008-4020 iterates through tasks calling sched_deq_and_put_task() and sched_enq_and_set_task() to switch them to SCX. The calling thread (current) is part of scx_tasks and will be switched to ext_sched_class along with other tasks. The code shows that while preempt_disable() is held (line 4000), the thread is switched to ext_sched_class via __setscheduler_prio() at line 4013. However, there is no mechanism to prevent fair-class tasks from starving this enable thread during the switching loop. The enable thread itself becomes an ext_sched_class task while still holding the scx_tasks_lock and executing the switching loop, making it vulnerable to starvation by higher-priority fair workloads that may be runnable. The fix would require either executing this loop in a context that cannot be starved (e.g., in a dedicated helper thread with higher priority) or using a bypass mechanism to ensure forward progress, neither of which is present in this initial implementation."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1336b579f607",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 4992
+        },
+        "commit": "a50c365f996d8935c52967391488828e5e76471e",
+        "commit_short": "a50c365f996d",
+        "commit_msg": "sched_ext: Drop \"ops\" from scx_ops_helper, scx_ops_enable_mutex and __scx_ops_enabled\n\nThe tag \"ops\" is used for two dif",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 5265,
+        "code_snippet": "commit a50c365f996d8935c52967391488828e5e76471e\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Fri Apr 4 08:52:48 2025 -1000\n\n    sched_ext: Drop \"ops\" from scx_ops_helper, scx_ops_enable_mutex and __scx_ops_enabled\n    \n    The tag \"ops\" is used for two different purposes. First, to indicate that\n    the entity is directly related to the operations such as flags carried in\n    sched_ext_ops. Second, to indicate that the entity applies to something\n    global such as enable or bypass states. The seco",
+        "exists": true,
+        "reason": "The vulnerability root cause describes that scx_enable() executes the READY -> ENABLED task switching loop in the calling thread's context, which gets switched from fair to ext sched_class, allowing higher-priority fair-class workloads to indefinitely starve the enable thread. Looking at lines 5494-5516, this is exactly what occurs: the function iterates through all tasks and switches them to the new sched_class (line 5508: 'p->sched_class = new_class;'). Critically, this loop executes in the calling thread's context without any mechanism to prevent the calling thread itself from being switched to the ext sched_class and then starved by fair-class workloads. The calling thread is part of the task iteration (scx_task_iter_next_locked at line 5496), and there is no protection preventing it from being switched to ext class where it can be starved by higher-priority fair-class tasks. The fix would require executing this READY -> ENABLED transition in a separate helper thread (like scx_helper) or with appropriate priority/scheduling protections, but no such mechanism is present in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "1a7ff7216c8b",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 5265
+        },
+        "commit": "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+        "commit_short": "f0e1a0643a59",
+        "commit_msg": "sched_ext: Implement BPF extensible scheduler class\n\nImplement a new scheduler class sched_ext (SCX), which allows sched",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 3028,
+        "code_snippet": "commit f0e1a0643a59bf1f922fa209cec86a170b784f3f\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Tue Jun 18 10:09:17 2024 -1000\n\n    sched_ext: Implement BPF extensible scheduler class\n    \n    Implement a new scheduler class sched_ext (SCX), which allows scheduling\n    policies to be implemented as BPF programs to achieve the following:\n    \n    1. Ease of experimentation and exploration: Enabling rapid iteration of new\n       scheduling policies.\n    \n    2. Customization: Building application-specif",
+        "exists": true,
+        "reason": "The vulnerability root cause describes that scx_enable() executes the READY -> ENABLED task switching loop in the calling thread's context, getting switched from fair to ext sched_class, allowing higher-priority fair-class workloads to indefinitely starve the enable thread. In the provided code, the scx_ops_enable() function (lines 3850-4000+) performs the READY -> ENABLED transitions at lines 3950-3970 within a preempt_disable() section (line 3945). However, the critical issue is that this occurs AFTER the calling thread has already been switched to ext_sched_class via __setscheduler_prio() at line 3962. The code shows: 'preempt_disable();' followed by task state transitions where 'sched_deq_and_put_task()' and '__setscheduler_prio()' are called, which switches tasks to ext_sched_class. The enable thread itself (the one running scx_ops_enable) is not protected from being starved by fair-class tasks because it remains on the fair scheduler while performing these operations. The fix would require either: (1) keeping the enable thread on fair class during the loop, or (2) using a helper thread (which is actually done via scx_ops_helper, but the initial enable path still has the vulnerability). The code does create a helper thread at line 3859, but the main enable path still executes the switching loop in the calling context with preemption disabled but not with scheduler class protection."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "f0e1a0643a59bf1f922fa209cec86a170b784f3f": 2
+      },
+      "bic_candidates": [
+        "f0e1a0643a59bf1f922fa209cec86a170b784f3f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

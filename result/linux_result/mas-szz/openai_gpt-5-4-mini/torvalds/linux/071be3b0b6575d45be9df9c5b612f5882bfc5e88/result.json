@@ -1,0 +1,424 @@
+{
+  "cveid": "CVE-2026-23174",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "071be3b0b6575d45be9df9c5b612f5882bfc5e88"
+  ],
+  "ground_truth_bic": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+  "predicted_bic": [
+    "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+    "d08774738446e77734777adcf5d1045237b4475a"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 30908,
+  "root_cause": {
+    "text": "The NVMe PCI PRP mapping path assumed `dma_need_unmap()` could only be decided once at setup time, so it failed to allocate/populate `iod->dma_vecs` when the device’s DMA-unmap requirement changed mid-iteration, leading to a NULL dereference when later code tried to save unmap vectors into an uninitialized `struct nvme_iod` field.",
+    "evidence": "The patch notes that “The initial state of dma_needs_unmap may be false, but change to true while mapping the data iterator,” and fixes this by moving `mempool_alloc()` and `iod->dma_vecs` population into `nvme_pci_prp_save_mapping()` so vectors are allocated “as needed during iteration rather than assume it was always allocated at the beginning”; it also adds `iod->nr_dma_vecs = 0` in `nvme_prep_rq()`, confirming the bug was due to relying on uninitialized `dma_vecs` state.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/nvme/host/pci.c",
+      "lineno": 821,
+      "content": "if (!dma_use_iova(&iod->dma_state) && dma_need_unmap(nvmeq->dev->dev)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/nvme/host/pci.c",
+      "lineno": 847,
+      "content": "iod->dma_vecs = mempool_alloc(nvmeq->dev->dmavec_mempool,",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/nvme/host/pci.c",
+      "lineno": 829,
+      "content": "iod->dma_vecs[iod->nr_dma_vecs].addr = iter->addr;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/nvme/host/pci.c",
+      "lineno": 830,
+      "content": "iod->dma_vecs[iod->nr_dma_vecs].len = iter->len;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/nvme/host/pci.c",
+      "lineno": 831,
+      "content": "iod->nr_dma_vecs++;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The NVMe PCI PRP mapping path assumed `dma_need_unmap()` could only be decided once at setup time, so it failed to allocate/populate `iod->dma_vecs` when the device’s DMA-unmap requirement changed mid-iteration, leading to a NULL dereference when later code tried to save unmap vectors into an uninitialized `struct nvme_iod` field.",
+      "evidence_points": "The patch notes that “The initial state of dma_needs_unmap may be false, but change to true while mapping the data iterator,” and fixes this by moving `mempool_alloc()` and `iod->dma_vecs` population into `nvme_pci_prp_save_mapping()` so vectors are allocated “as needed during iteration rather than assume it was always allocated at the beginning”; it also adds `iod->nr_dma_vecs = 0` in `nvme_prep_rq()`, confirming the bug was due to relying on uninitialized `dma_vecs` state."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/nvme/host/pci.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/nvme/host/pci.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/nvme/host/pci.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/nvme/host/pci.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add persistent DMA mapping bookkeeping for NVMe PCI PRP handling with resource-failure propagation.",
+        "what": "A new static helper function, `nvme_pci_prp_save_mapping()`, was added. It takes a request, DMA device, and block DMA iterator, retrieves the NVMe I/O descriptor (`nvme_iod`), returns early if the mapping uses IOVA or the device does not need unmapping, lazily allocates `iod->dma_vecs` from `nvmeq->dev->dmavec_mempool` on the first saved segment, records `iter->addr` and `iter->len` into `iod->dma_vecs[iod->nr_dma_vecs]`, increments `nr_dma_vecs`, and sets `iter->status = BLK_STS_RESOURCE` and returns false if allocation fails.",
+        "how": "At runtime, this enables the driver to preserve DMA segment mappings for later unmapping or bookkeeping when the device requires it, instead of relying only on immediate iteration state. It also handles allocation failure explicitly by propagating a resource error back through the iterator status, preventing the request from proceeding without the needed DMA vector storage."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Move PRP DMA mapping save logic into a साझा helper and call it from `nvme_pci_prp_iter_next()`.",
+        "what": "In `nvme_pci_prp_iter_next()`, the inline block that conditionally appended `iter->addr` and `iter->len` to `iod->dma_vecs` and incremented `iod->nr_dma_vecs` was removed. The function now returns the result of a new helper call, `nvme_pci_prp_save_mapping(req, dma_dev, iter)`, after `blk_rq_dma_map_iter_next()` succeeds.",
+        "how": "Runtime behavior is functionally equivalent at the call site, but the logic for recording DMA mappings is now centralized in `nvme_pci_prp_save_mapping()`. This changes where the mapping-save work happens, reducing duplication and ensuring the PRP iterator uses the shared helper to preserve mapping state when required."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Refactor PRP DMA mapping setup to use a साझा helper for saving the transfer mapping and handling failure.",
+        "what": "The code that previously conditionally allocated `iod->dma_vecs` from `dmavec_mempool` and manually stored `iter->addr`, `iter->len`, and `nr_dma_vecs = 1` was removed. In its place, the function now calls `nvme_pci_prp_save_mapping(req, nvmeq->dev->dev, iter)` and returns `iter->status` if that helper indicates failure.",
+        "how": "At runtime, PRP setup now delegates DMA mapping bookkeeping to a helper instead of doing the save inline. This changes the failure path to use the helper's status and centralizes mapping preservation logic, while still ensuring the PRP setup can only continue when the mapping is successfully recorded."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize `iod->nr_dma_vecs` when preparing an NVMe request to avoid carrying stale DMA vector state.",
+        "what": "In nvme_prep_rq(), a new initialization assignment sets `iod->nr_dma_vecs` to 0 alongside the existing resets of `nr_descriptors`, `total_len`, and `meta_total_len`.",
+        "how": "This ensures the request I/O descriptor starts with a clean DMA vector count before command setup, preventing stale state from a previous use of the structure from affecting request preparation or DMA mapping logic."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add persistent DMA mapping bookkeeping for NVMe PCI PRP handling with resource-failure propagation."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 2,
+          "intent": "Refactor PRP DMA mapping setup to use a साझा helper for saving the transfer mapping and handling failure."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize `iod->nr_dma_vecs` when preparing an NVMe request to avoid carrying stale DMA vector state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Refactor PRP DMA mapping setup to use a shared helper for saving the transfer mapping and handling failure.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change adds persistent DMA mapping bookkeeping for NVMe PCI PRP handling, which directly matches the root cause: missing allocation/population of iod->dma_vecs when dma_need_unmap() changes during iteration, leading to a NULL dereference."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes are in the NVMe PCI PRP DMA mapping path and specifically affect how transfer mappings are saved and failures are handled. That is directly related to the root cause involving incorrect handling of DMA unmap state and uninitialized dma_vecs during PRP mapping iteration."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change is about initializing DMA vector-related state in nvme_iod during request setup, which directly matches the root cause where missing initialization/allocation of DMA vector fields led to a NULL dereference when unmap vectors were later stored."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/nvme/host/pci.c",
+            "lineno": 829,
+            "content": "iod->dma_vecs[iod->nr_dma_vecs].addr = iter->addr;",
+            "rationale": "This dereferences iod->dma_vecs without ensuring it was allocated, so if the DMA-unmap requirement changes mid-iteration and iod->dma_vecs was never initialized, this can trigger the NULL dereference described in the root cause."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/nvme/host/pci.c",
+            "lineno": 830,
+            "content": "iod->dma_vecs[iod->nr_dma_vecs].len = iter->len;",
+            "rationale": "This is the paired write into the same uninitialized iod->dma_vecs array, and it depends on the same missing allocation/population when dma_need_unmap() changes during iteration."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/nvme/host/pci.c",
+            "lineno": 831,
+            "content": "iod->nr_dma_vecs++;",
+            "rationale": "This line assumes a valid dma_vecs entry was reserved and populated; if the vector storage was never allocated due to stale DMA-unmap assumptions, the bookkeeping advances on invalid state and reflects the faulty path."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/nvme/host/pci.c",
+            "lineno": 847,
+            "content": "iod->dma_vecs = mempool_alloc(nvmeq->dev->dmavec_mempool,",
+            "rationale": "This allocation only happens under the setup-time dma_need_unmap() check; the bug arises because the code fails to perform an equivalent allocation later when the DMA-unmap requirement changes mid-iteration."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/nvme/host/pci.c",
+            "lineno": 821,
+            "content": "if (!dma_use_iova(&iod->dma_state) && dma_need_unmap(nvmeq->dev->dev)) {",
+            "rationale": "This conditional encodes the flawed assumption that dma_need_unmap() can be decided once at setup time; when that requirement changes during iteration, the code misses the needed allocation/population and later dereferences an uninitialized iod->dma_vecs."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/nvme/host/pci.c",
+            "stmt_text": "if (!dma_use_iova(&iod->dma_state) && dma_need_unmap(nvmeq->dev->dev)) {",
+            "location": "hunk",
+            "explanation": "This condition embodies the incorrect setup-time decision about whether DMA-unmap handling is needed. Because it does not account for the requirement changing later during iteration, the code can skip allocating/populating iod->dma_vecs and leave later save logic operating on uninitialized state."
+          },
+          {
+            "vuln_file": "drivers/nvme/host/pci.c",
+            "stmt_text": "iod->dma_vecs = mempool_alloc(nvmeq->dev->dmavec_mempool,",
+            "location": "hunk",
+            "explanation": "This is the only allocation of iod->dma_vecs in the vulnerable path, and it is gated by the flawed condition above. If dma_need_unmap() changes mid-iteration, this allocation may never happen, leading to the NULL dereference when later code writes into iod->dma_vecs."
+          },
+          {
+            "vuln_file": "drivers/nvme/host/pci.c",
+            "stmt_text": "iod->dma_vecs[iod->nr_dma_vecs].addr = iter->addr;",
+            "location": "hunk",
+            "explanation": "This statement directly dereferences iod->dma_vecs without first ensuring the array was allocated. It is the immediate crash site when the earlier allocation was skipped due to the stale DMA-unmap assumption."
+          },
+          {
+            "vuln_file": "drivers/nvme/host/pci.c",
+            "stmt_text": "iod->dma_vecs[iod->nr_dma_vecs].len = iter->len;",
+            "location": "hunk",
+            "explanation": "This paired write hits the same uninitialized iod->dma_vecs storage as the addr assignment. It is part of the same NULL-dereference path caused by missing allocation when DMA-unmap requirements change."
+          },
+          {
+            "vuln_file": "drivers/nvme/host/pci.c",
+            "stmt_text": "iod->nr_dma_vecs++;",
+            "location": "hunk",
+            "explanation": "This bookkeeping increment assumes a valid dma_vecs slot exists and was populated. It is vulnerable as part of the same faulty path, advancing state after writing through an uninitialized iod->dma_vecs pointer."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4da7c5c3ec34",
+          "anchor_file": "drivers/nvme/host/pci.c",
+          "anchor_lineno": 821
+        },
+        "commit": "d08774738446e77734777adcf5d1045237b4475a",
+        "commit_short": "d08774738446",
+        "commit_msg": "nvme-pci: Print invalid SGL only once\n\nThe WARN_ONCE macro returns true if the condition is true, not if the\nwarn was ra",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/nvme/host/pci.c",
+        "display_lineno": 545,
+        "code_snippet": "commit d08774738446e77734777adcf5d1045237b4475a\nAuthor: Keith Busch <kbusch@kernel.org>\nDate:   Fri Sep 15 13:05:38 2017 -0400\n\n    nvme-pci: Print invalid SGL only once\n    \n    The WARN_ONCE macro returns true if the condition is true, not if the\n    warn was raised, so we're printing the scatter list every time it's\n    invalid. This is excessive and makes debugging harder, so this patch\n    prints it just once.\n    \n    Signed-off-by: Keith Busch <keith.busch@intel.com>\n    Reviewed-by: Mart",
+        "exists": false,
+        "reason": "The shown function only iterates over a scatterlist and prints its contents: `for_each_sg(sgl, sg, nents, i) { ... pr_warn(...) }`. The vulnerability root cause is about NVMe PCI PRP mapping and failing to allocate/populate `iod->dma_vecs` when `dma_need_unmap()` changes mid-iteration, causing a NULL dereference later when saving unmap vectors. None of that logic appears here. This function contains only debug/warning output and no `dma_need_unmap()`, no `iod->dma_vecs`, and no unmap-vector allocation or dereference, so the vulnerable construct is absent and the fix is also unrelated to this snippet."
+      }
+    },
+    {
+      "bic_found": "d08774738446e77734777adcf5d1045237b4475a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4da7c5c3ec34",
+          "anchor_file": "drivers/nvme/host/pci.c",
+          "anchor_lineno": 847
+        },
+        "commit": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+        "commit_short": "b8b7570a7ec8",
+        "commit_msg": "nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n\nThe current version of the blk_rq_dma_map su",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/nvme/host/pci.c",
+        "display_lineno": 767,
+        "code_snippet": "commit b8b7570a7ec872f2a27b775c4f8710ca8a357adf\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Mon Jul 7 14:52:23 2025 +0200\n\n    nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n    \n    The current version of the blk_rq_dma_map support in nvme-pci tries to\n    reconstruct the DMA mappings from the on the wire descriptors if they\n    are needed for unmapping.  While this is not the case for the direct\n    mapping fast path and the IOVA path, it is needed for the non-IO",
+        "exists": false,
+        "reason": "The snippet shows the exact PRP DMA-unmapping path and the fix. The vulnerable construct is present in the pre-change logic that reconstructed unmap ranges from PRPs: the removed code in `nvme_free_prps()` iterated PRP descriptors and called `dma_unmap_page()` based on reconstructed `dma_addr`/`dma_len` values. The fix is also clearly present: `struct nvme_iod` now has `struct nvme_dma_vec *dma_vecs; unsigned int nr_dma_vecs;`, `nvme_pci_setup_data_prp()` allocates `iod->dma_vecs` when `dma_need_unmap(nvmeq->dev->dev)` is true, records each mapped segment (`iod->dma_vecs[0].addr = iter->addr; ... nr_dma_vecs = 1;` and later appends in `nvme_pci_prp_iter_next()`), and `nvme_free_prps()` now unmaps by iterating `for (i = 0; i < iod->nr_dma_vecs; i++) dma_unmap_page(... iod->dma_vecs[i] ...)` and frees the vector array. This directly addresses the root cause of needing actual DMA vectors instead of reconstructing from PRPs, so the function body is sufficient, contains the bug pattern in the old logic, and already contains the fix in the new logic."
+      }
+    },
+    {
+      "bic_found": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4da7c5c3ec34",
+          "anchor_file": "drivers/nvme/host/pci.c",
+          "anchor_lineno": 829
+        },
+        "commit": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+        "commit_short": "b8b7570a7ec8",
+        "commit_msg": "nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n\nThe current version of the blk_rq_dma_map su",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/nvme/host/pci.c",
+        "display_lineno": 749,
+        "code_snippet": "commit b8b7570a7ec872f2a27b775c4f8710ca8a357adf\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Mon Jul 7 14:52:23 2025 +0200\n\n    nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n    \n    The current version of the blk_rq_dma_map support in nvme-pci tries to\n    reconstruct the DMA mappings from the on the wire descriptors if they\n    are needed for unmapping.  While this is not the case for the direct\n    mapping fast path and the IOVA path, it is needed for the non-IO",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is present in the sense that PRP unmapping now relies on tracked DMA vectors rather than reconstructing PRP DMA ranges. The key fix is visible in `nvme_free_prps()`: instead of the old PRP reconstruction logic, it now loops over `iod->nr_dma_vecs` and unmaps each recorded entry: `for (i = 0; i < iod->nr_dma_vecs; i++) dma_unmap_page(... iod->dma_vecs[i] ...)`, followed by freeing `iod->dma_vecs`. The allocation/tracking is also added in `nvme_pci_setup_data_prp()`: `if (dma_need_unmap(nvmeq->dev->dev)) { iod->dma_vecs = mempool_alloc(...); ... iod->nr_dma_vecs = 1; }` and subsequent iterator advances record additional vectors in `nvme_pci_prp_iter_next()` with `iod->dma_vecs[iod->nr_dma_vecs].addr = iter->addr; ... nr_dma_vecs++;`. This means the code already contains the fix for the NULL-deref/uninitialized `iod->dma_vecs` issue. The old vulnerable reconstruction path is removed from `nvme_free_prps()`, so the bug is not present in this commit version."
+      }
+    },
+    {
+      "bic_found": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4da7c5c3ec34",
+          "anchor_file": "drivers/nvme/host/pci.c",
+          "anchor_lineno": 830
+        },
+        "commit": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+        "commit_short": "b8b7570a7ec8",
+        "commit_msg": "nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n\nThe current version of the blk_rq_dma_map su",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/nvme/host/pci.c",
+        "display_lineno": 750,
+        "code_snippet": "commit b8b7570a7ec872f2a27b775c4f8710ca8a357adf\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Mon Jul 7 14:52:23 2025 +0200\n\n    nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n    \n    The current version of the blk_rq_dma_map support in nvme-pci tries to\n    reconstruct the DMA mappings from the on the wire descriptors if they\n    are needed for unmapping.  While this is not the case for the direct\n    mapping fast path and the IOVA path, it is needed for the non-IO",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present here. In this version, PRP mapping explicitly allocates and tracks DMA vectors when unmapping may be needed: `if (dma_need_unmap(nvmeq->dev->dev)) { iod->dma_vecs = mempool_alloc(...); ... iod->nr_dma_vecs = 1; }` and later `nvme_pci_prp_iter_next()` records each DMA segment into `iod->dma_vecs[iod->nr_dma_vecs]` whenever `dma_need_unmap(dma_dev)` is true. The unmap path no longer reconstructs PRP DMA ranges from descriptors; instead `nvme_free_prps()` simply iterates `for (i = 0; i < iod->nr_dma_vecs; i++) dma_unmap_page(... iod->dma_vecs[i] ...)` and frees the vector array. This is exactly the fix for the prior NULL dereference / missing `dma_vecs` population issue, so the vulnerable construct is absent and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4da7c5c3ec34",
+          "anchor_file": "drivers/nvme/host/pci.c",
+          "anchor_lineno": 831
+        },
+        "commit": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+        "commit_short": "b8b7570a7ec8",
+        "commit_msg": "nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n\nThe current version of the blk_rq_dma_map su",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/nvme/host/pci.c",
+        "display_lineno": 751,
+        "code_snippet": "commit b8b7570a7ec872f2a27b775c4f8710ca8a357adf\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Mon Jul 7 14:52:23 2025 +0200\n\n    nvme-pci: fix dma unmapping when using PRPs and not using the IOVA mapping\n    \n    The current version of the blk_rq_dma_map support in nvme-pci tries to\n    reconstruct the DMA mappings from the on the wire descriptors if they\n    are needed for unmapping.  While this is not the case for the direct\n    mapping fast path and the IOVA path, it is needed for the non-IO",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": false,\n  \"is_fixed\": true,\n  \"reason\": \"The vulnerable construct described in the root cause is already handled in this commit. The new code explicitly allocates a"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "1cea5180f2f8",
+          "anchor_file": "drivers/nvme/host/pci.c",
+          "anchor_lineno": 751
+        },
+        "commit": "d08774738446e77734777adcf5d1045237b4475a",
+        "commit_short": "d08774738446",
+        "commit_msg": "nvme-pci: Print invalid SGL only once\n\nThe WARN_ONCE macro returns true if the condition is true, not if the\nwarn was ra",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/nvme/host/pci.c",
+        "display_lineno": 548,
+        "code_snippet": "commit d08774738446e77734777adcf5d1045237b4475a\nAuthor: Keith Busch <kbusch@kernel.org>\nDate:   Fri Sep 15 13:05:38 2017 -0400\n\n    nvme-pci: Print invalid SGL only once\n    \n    The WARN_ONCE macro returns true if the condition is true, not if the\n    warn was raised, so we're printing the scatter list every time it's\n    invalid. This is excessive and makes debugging harder, so this patch\n    prints it just once.\n    \n    Signed-off-by: Keith Busch <keith.busch@intel.com>\n    Reviewed-by: Mart",
+        "exists": false,
+        "reason": "The shown function only prints scatterlist entries: `for_each_sg(sgl, sg, nents, i) { ... pr_warn(...) ... }`. The vulnerability root cause is about NVMe PRP mapping and failing to allocate/populate `iod->dma_vecs` when `dma_need_unmap()` changes, causing a NULL dereference when saving unmap vectors. None of that logic is present here: there is no `dma_need_unmap()`, no `struct nvme_iod`, no `iod->dma_vecs`, and no unmap-vector handling. The snippet is only diagnostic logging for an invalid SGL, so it does not contain the vulnerable construct and also does not show the fix."
+      }
+    },
+    {
+      "bic_found": "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "d08774738446e77734777adcf5d1045237b4475a": 1,
+        "b8b7570a7ec872f2a27b775c4f8710ca8a357adf": 4
+      },
+      "bic_candidates": [
+        "b8b7570a7ec872f2a27b775c4f8710ca8a357adf",
+        "d08774738446e77734777adcf5d1045237b4475a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

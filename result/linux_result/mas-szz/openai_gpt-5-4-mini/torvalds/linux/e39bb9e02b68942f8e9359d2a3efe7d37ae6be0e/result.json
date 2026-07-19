@@ -1,0 +1,273 @@
+{
+  "cveid": "CVE-2026-23380",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e39bb9e02b68942f8e9359d2a3efe7d37ae6be0e"
+  ],
+  "ground_truth_bic": "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64",
+  "predicted_bic": [
+    "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 18889,
+  "root_cause": {
+    "text": "The tracing ring-buffer VMA did not bump the `user_mapped` reference count when a mapped `vm_area_struct` was duplicated on `fork()`, so the parent and child later both ran `tracing_buffers_mmap_close()` against the same mapping and the second close underflowed the mapping state, triggering `WARN_ON`.",
+    "evidence": "The CVE says “the child process copies the parent's VMAs but the user_mapped reference count is not incremented,” and that this makes `tracing_buffers_mmap_close()` see `user_mapped` already 0 on the second exit; the patch fixes this by adding `tracing_buffers_mmap_open()` to call `ring_buffer_map_dup()` from the VMA `.open` callback, which “increment[s] the user_mapped counter without remapping pages.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/trace/trace.c",
+      "lineno": 8235,
+      "content": ".close\t\t= tracing_buffers_mmap_close,",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/trace/trace.c",
+      "lineno": 8217,
+      "content": "static const struct vm_operations_struct tracing_buffers_vmops = {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The tracing ring-buffer VMA did not bump the `user_mapped` reference count when a mapped `vm_area_struct` was duplicated on `fork()`, so the parent and child later both ran `tracing_buffers_mmap_close()` against the same mapping and the second close underflowed the mapping state, triggering `WARN_ON`.",
+      "evidence_points": "The CVE says “the child process copies the parent's VMAs but the user_mapped reference count is not incremented,” and that this makes `tracing_buffers_mmap_close()` see `user_mapped` already 0 on the second exit; the patch fixes this by adding `tracing_buffers_mmap_open()` to call `ring_buffer_map_dup()` from the VMA `.open` callback, which “increment[s] the user_mapped counter without remapping pages.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/linux/ring_buffer.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/trace/ring_buffer.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/trace/trace.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/trace/trace.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add a public ring buffer map-duplication helper declaration for use elsewhere in the kernel.",
+        "what": "A new function prototype, `void ring_buffer_map_dup(struct trace_buffer *buffer, int cpu);`, was added to the ring buffer header between the existing `ring_buffer_map()` and `ring_buffer_unmap()` declarations.",
+        "how": "This exposes a new ring-buffer mapping helper to other compilation units, allowing code to invoke duplication-related map handling for a given CPU. The change itself does not alter runtime behavior in this hunk, but it enables implementation and use of the new function elsewhere."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add VMA-duplication handling for ring buffer mappings so forked mappings correctly increment the mapped reference count without remapping pages.",
+        "what": "A new function, `ring_buffer_map_dup(struct trace_buffer *buffer, int cpu)`, was added. It checks whether `cpu` is in `buffer->cpumask`, retrieves `buffer->buffers[cpu]`, acquires `cpu_buffer->mapping_lock`, and if `cpu_buffer->user_mapped` is set it calls `__rb_inc_dec_mapped(cpu_buffer, true)`; otherwise it emits a warning. A comment explains that this is used when a VMA is duplicated, such as during `fork()`, to increment the user_mapped counter without remapping pages.",
+        "how": "At runtime, duplicated mappings now update the ring buffer's per-CPU mapped reference accounting when a process forks or otherwise duplicates a VMA, without performing a full remap of the pages. This helps preserve correct mapping state and prevents the buffer from being treated as unmapped after VMA duplication."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a VMA open hook for tracing buffer mappings so duplicated mappings correctly increment the ring buffer user-mapped count on fork.",
+        "what": "A new static function named `tracing_buffers_mmap_open()` was added before `tracing_buffers_mmap_close()`. It takes a `struct vm_area_struct *vma`, retrieves `ftrace_buffer_info` from `vma->vm_file->private_data`, gets `struct trace_iterator *iter = &info->iter`, and calls `ring_buffer_map_dup(iter->array_buffer->buffer, iter->cpu_file);`. A comment was added explaining that this is called when a VMA is duplicated, such as during `fork()`, to increment the `user_mapped` counter without remapping pages.",
+        "how": "When a tracing buffer mapping is duplicated by the kernel, this hook now updates the ring buffer's duplicated-mapping state so the buffer's user mapping count stays correct. This prevents duplicated VMAs from being treated as unmapped and avoids needing to remap pages on forked copies of the mapping."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Add the VMA open callback for tracing buffer mappings so mmap lifecycle handling is complete.",
+        "what": "The vm_operations_struct initializer for tracing_buffers_vmops was updated to add an .open callback assignment to tracing_buffers_mmap_open, while the existing .close and .may_split callbacks remain unchanged.",
+        "how": "When a VMA using these tracing buffer mappings is opened, the new open handler will now be invoked, allowing the tracing code to track or initialize mmap instances at VMA creation/duplication time in addition to the existing close and split handling."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a public ring buffer map-duplication helper declaration for use elsewhere in the kernel."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Add the VMA open callback for tracing buffer mappings so mmap lifecycle handling is complete."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Add VMA lifecycle callbacks for tracing ring buffer mappings so duplicated or opened mappings correctly maintain the mapped/user reference counts.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only adds a public declaration for a ring buffer map-duplication helper and does not address the tracing VMA fork/close reference counting bug or the missing user_mapped increment that caused the underflow."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the reported bug: duplicated tracing ring-buffer VMAs on fork were not incrementing the user-mapped/mapped reference counts, leading to double close and underflow. Adding VMA open/dup lifecycle callbacks is exactly the fix for that root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 8216,
+            "content": "static void tracing_buffers_mmap_close(struct vm_area_struct *vma)",
+            "rationale": "This close handler is where the shared VMA state is torn down; without a corresponding VMA-open refcount bump on fork, the second duplicated mapping can call into this path and underflow the mapping state."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 8218,
+            "content": "struct ftrace_buffer_info *info = vma->vm_file->private_data;",
+            "rationale": "The close path uses the same private mapping state for both parent and child VMAs; because forked VMAs did not increment the user-mapped reference count, both closes operate on the same underlying info object."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 8217,
+            "content": "static const struct vm_operations_struct tracing_buffers_vmops = {",
+            "rationale": "The vm_ops table lacked an open callback before the fix, so duplicated VMAs from fork did not get a lifecycle hook to increment the user_mapped count."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 8235,
+            "content": ".close\t\t= tracing_buffers_mmap_close,",
+            "rationale": "The only lifecycle operation present was close; with no open hook to balance it on fork, the second close on a duplicated mapping triggers the reference count underflow."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 0
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/trace/trace.c",
+            "stmt_text": ".close\t\t= tracing_buffers_mmap_close,",
+            "location": "hunk",
+            "explanation": "This was the only mmap lifecycle handler present before the fix. Because there was no corresponding .open callback to increment the tracing ring-buffer user_mapped count on forked VMAs, duplicated mappings later both reached tracing_buffers_mmap_close() and the second close could underflow the mapping state."
+          },
+          {
+            "vuln_file": "kernel/trace/trace.c",
+            "stmt_text": "static const struct vm_operations_struct tracing_buffers_vmops = {",
+            "location": "hunk",
+            "explanation": "This vm_ops table definition is part of the faulty lifecycle setup: before the fix it lacked an open hook, so forked VMAs did not get a chance to bump user_mapped and the shared mapping state was torn down twice."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a5dd6f58666f",
+          "anchor_file": "kernel/trace/trace.c",
+          "anchor_lineno": 8235
+        },
+        "commit": "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64",
+        "commit_short": "cf9f0f7c4c5b",
+        "commit_msg": "tracing: Allow user-space mapping of the ring-buffer\n\nCurrently, user-space extracts data from the ring-buffer via splic",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace.c",
+        "display_lineno": 8288,
+        "code_snippet": "commit cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64\nAuthor: Vincent Donnefort <vdonnefort@google.com>\nDate:   Fri May 10 15:04:32 2024 +0100\n\n    tracing: Allow user-space mapping of the ring-buffer\n    \n    Currently, user-space extracts data from the ring-buffer via splice,\n    which is handy for storage or network sharing. However, due to splice\n    limitations, it is imposible to do real-time analysis without a copy.\n    \n    A solution for that problem is to let the user-space map the ring-buff",
+        "exists": false,
+        "reason": "The shown function body only defines the VMA operations table: `static const struct vm_operations_struct tracing_buffers_vmops = { .close = tracing_buffers_mmap_close, };`. It does not contain any `fork()` handling, reference counting, or `user_mapped` logic. The vulnerable construct described in the root cause is absent from this snippet, so this code alone is not enough to show the bug or the fix."
+      }
+    },
+    {
+      "bic_found": "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a5dd6f58666f",
+          "anchor_file": "kernel/trace/trace.c",
+          "anchor_lineno": 8217
+        },
+        "commit": "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64",
+        "commit_short": "cf9f0f7c4c5b",
+        "commit_msg": "tracing: Allow user-space mapping of the ring-buffer\n\nCurrently, user-space extracts data from the ring-buffer via splic",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace.c",
+        "display_lineno": 8279,
+        "code_snippet": "commit cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64\nAuthor: Vincent Donnefort <vdonnefort@google.com>\nDate:   Fri May 10 15:04:32 2024 +0100\n\n    tracing: Allow user-space mapping of the ring-buffer\n    \n    Currently, user-space extracts data from the ring-buffer via splice,\n    which is handy for storage or network sharing. However, due to splice\n    limitations, it is imposible to do real-time analysis without a copy.\n    \n    A solution for that problem is to let the user-space map the ring-buff",
+        "exists": false,
+        "reason": "The shown code adds mmap support, but it does not show the fork/duplication handling that caused the reported bug. The vulnerable construct in the root cause is that a mapped `vm_area_struct` duplicated on `fork()` did not bump the `user_mapped` reference count, leading to double `tracing_buffers_mmap_close()` on the same mapping. In this snippet, the only VMA handling is `tracing_buffers_mmap()` setting `vma->vm_ops = &tracing_buffers_vmops;` and `tracing_buffers_mmap_close()` calling `ring_buffer_unmap(...)` and `put_snapshot_map(iter->tr);`. There is no `.open` vm_ops method, no reference-count increment on VMA duplication, and no explicit fork-related handling. So the specific vulnerable construct is not present here, and the shown code is not sufficient to indicate the later fix for the fork-related refcount bug."
+      }
+    },
+    {
+      "bic_found": "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64": 2
+      },
+      "bic_candidates": [
+        "cf9f0f7c4c5bb45e7bb270e48bab6f7837825a64"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,241 @@
+{
+  "cveid": "CVE-2026-23004",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "9a6f0c4d5796ab89b5a28a890ce542344d58bd69"
+  ],
+  "ground_truth_bic": "8d0b94afdca84598912347e61defa846a0988d04",
+  "predicted_bic": [
+    "d288a162dd1c73507da582966f17dd226e34a0c0",
+    "35732d01fe311ec13c4e42936878b782b8e7ea85"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 34452,
+  "root_cause": {
+    "text": "A race in the IPv4/IPv6 dst uncached-route list management let `rt_del_uncached_list()`/`rt6_uncached_list_del()` skip `ul->lock` based on a non-atomic `list_empty(&rt->dst.rt_uncached)` check, so concurrent list insertion could leave the route on the list while another CPU freed it and then `list_del_init()` dereferenced freed memory.",
+    "evidence": "The patch changes both `net/ipv4/route.c` and `net/ipv6/route.c` from `if (!list_empty(&rt->dst.rt_uncached)) { struct uncached_list *ul = rt->dst.rt_uncached_list; ... }` to `struct uncached_list *ul = rt->dst.rt_uncached_list; if (ul) { spin_lock_bh(&ul->lock); list_del_init(...); }`, and the CVE text states the bug was that `rt6_uncached_list_del()` “did not attempt to lock ul->lock” because `list_empty()` returned true after another CPU had only partially updated the list (`WRITE_ONCE(list->next, list)`), leading to KASAN use-after-free in `INIT_LIST_HEAD()/list_del_init()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/ipv4/route.c",
+      "lineno": 1540,
+      "content": "if (!list_empty(&rt->dst.rt_uncached)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/ipv6/route.c",
+      "lineno": 1540,
+      "content": "if (!list_empty(&rt->dst.rt_uncached)) {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the IPv4/IPv6 dst uncached-route list management let `rt_del_uncached_list()`/`rt6_uncached_list_del()` skip `ul->lock` based on a non-atomic `list_empty(&rt->dst.rt_uncached)` check, so concurrent list insertion could leave the route on the list while another CPU freed it and then `list_del_init()` dereferenced freed memory.",
+      "evidence_points": "The patch changes both `net/ipv4/route.c` and `net/ipv6/route.c` from `if (!list_empty(&rt->dst.rt_uncached)) { struct uncached_list *ul = rt->dst.rt_uncached_list; ... }` to `struct uncached_list *ul = rt->dst.rt_uncached_list; if (ul) { spin_lock_bh(&ul->lock); list_del_init(...); }`, and the CVE text states the bug was that `rt6_uncached_list_del()` “did not attempt to lock ul->lock” because `list_empty()` returned true after another CPU had only partially updated the list (`WRITE_ONCE(list->next, list)`), leading to KASAN use-after-free in `INIT_LIST_HEAD()/list_del_init()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/core/dst.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/ipv4/route.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/ipv6/route.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize dst->rt_uncached_list to NULL during dst_entry setup to avoid using an uninitialized pointer.",
+        "what": "In dst_init(), a new assignment was added to initialize dst->rt_uncached_list to NULL immediately after INIT_LIST_HEAD(&dst->rt_uncached).",
+        "how": "At runtime, newly initialized dst_entry objects now start with their rt_uncached_list pointer cleared instead of containing an uninitialized value, preventing accidental use of stale garbage data before the field is explicitly set later."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix rt_del_uncached_list() to guard removal by checking the uncached list pointer instead of the list node state.",
+        "what": "In rt_del_uncached_list(), the local variable declaration for rt->dst.rt_uncached_list was moved outside the list_empty() conditional, and the condition was changed from `if (!list_empty(&rt->dst.rt_uncached))` to `if (ul)`.",
+        "how": "At runtime, the function now decides whether to remove the route from the uncached list based on whether the cached list pointer exists, rather than whether the per-route list node is non-empty. This avoids dereferencing or locking through a NULL rt_uncached_list pointer and makes the deletion path dependent on list membership metadata stored in the pointer."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix rt6_uncached_list_del() to guard list removal with a valid uncached_list pointer instead of checking list node emptiness.",
+        "what": "In rt6_uncached_list_del(), the local variable declaration for `struct uncached_list *ul` was moved outside the conditional, and the old `if (!list_empty(&rt->dst.rt_uncached))` check was replaced with `if (ul)`. The list deletion and lock operations remain the same inside the block.",
+        "how": "The function now decides whether to remove the route from the uncached list based on whether `rt->dst.rt_uncached_list` is present, rather than whether the list node is non-empty. This prevents dereferencing or locking through a missing list object and makes the deletion path depend on the list container pointer being valid."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix rt6_uncached_list_del() to guard list removal with a valid uncached_list pointer instead of checking list node emptiness."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix uncached route list handling by ensuring the pointer is initialized and by guarding list removal with a valid uncached_list pointer.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target uncached-route list deletion logic for IPv4/IPv6 and replace the unsafe list_empty-based guard with a pointer validity check, which addresses the same race in list management that could lead to use-after-free during concurrent insertion/removal."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/ipv4/route.c",
+            "lineno": 1540,
+            "content": "if (!list_empty(&rt->dst.rt_uncached)) {",
+            "rationale": "This non-atomic emptiness check is the race-prone condition that can let another CPU change the uncached list state before removal, causing list_del_init() to operate on freed memory."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/ipv6/route.c",
+            "lineno": 151,
+            "content": "if (!list_empty(&rt->dst.rt_uncached)) {",
+            "rationale": "This is the same flawed pre-fix guard in IPv6: it relies on list_empty() instead of the uncached_list pointer, enabling a race between concurrent insertion/removal and use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/ipv4/route.c",
+            "stmt_text": "if (!list_empty(&rt->dst.rt_uncached)) {",
+            "location": "hunk",
+            "explanation": "This pre-fix conditional performs a non-atomic list_empty() check on the uncached-route list node, which can race with concurrent insertion/removal and allow list_del_init() to run on a freed route."
+          },
+          {
+            "vuln_file": "net/ipv6/route.c",
+            "stmt_text": "if (!list_empty(&rt->dst.rt_uncached)) {",
+            "location": "hunk",
+            "explanation": "This is the same flawed guard in the IPv6 uncached-route deletion path: it checks list node emptiness instead of a stable uncached-list pointer, enabling the race that leads to use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d23564955811",
+          "anchor_file": "net/ipv4/route.c",
+          "anchor_lineno": 1540
+        },
+        "commit": "d288a162dd1c73507da582966f17dd226e34a0c0",
+        "commit_short": "d288a162dd1c",
+        "commit_msg": "net: dst: Prevent false sharing vs. dst_entry:: __refcnt\n\ndst_entry::__refcnt is highly contended in scenarios where man",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/route.c",
+        "display_lineno": 1520,
+        "code_snippet": "commit d288a162dd1c73507da582966f17dd226e34a0c0\nAuthor: Wangyang Guo <wangyang.guo@intel.com>\nDate:   Thu Mar 23 21:55:29 2023 +0100\n\n    net: dst: Prevent false sharing vs. dst_entry:: __refcnt\n    \n    dst_entry::__refcnt is highly contended in scenarios where many connections\n    happen from and to the same IP. The reference count is an atomic_t, so the\n    reference count operations have to take the cache-line exclusive.\n    \n    Aside of the unavoidable reference count contention there is a",
+        "exists": true,
+        "reason": "The function shows the vulnerable pattern directly: it first does a non-atomic check, `if (!list_empty(&rt->dst.rt_uncached)) {`, and only then takes `spin_lock_bh(&ul->lock)` before `list_del_init(&rt->dst.rt_uncached);`. This matches the root cause, where skipping `ul->lock` based on `list_empty()` can race with concurrent insertion and leave the route on the list while another CPU frees it, causing `list_del_init()` to operate on freed memory. The snippet does not show any fix such as holding the lock while checking emptiness or otherwise making the check/remove atomic, so the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "b133fffe57ae",
+          "anchor_file": "net/ipv4/route.c",
+          "anchor_lineno": 1520
+        },
+        "commit": "78df76a065ae3b5dbcb9a29912adc02f697de498",
+        "commit_short": "78df76a065ae",
+        "commit_msg": "ipv4: take rt_uncached_lock only if needed\n\nMulticast traffic allocates dst with DST_NOCACHE, but dst is\nnot inserted in",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/route.c",
+        "display_lineno": 1266,
+        "code_snippet": "commit 78df76a065ae3b5dbcb9a29912adc02f697de498\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Fri Aug 24 05:40:47 2012 +0000\n\n    ipv4: take rt_uncached_lock only if needed\n    \n    Multicast traffic allocates dst with DST_NOCACHE, but dst is\n    not inserted into rt_uncached_list.\n    \n    This slowdown multicast workloads on SMP because rt_uncached_lock is\n    contended.\n    \n    Change the test before taking the lock to actually check the dst\n    was inserted into rt_uncached_list.\n    \n",
+        "exists": false,
+        "reason": "The shown function body is `ipv4_dst_destroy()`, and it already uses the safer condition: `if (!list_empty(&rt->rt_uncached)) { spin_lock_bh(&rt_uncached_lock); list_del(&rt->rt_uncached); ... }`. This means the function only takes the lock and deletes from the list when the route is actually on `rt_uncached`, which is the correct handling for the race described. The vulnerable construct from the root cause is a non-atomic `list_empty(&rt->dst.rt_uncached)` check used to skip locking in `rt_del_uncached_list()/rt6_uncached_list_del()`, but that specific buggy pattern is not present here. The commit message also confirms the intended fix: 'Change the test before taking the lock to actually check the dst was inserted into rt_uncached_list.'"
+      }
+    },
+    {
+      "bic_found": "d288a162dd1c73507da582966f17dd226e34a0c0",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d23564955811",
+          "anchor_file": "net/ipv6/route.c",
+          "anchor_lineno": 1540
+        },
+        "commit": "35732d01fe311ec13c4e42936878b782b8e7ea85",
+        "commit_short": "35732d01fe31",
+        "commit_msg": "ipv6: introduce a hash table to store dst cache\n\nAdd a hash table into struct rt6_info in order to store dst caches\ncrea",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/route.c",
+        "display_lineno": 1138,
+        "code_snippet": "commit 35732d01fe311ec13c4e42936878b782b8e7ea85\nAuthor: Wei Wang <weiwan@google.com>\nDate:   Fri Oct 6 12:05:57 2017 -0700\n\n    ipv6: introduce a hash table to store dst cache\n    \n    Add a hash table into struct rt6_info in order to store dst caches\n    created by pmtu discovery and ip redirect in ipv6 routing code.\n    APIs to add dst cache, delete dst cache, find dst cache and update\n    dst cache in the hash table are implemented and will be used in later\n    commits.\n    This is a preparat",
+        "exists": false,
+        "reason": "The shown function only selects the oldest exception from a hash bucket and calls `rt6_remove_exception(bucket, oldest);` after `hlist_for_each_entry(rt6_ex, &bucket->chain, hlist)`. It does not contain the uncached-route list management logic described in the root cause, such as `list_empty(&rt->dst.rt_uncached)`, skipping `ul->lock`, or `list_del_init()` on the uncached list. Critical context is missing to determine whether this function participates in the race, so the vulnerable construct is absent from the snippet."
+      }
+    },
+    {
+      "bic_found": "35732d01fe311ec13c4e42936878b782b8e7ea85",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "d288a162dd1c73507da582966f17dd226e34a0c0": 1,
+        "35732d01fe311ec13c4e42936878b782b8e7ea85": 1
+      },
+      "bic_candidates": [
+        "d288a162dd1c73507da582966f17dd226e34a0c0",
+        "35732d01fe311ec13c4e42936878b782b8e7ea85"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

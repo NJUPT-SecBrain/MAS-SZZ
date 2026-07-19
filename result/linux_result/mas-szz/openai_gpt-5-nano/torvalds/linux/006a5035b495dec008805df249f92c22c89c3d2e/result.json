@@ -1,0 +1,356 @@
+{
+  "cveid": "CVE-2025-68768",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "006a5035b495dec008805df249f92c22c89c3d2e"
+  ],
+  "ground_truth_bic": "d5dd88794a13c2f24cce31abad7a0a6c5e0ed2db",
+  "predicted_bic": [
+    "91341fa0003befd097e190ec2a4bf63ad957c49a"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 33,
+  "llm_tokens": 23416,
+  "root_cause": {
+    "text": "The inet fragment reassembly subsystem left queued fragment SKBs in `fqdir` until timer expiry during netns teardown, so because `nf_defrag_ipv6`'s exit hook ran after conntrack's, those SKBs retained conntrack references and caused `nf_conntrack_cleanup_net_list()` to loop indefinitely under `pernet_ops_rwsem`.",
+    "evidence": "The commit message explicitly says “fragmentation queues reveals skbs sitting around, holding conntrack references” and explains the ordering bug: “since conntrack depends on nf_defrag_ipv6, nf_defrag_ipv6 will load first… its netns exit hooks run _after_ conntrack's netns exit hook”; the patch fixes this by changing `fqdir_pre_exit()` from only setting `high_thresh`/`dead` to also iterating the `rhashtable` and calling `inet_frag_queue_flush()` on pending queues, and by flushing in `ip_expire()`/`ip6frag_expire_frag_queue()` when `fqdir->dead` is set.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "include/net/ipv6_frag.h",
+      "lineno": 73,
+      "content": "if (READ_ONCE(fq->q.fqdir->dead))",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/ipv4/ip_fragment.c",
+      "lineno": 139,
+      "content": "if (READ_ONCE(qp->q.fqdir->dead))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The inet fragment reassembly subsystem left queued fragment SKBs in `fqdir` until timer expiry during netns teardown, so because `nf_defrag_ipv6`'s exit hook ran after conntrack's, those SKBs retained conntrack references and caused `nf_conntrack_cleanup_net_list()` to loop indefinitely under `pernet_ops_rwsem`.",
+      "evidence_points": "The commit message explicitly says “fragmentation queues reveals skbs sitting around, holding conntrack references” and explains the ordering bug: “since conntrack depends on nf_defrag_ipv6, nf_defrag_ipv6 will load first… its netns exit hooks run _after_ conntrack's netns exit hook”; the patch fixes this by changing `fqdir_pre_exit()` from only setting `high_thresh`/`dead` to also iterating the `rhashtable` and calling `inet_frag_queue_flush()` on pending queues, and by flushing in `ip_expire()`/`ip6frag_expire_frag_queue()` when `fqdir->dead` is set."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/inet_frag.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "include/net/ipv6_frag.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "include/net/ipv6_frag.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/ipv4/inet_fragment.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/ipv4/inet_fragment.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "net/ipv4/ip_fragment.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 6,
+        "file_path": "net/ipv4/ip_fragment.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Move fqdir_pre_exit from a header inline definition to a standalone function declaration, centralizing its implementation without changing its intended behavior.",
+        "what": "The patch removes the static inline definition of fqdir_pre_exit(struct fqdir *fqdir) from the header, including its two WRITE_ONCE assignments to fqdir->high_thresh and fqdir->dead and the associated comments, and replaces it with a non-inline function declaration: void fqdir_pre_exit(struct fqdir *fqdir);",
+        "how": "Callers now invoke an out-of-line implementation of fqdir_pre_exit instead of using the header-defined inline body directly. The intended runtime behavior of setting high_thresh to 0 and dead to true before exit is preserved through the external definition, while moving the implementation out of the header centralizes the logic in a single compiled function."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove the early fqdir->dead bailout from IPv6 fragment queue expiration so expiration handling still runs during teardown instead of being incorrectly skipped.",
+        "what": "The change removes a pre-lock check in ip6frag_expire_frag_queue() that read fq->q.fqdir->dead under RCU and jumped to out_rcu_unlock when true, leaving the subsequent spin_lock(&fq->q.lock) and remaining logic to run unconditionally after rcu_read_lock().",
+        "how": "At runtime, the function no longer exits early when the frag queue directory is marked dead before taking the queue lock, so fragment queue expiration processing proceeds into the locked section even during fqdir teardown instead of being skipped based on that dead flag."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid processing IPv6 fragment expiration on a dead fragment directory by flushing the queue and exiting early during teardown.",
+        "what": "A new early check was added in ip6frag_expire_frag_queue() after inet_frag_kill(): it reads fq->q.fqdir->dead with READ_ONCE(), and if true it calls inet_frag_queue_flush(&fq->q, 0) and jumps to the out label before attempting dev_get_by_index_rcu(net, fq->iif). A comment notes this is paired with the WRITE_ONCE() in fqdir_pre_exit().",
+        "how": "At runtime, when the fragment directory is marked dead, the expire path now flushes the fragment queue and exits early instead of continuing with normal expiration handling such as looking up the input device. This prevents processing a fragment queue against a shutting-down fragment directory and ensures pending fragments are discarded safely during teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a pre-exit teardown step for fragment directories that blocks new fragments, marks the directory dead, and flushes all incomplete fragment queues before final shutdown.",
+        "what": "A new exported function, fqdir_pre_exit(struct fqdir *fqdir), was added before fqdir_exit(). It sets fqdir->high_thresh to 0 with WRITE_ONCE(), sets fqdir->dead to true with WRITE_ONCE(), then walks fqdir->rhashtable using rhashtable_walk_* APIs and, for each non-error fragment queue, locks fq->lock, flushes the queue with inet_frag_queue_flush(fq, 0) if INET_FRAG_COMPLETE is not set, and unlocks it. The function is exported with EXPORT_SYMBOL(fqdir_pre_exit).",
+        "how": "At runtime, this introduces a pre-shutdown phase for a fragment directory that first prevents creation of new fragment queues and marks the directory as dead, then proactively flushes all existing incomplete fragment queues. This helps stop further fragment activity during teardown and clears unfinished reassembly state before the normal exit path proceeds."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Default missing fragment queue flush drop reasons to FRAG_REASM_TIMEOUT so purged fragments are reported with a valid cause.",
+        "what": "A new assignment was added at the start of inet_frag_queue_flush() to set reason = reason ?: SKB_DROP_REASON_FRAG_REASM_TIMEOUT; before calling inet_frag_rbtree_purge().",
+        "how": "At runtime, if the caller passes an unset or zero drop reason, the function now substitutes SKB_DROP_REASON_FRAG_REASM_TIMEOUT as the default before purging queued fragments, ensuring the purge operation always uses a meaningful drop reason instead of leaving it unspecified."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove the dead-fqdir early exit in ip_expire() so fragment expiration still runs during fqdir shutdown.",
+        "what": "The change removes a conditional early-exit block from ip_expire() that checked READ_ONCE(qp->q.fqdir->dead) under RCU read lock and jumped to out_rcu_unlock when the fqdir was marked dead, including the associated comment about pairing with WRITE_ONCE() in fqdir_pre_exit().",
+        "how": "At runtime, ip_expire() will no longer skip expiration processing when qp->q.fqdir->dead is set; instead it proceeds to take qp->q.lock and continue normal fragment expiration handling even during fqdir shutdown state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 6,
+        "change_category": "guard",
+        "intent_summary": "Add a dead-fqdir check in ip_expire() to flush and exit early during teardown, preventing unsafe fragment expiration processing.",
+        "what": "In ip_expire(), a new conditional block was inserted after setting INET_FRAG_DROP and calling inet_frag_kill(&qp->q, &refs): it checks READ_ONCE(qp->q.fqdir->dead), flushes the fragment queue with inet_frag_queue_flush(&qp->q, 0), and jumps to the out label, with an added comment noting pairing with WRITE_ONCE() in fqdir_pre_exit().",
+        "how": "At runtime, when the fragment directory is marked dead during expiration handling, the function now flushes the fragment queue and exits early instead of continuing with the normal timeout/failure accounting path. This prevents further processing of an expired fragment queue after its fqdir is being torn down, avoiding use of a dead fragment directory and ensuring cleanup happens safely."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Move fqdir_pre_exit from a header inline definition to a standalone function declaration, centralizing its implementation without changing its intended behavior."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Remove the dead-fqdir early exit in ip_expire() so fragment expiration still runs during fqdir shutdown."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Default missing fragment queue flush drop reasons to FRAG_REASM_TIMEOUT so purged fragments are reported with a valid cause."
+        },
+        {
+          "group_id": 3,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a dead-fqdir check in ip_expire() to flush and exit early during teardown, preventing unsafe fragment expiration processing."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure IPv4/IPv6 fragment queue teardown and expiration continue to run correctly during fqdir shutdown by removing incorrect dead-state early exits and flushing incomplete queues during teardown.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "core_intent": "Make IPv6 fragment queue teardown and expiration handling report and process fragment purges safely by ensuring flushed fragments use a valid default drop reason and avoiding work on dead fragment directories.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only relocates fqdir_pre_exit from an inline header definition to a standalone declaration/implementation, explicitly without changing behavior. The vulnerability is about fragment SKBs not being purged during netns teardown and exit-hook ordering causing conntrack references to persist; a pure code move does not address that root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "These changes directly address the root cause by ensuring fragment queues are actively expired/flushed during fqdir shutdown instead of being left queued until timer expiry. That prevents lingering fragment SKBs from retaining conntrack references during netns teardown, which is the condition that caused conntrack cleanup to hang."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "These changes directly target the teardown path of IPv6 fragment queues: they avoid running expiration handling on a dead fqdir and flush queued fragments during teardown, which is the core condition behind lingering SKBs retaining conntrack references during netns cleanup. The default drop-reason change supports safe processing of those purged fragments."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The change directly addresses teardown of fragment queues in fqdir by detecting a dead fqdir in ip_expire() and flushing/exiting early, which is part of preventing lingering fragment SKBs with conntrack references during netns teardown—the core of the described root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "include/net/ipv6_frag.h",
+            "lineno": 73,
+            "content": "if (READ_ONCE(fq->q.fqdir->dead))",
+            "rationale": "This dead-fqdir bailout prevented IPv6 fragment expiration from running during teardown, leaving queued fragment SKBs in the fragment directory until timer expiry and thus retaining conntrack references."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "net/ipv4/ip_fragment.c",
+            "lineno": 139,
+            "content": "if (READ_ONCE(qp->q.fqdir->dead))",
+            "rationale": "This early exit likewise skipped fragment expiration once fqdir was marked dead, embodying the faulty teardown behavior where incomplete fragment queues were not processed promptly."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/ipv4/inet_fragment.c",
+            "lineno": 221,
+            "content": "void fqdir_exit(struct fqdir *fqdir)",
+            "rationale": "The pre-fix exit path lacked a pre-exit flush step for incomplete fragment queues, which is the teardown gap described in the root cause; this function is the direct site of that omission."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "include/net/ipv6_frag.h",
+            "stmt_text": "if (READ_ONCE(fq->q.fqdir->dead))",
+            "location": "hunk",
+            "explanation": "This early-return guard caused IPv6 fragment queue expiration handling to be skipped once the fragment directory was marked dead during netns teardown. As a result, queued fragment SKBs were left in fqdir until timer expiry, retaining conntrack references and contributing directly to the teardown hang described in the root cause."
+          },
+          {
+            "vuln_file": "net/ipv4/ip_fragment.c",
+            "stmt_text": "if (READ_ONCE(qp->q.fqdir->dead))",
+            "location": "hunk",
+            "explanation": "This analogous early bailout in IPv4 fragment expiration skipped expiration processing during fqdir shutdown. It embodies the same teardown flaw: incomplete fragment queues were not expired and flushed promptly once fqdir was marked dead."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1231eec6994b",
+          "anchor_file": "include/net/ipv6_frag.h",
+          "anchor_lineno": 73
+        },
+        "commit": "91341fa0003befd097e190ec2a4bf63ad957c49a",
+        "commit_short": "91341fa0003b",
+        "commit_msg": "inet: frags: annotate races around fqdir->dead and fqdir->high_thresh\n\nBoth fields can be read/written without synchroni",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/net/ipv6_frag.h",
+        "display_lineno": 71,
+        "code_snippet": "commit 91341fa0003befd097e190ec2a4bf63ad957c49a\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Thu Jan 13 01:22:29 2022 -0800\n\n    inet: frags: annotate races around fqdir->dead and fqdir->high_thresh\n    \n    Both fields can be read/written without synchronization,\n    add proper accessors and documentation.\n    \n    Fixes: d5dd88794a13 (\"inet: fix various use-after-free in defrags units\")\n    Signed-off-by: Eric Dumazet <edumazet@google.com>\n    Signed-off-by: David S. Miller <davem@daveml",
+        "exists": false,
+        "reason": "The snippet shows the relevant teardown/race handling around the fragment queue directory liveness check. At lines 69-72, the function does `rcu_read_lock();` and then checks `if (READ_ONCE(fq->q.fqdir->dead)) goto out_rcu_unlock;` with the comment `Paired with the WRITE_ONCE() in fqdir_pre_exit().` This is exactly the kind of handling added to stop operating on fragment queues once the fqdir is being torn down. The root cause describes queued fragment SKBs being left in fqdir during netns teardown because teardown ordering allowed conntrack references to persist; this function now explicitly observes `fqdir->dead` using `READ_ONCE()` and exits early instead of proceeding with normal timeout handling. Therefore the vulnerable construct is not present here in its unfixed form, and the fix is present."
+      }
+    },
+    {
+      "bic_found": "91341fa0003befd097e190ec2a4bf63ad957c49a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1231eec6994b",
+          "anchor_file": "net/ipv4/ip_fragment.c",
+          "anchor_lineno": 139
+        },
+        "commit": "91341fa0003befd097e190ec2a4bf63ad957c49a",
+        "commit_short": "91341fa0003b",
+        "commit_msg": "inet: frags: annotate races around fqdir->dead and fqdir->high_thresh\n\nBoth fields can be read/written without synchroni",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/ip_fragment.c",
+        "display_lineno": 148,
+        "code_snippet": "commit 91341fa0003befd097e190ec2a4bf63ad957c49a\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Thu Jan 13 01:22:29 2022 -0800\n\n    inet: frags: annotate races around fqdir->dead and fqdir->high_thresh\n    \n    Both fields can be read/written without synchronization,\n    add proper accessors and documentation.\n    \n    Fixes: d5dd88794a13 (\"inet: fix various use-after-free in defrags units\")\n    Signed-off-by: Eric Dumazet <edumazet@google.com>\n    Signed-off-by: David S. Miller <davem@daveml",
+        "exists": false,
+        "reason": "The function body is sufficient because it shows the exact lifetime check on the fragment queue directory before processing the expired fragment. The critical logic is at lines 147-149: `/* Paired with WRITE_ONCE() in fqdir_pre_exit(). */` followed by `if (READ_ONCE(qp->q.fqdir->dead)) goto out_rcu_unlock;`. This means the timer handler bails out when `fqdir` has been marked dead during netns teardown, instead of continuing to process queued fragment SKBs. That is the relevant protection against leaving fragment SKBs around until timer expiry during teardown. The presence of the explicit `dead` check with `READ_ONCE()` indicates the fix is already present in this version. Therefore the vulnerable construct is not present here in the unfixed form."
+      }
+    },
+    {
+      "bic_found": "91341fa0003befd097e190ec2a4bf63ad957c49a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "91341fa0003befd097e190ec2a4bf63ad957c49a": 2
+      },
+      "bic_candidates": [
+        "91341fa0003befd097e190ec2a4bf63ad957c49a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

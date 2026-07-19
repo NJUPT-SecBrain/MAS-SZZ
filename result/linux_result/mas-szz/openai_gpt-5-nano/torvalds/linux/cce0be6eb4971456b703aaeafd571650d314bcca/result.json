@@ -1,0 +1,279 @@
+{
+  "cveid": "CVE-2026-23053",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "cce0be6eb4971456b703aaeafd571650d314bcca"
+  ],
+  "ground_truth_bic": "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+  "predicted_bic": [
+    "96780ca55e3cbf4f150fd5a833a61492c9947b5b"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 16198,
+  "root_cause": {
+    "text": "nfs_release_folio() in the NFS reclaim path incorrectly used the normal synchronous folio writeback path (nfs_wb_folio), which can block on NFSv4.1 state recovery while memory reclaim/kthreadd is involved, creating a circular wait deadlock.",
+    "evidence": "The CVE/commit explicitly says “state recovery [was] waiting on kthreadd, which is attempting to reclaim memory by calling nfs_release_folio(). The latter cannot make progress due to state recovery being needed,” and the patch replaces nfs_wb_folio() with nfs_wb_folio_reclaim(), a special reclaim-safe path that only kicks off writeback or an asynchronous commit “without waiting for completion.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/nfs/file.c",
+      "lineno": 514,
+      "content": "if (nfs_wb_folio(folio->mapping->host, folio) < 0)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "nfs_release_folio() in the NFS reclaim path incorrectly used the normal synchronous folio writeback path (nfs_wb_folio), which can block on NFSv4.1 state recovery while memory reclaim/kthreadd is involved, creating a circular wait deadlock.",
+      "evidence_points": "The CVE/commit explicitly says “state recovery [was] waiting on kthreadd, which is attempting to reclaim memory by calling nfs_release_folio(). The latter cannot make progress due to state recovery being needed,” and the patch replaces nfs_wb_folio() with nfs_wb_folio_reclaim(), a special reclaim-safe path that only kicks off writeback or an asynchronous commit “without waiting for completion.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/nfs/file.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/nfs/nfstrace.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/nfs/write.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "include/linux/nfs_fs.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use reclaim-specific NFS folio writeback and block folio release when private state remains after writeback.",
+        "what": "The code in nfs_release_folio() replaces a call to nfs_wb_folio(folio->mapping->host, folio) with nfs_wb_folio_reclaim(folio->mapping->host, folio) and adds an additional condition to return false when folio_test_private(folio) is still true after that call.",
+        "how": "At runtime, folio release during reclaim now uses the reclaim-specific writeback helper and explicitly refuses to release the folio if private state remains attached afterward, preventing the folio from being freed while still carrying NFS-private data or unresolved state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "other",
+        "intent_summary": "Add dedicated tracepoints for NFS folio writeback during reclaim so its execution can be monitored separately.",
+        "what": "Two new trace event definitions were added: DEFINE_NFS_FOLIO_EVENT(nfs_writeback_folio_reclaim) and DEFINE_NFS_FOLIO_EVENT_DONE(nfs_writeback_folio_reclaim_done), inserted alongside existing NFS folio event declarations.",
+        "how": "This enables runtime tracing of the start and completion of an NFS folio writeback path associated with reclaim, allowing that specific operation to be observed separately from the existing generic nfs_writeback_folio tracepoints."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a reclaim-specific NFS folio writeback helper that synchronously flushes or commits a locked folio and rejects folios already under writeback.",
+        "what": "A new function, nfs_wb_folio_reclaim(struct inode *inode, struct folio *folio), was added. It computes the folio's byte range, initializes a writeback_control with WB_SYNC_ALL, nr_to_write = 0, the folio's start and end range, and for_sync = 1, then checks folio_test_writeback(folio) and returns -EBUSY if set. If folio_clear_dirty_for_io(folio) succeeds, it emits reclaim-specific trace events before and after calling nfs_writepage_locked(folio, &wbc) and returns that result; otherwise it calls nfs_commit_inode(inode, 0) and returns 0.",
+        "how": "This adds a reclaim-specific path to synchronously write back a locked NFS folio over its exact byte range. At runtime it prevents reclaim from acting on a folio already under writeback by returning -EBUSY, writes dirty folios immediately through the normal locked writepage path with tracing, and forces a commit on clean folios so outstanding unstable NFS writes can be finalized before reclaim proceeds."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Export a reclaim-specific NFS folio writeback interface so other code can invoke specialized writeback during memory reclaim.",
+        "what": "A new external function declaration was added to the header: `extern int nfs_wb_folio_reclaim(struct inode *inode, struct folio *folio);` immediately after the existing `nfs_wb_folio` declaration.",
+        "how": "This exposes a reclaim-specific folio writeback function to other compilation units, enabling code elsewhere in the kernel to call a distinct NFS writeback path for folios during reclaim handling."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add a reclaim-specific NFS folio writeback helper that synchronously flushes or commits a locked folio and rejects folios already under writeback."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add dedicated tracepoints for NFS folio writeback during reclaim so its execution can be monitored separately."
+        },
+        {
+          "group_id": 2,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Export a reclaim-specific NFS folio writeback interface so other code can invoke specialized writeback during memory reclaim."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add and use a reclaim-specific NFS folio writeback path that safely handles locked folios during reclaim and prevents release when writeback/private state is still present.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by replacing normal folio writeback during reclaim with a reclaim-specific path, handling locked folios safely, avoiding blocking behavior tied to state recovery, and preventing folio release when writeback/private state is still present."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change only adds tracing/observability for reclaim-time NFS folio writeback and does not modify the blocking writeback path or the deadlock-causing use of nfs_wb_folio in nfs_release_folio()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The vulnerability is caused by using the normal folio writeback path during memory reclaim, leading to deadlock. This group introduces/export a reclaim-specific NFS folio writeback interface for use in reclaim contexts, which directly addresses that root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/nfs/file.c",
+            "lineno": 514,
+            "content": "if (nfs_wb_folio(folio->mapping->host, folio) < 0)",
+            "rationale": "This is the direct call in nfs_release_folio() to the normal synchronous folio writeback path. Per the root cause, using nfs_wb_folio during reclaim can block on NFSv4.1 state recovery and cause a circular wait deadlock."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "include/linux/nfs_fs.h",
+            "lineno": 639,
+            "content": "extern int nfs_wb_folio(struct inode *inode, struct folio *folio);",
+            "rationale": "This declaration identifies the normal writeback interface that was inappropriately used from reclaim. While not the call site itself, it points to the vulnerable API involved in the deadlock scenario."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/nfs/file.c",
+            "stmt_text": "if (nfs_wb_folio(folio->mapping->host, folio) < 0)",
+            "location": "hunk",
+            "explanation": "This statement is the reclaim-path call in nfs_release_folio() to the normal synchronous NFS folio writeback routine. According to the root cause, invoking nfs_wb_folio() during reclaim can block on NFSv4.1 state recovery, creating a circular wait deadlock involving memory reclaim/kthreadd."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "857bf9056291",
+          "anchor_file": "fs/nfs/file.c",
+          "anchor_lineno": 514
+        },
+        "commit": "7e8e78a0ba00c88f0ded86de64bdddc82e06b196",
+        "commit_short": "7e8e78a0ba00",
+        "commit_msg": "nfs: remove dead code for the old swap over NFS implementation\n\nRemove the code testing folio_test_swapcache either expl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nfs/file.c",
+        "display_lineno": 457,
+        "code_snippet": "commit 7e8e78a0ba00c88f0ded86de64bdddc82e06b196\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Mon Jul 1 07:26:48 2024 +0200\n\n    nfs: remove dead code for the old swap over NFS implementation\n    \n    Remove the code testing folio_test_swapcache either explicitly or\n    implicitly in pagemap.h headers, as is now handled using the direct I/O\n    path and not the buffered I/O path that these helpers are located in.\n    \n    Signed-off-by: Christoph Hellwig <hch@lst.de>\n    Reviewed-by: Sagi Grimb",
+        "exists": true,
+        "reason": "The relevant logic is shown directly in the snippet for nfs_release_folio(). The root cause says the bug is that nfs_release_folio() used the normal synchronous folio writeback path via nfs_wb_folio(), which can block during reclaim and cause deadlock. In this commit's version, that exact call is still present: `if (nfs_wb_folio(folio->mapping->host, folio) < 0) return false;`. The surrounding reclaim-related gating also appears in the function: `if ((current_gfp_context(gfp) & GFP_KERNEL) != GFP_KERNEL || current_is_kswapd()) return false;` followed by the synchronous writeback call. Nothing in this diff replaces `nfs_wb_folio()` with a reclaim-safe alternative or otherwise avoids the problematic synchronous writeback/state-recovery path. The commit only changes `folio_file_mapping(folio)->host` to `folio->mapping->host`, which is unrelated to the deadlock fix. Therefore the vulnerable construct is present and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "4840c00003a2",
+          "anchor_file": "fs/nfs/file.c",
+          "anchor_lineno": 457
+        },
+        "commit": "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+        "commit_short": "96780ca55e3c",
+        "commit_msg": "NFS: fix up nfs_release_folio() to try to release the page\n\nIf the gfp context allows it, and we're not kswapd, then try",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nfs/file.c",
+        "display_lineno": 439,
+        "code_snippet": "commit 96780ca55e3cbf4f150fd5a833a61492c9947b5b\nAuthor: Trond Myklebust <trond.myklebust@hammerspace.com>\nDate:   Thu Jan 19 16:33:48 2023 -0500\n\n    NFS: fix up nfs_release_folio() to try to release the page\n    \n    If the gfp context allows it, and we're not kswapd, then try to write\n    out the folio that has private data.\n    \n    Signed-off-by: Trond Myklebust <trond.myklebust@hammerspace.com>\n    Signed-off-by: Anna Schumaker <Anna.Schumaker@Netapp.com>\n\ndiff --git a/fs/nfs/file.c b/fs/nf",
+        "exists": true,
+        "reason": "The snippet shows the full relevant logic of `nfs_release_folio()`, so it is sufficient to judge. The root cause says the vulnerability is that `nfs_release_folio()` incorrectly used the normal synchronous folio writeback path `nfs_wb_folio()` in reclaim, which can block and deadlock. This commit version contains exactly that construct: inside `if (folio_test_private(folio)) { ... if (nfs_wb_folio(folio_file_mapping(folio)->host, folio) < 0) return false; }`. Although it adds guards `if ((current_gfp_context(gfp) & GFP_KERNEL) != GFP_KERNEL || current_is_kswapd()) return false;`, it still invokes `nfs_wb_folio()` from `nfs_release_folio()`. Since the vulnerable construct is present and the root-cause issue is specifically the use of synchronous writeback in the reclaim release path, this function still contains the bug. Therefore the fix is not yet present in this snippet."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "70e9db69f927",
+          "anchor_file": "fs/nfs/file.c",
+          "anchor_lineno": 439
+        },
+        "commit": "e3db7691e9f3dff3289f64e3d98583e28afe03db",
+        "commit_short": "e3db7691e9f3",
+        "commit_msg": "[PATCH] NFS: Fix race in nfs_release_page()\n\n    NFS: Fix race in nfs_release_page()\n\n    invalidate_inode_pages2() may ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nfs/file.c",
+        "display_lineno": 321,
+        "code_snippet": "commit e3db7691e9f3dff3289f64e3d98583e28afe03db\nAuthor: Trond Myklebust <Trond.Myklebust@netapp.com>\nDate:   Wed Jan 10 23:15:39 2007 -0800\n\n    [PATCH] NFS: Fix race in nfs_release_page()\n    \n        NFS: Fix race in nfs_release_page()\n    \n        invalidate_inode_pages2() may find the dirty bit has been set on a page\n        owing to the fact that the page may still be mapped after it was locked.\n        Only after the call to unmap_mapping_range() are we sure that the page\n        can no lo",
+        "exists": false,
+        "reason": "The provided snippet does not include the actual function body logic—only the signature `static int nfs_launder_page(struct page *page)` is shown, with no statements inside it. The root cause to evaluate is whether the reclaim/release path incorrectly calls the normal synchronous writeback path (such as `nfs_wb_folio` / older page equivalent) instead of a nonblocking-safe path. Since none of the implementation lines are present, I cannot determine whether the vulnerable construct is present or whether a fix is already applied."
+      }
+    },
+    {
+      "bic_found": "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "96780ca55e3cbf4f150fd5a833a61492c9947b5b": 1
+      },
+      "bic_candidates": [
+        "96780ca55e3cbf4f150fd5a833a61492c9947b5b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

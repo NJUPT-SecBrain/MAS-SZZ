@@ -1,0 +1,335 @@
+{
+  "cveid": "CVE-2026-31706",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "3e4e2ea2a781018ed5d75f969e3e5606beb66e48"
+  ],
+  "ground_truth_bic": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+  "predicted_bic": [
+    "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+    "0066f623bce8f98b69b752ee03d46a5047c281b8",
+    "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 28226,
+  "root_cause": {
+    "text": "`smb_inherit_dacl()` in ksmbd trusted the parent directory’s on-disk `security.NTACL`/DACL `num_aces` field without validating it against `pdacl_size`, so a corrupted or tampered ACL could make the function allocate an oversized heap buffer and then walk ACEs with insufficient size checks.",
+    "evidence": "The patch adds a pre-allocation guard `if (num_aces > aces_size / (...minimum ACE size...)) return -EINVAL;`, switches `kmalloc(sizeof(struct smb_ace) * num_aces * 2, ...)` to `kmalloc_array(...)`, and tightens the loop from `offsetof(struct smb_ace, access_req)` to the minimum valid ACE size, matching the CVE description that the old code “trusts the on-disk num_aces value” and can be driven to a ~8 MB allocation or overflow on 32-bit kernels.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/smbacl.c",
+      "lineno": 1109,
+      "content": "aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2,",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/smbacl.c",
+      "lineno": 1124,
+      "content": "for (i = 0; i < num_aces; i++) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/smbacl.c",
+      "lineno": 1130,
+      "content": "pace_size = le16_to_cpu(parent_aces->size);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/smbacl.c",
+      "lineno": 1134,
+      "content": "aces_size -= pace_size;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`smb_inherit_dacl()` in ksmbd trusted the parent directory’s on-disk `security.NTACL`/DACL `num_aces` field without validating it against `pdacl_size`, so a corrupted or tampered ACL could make the function allocate an oversized heap buffer and then walk ACEs with insufficient size checks.",
+      "evidence_points": "The patch adds a pre-allocation guard `if (num_aces > aces_size / (...minimum ACE size...)) return -EINVAL;`, switches `kmalloc(sizeof(struct smb_ace) * num_aces * 2, ...)` to `kmalloc_array(...)`, and tightens the loop from `offsetof(struct smb_ace, access_req)` to the minimum valid ACE size, matching the CVE description that the old code “trusts the on-disk num_aces value” and can be driven to a ~8 MB allocation or overflow on 32-bit kernels."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/smbacl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/smbacl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/smb/server/smbacl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Harden DACL inheritance by validating ACE count against payload size and using safer array allocation.",
+        "what": "The code adds a new `aces_size` calculation from `pdacl_size - sizeof(struct smb_acl)`, inserts a validation check that վերադարձs `-EINVAL` if `num_aces` exceeds the DACL payload divided by the minimum ACE size, and replaces the raw `kmalloc(sizeof(struct smb_ace) * num_aces * 2, ...)` allocation with `kmalloc_array(num_aces * 2, sizeof(struct smb_ace), ...)`.",
+        "how": "At runtime, the function now rejects malformed or inconsistent DACL data before allocating memory, preventing oversized ACE counts from driving an invalid allocation size or later out-of-bounds processing. Using `kmalloc_array` also makes the allocation size computation safer against arithmetic overflow."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Remove an unnecessary `aces_size` reassignment from DACL inheritance logic.",
+        "what": "The assignment `aces_size = acl_len - sizeof(struct smb_acl);` was removed from `smb_inherit_dacl()`.",
+        "how": "The function no longer updates `aces_size` at that point, so any later logic now relies on a previously computed value or a different code path rather than resetting the ACE payload size here."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Harden ACE size validation in smb_inherit_dacl() to reject truncated ACL entries during DACL inheritance.",
+        "what": "In smb_inherit_dacl(), the loop’s validation checks were changed: the first size check now requires aces_size to be at least offsetof(struct smb_ace, sid) + CIFS_SID_BASE_SIZE instead of only exceeding offsetof(struct smb_ace, access_req), and the second check now also rejects entries whose pace_size is smaller than that same minimum size in addition to the existing upper-bound check against aces_size.",
+        "how": "This tightens parsing of inherited ACE data so the code stops processing when an ACE record is too short to contain a valid SID, preventing the function from consuming malformed or truncated ACL entries and reducing the chance of out-of-bounds access while inheriting the DACL."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Harden ACE size validation in smb_inherit_dacl() to reject truncated ACL entries during DACL inheritance."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove an unnecessary `aces_size` reassignment from DACL inheritance logic."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Harden ACE size validation in smb_inherit_dacl() to reject truncated ACL entries during DACL inheritance.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by hardening smb_inherit_dacl() to validate ACE count/size against the ACL payload, preventing oversized allocation and invalid ACE traversal from a corrupted DACL."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change only removes an unnecessary `aces_size` reassignment in DACL inheritance logic. It does not add validation of `num_aces` against `pdacl_size` or address oversized allocation/ACE iteration safety in `smb_inherit_dacl()`."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/smb/server/smbacl.c",
+            "lineno": 1109,
+            "content": "aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2,",
+            "rationale": "This allocation size is derived directly from the unvalidated parent ACL num_aces field. If num_aces is corrupted or maliciously large, the function can allocate an oversized heap buffer, matching the root cause."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/server/smbacl.c",
+            "lineno": 1124,
+            "content": "for (i = 0; i < num_aces; i++) {",
+            "rationale": "The loop trusts num_aces from the on-disk ACL and iterates that many times without first ensuring the ACL payload actually contains that many ACEs, enabling out-of-bounds ACE walking when num_aces is inconsistent with pdacl_size."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/server/smbacl.c",
+            "lineno": 1130,
+            "content": "pace_size = le16_to_cpu(parent_aces->size);",
+            "rationale": "This reads each ACE size from the untrusted parent ACL while the surrounding code lacked sufficient truncation checks, contributing to parsing beyond valid ACL bounds when the buffer is malformed."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/server/smbacl.c",
+            "lineno": 1134,
+            "content": "aces_size -= pace_size;",
+            "rationale": "Without prior validation that pace_size is within the actual payload size, subtracting it can advance parsing state incorrectly and allow the function to walk ACEs with insufficient size checks."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/smbacl.c",
+            "stmt_text": "aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2,",
+            "location": "hunk",
+            "explanation": "This allocation is based directly on the parent ACL's unvalidated num_aces field, which can be corrupted or tampered with. That matches the root cause of trusting the on-disk DACL count and can lead to oversized heap allocation."
+          },
+          {
+            "vuln_file": "fs/smb/server/smbacl.c",
+            "stmt_text": "for (i = 0; i < num_aces; i++) {",
+            "location": "hunk",
+            "explanation": "This loop iterates according to num_aces without first validating that the ACL payload actually contains that many ACEs, enabling out-of-bounds walking of ACE entries when num_aces is inconsistent with pdacl_size."
+          },
+          {
+            "vuln_file": "fs/smb/server/smbacl.c",
+            "stmt_text": "pace_size = le16_to_cpu(parent_aces->size);",
+            "location": "hunk",
+            "explanation": "This reads each ACE size from the untrusted parent ACL while the surrounding code lacked sufficient truncation checks, allowing malformed ACL data to be parsed beyond valid bounds."
+          },
+          {
+            "vuln_file": "fs/smb/server/smbacl.c",
+            "stmt_text": "aces_size -= pace_size;",
+            "location": "hunk",
+            "explanation": "This updates parsing state using pace_size before ensuring it is bounded by the actual ACL payload size, which can let the function continue walking ACEs with insufficient size validation."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ce23158bfe58",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1109
+        },
+        "commit": "0066f623bce8f98b69b752ee03d46a5047c281b8",
+        "commit_short": "0066f623bce8",
+        "commit_msg": "ksmbd: use __GFP_RETRY_MAYFAIL\n\nPrefer to report ENOMEM rather than incur the oom for allocations in\nksmbd. __GFP_NORETR",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 1035,
+        "code_snippet": "commit 0066f623bce8f98b69b752ee03d46a5047c281b8\nAuthor: Namjae Jeon <linkinjeon@kernel.org>\nDate:   Fri Nov 22 16:33:25 2024 +0900\n\n    ksmbd: use __GFP_RETRY_MAYFAIL\n    \n    Prefer to report ENOMEM rather than incur the oom for allocations in\n    ksmbd. __GFP_NORETRY could not achieve that, It would fail the allocations\n    just too easily. __GFP_RETRY_MAYFAIL will keep retrying the allocation\n    until there is no more progress and fail the allocation instead go OOM\n    and let the caller to ",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present here. Although the function reads the parent ACL count with `num_aces = le32_to_cpu(parent_pdacl->num_aces);` at line 1026, it also validates the ACL size before using it: `if (pdacl_size > acl_len || pdacl_size < sizeof(struct smb_acl)) { rc = -EINVAL; goto free_parent_pntsd; }` at lines 1030-1033. The only allocation based on `num_aces` is `aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2, KSMBD_DEFAULT_GFP);` at lines 1035-1036, but the snippet shows no missing check specific to the reported root cause beyond the already-present ACL bounds validation. This commit is about GFP flags (`use __GFP_RETRY_MAYFAIL`), not ACL validation, so the vulnerable construct is absent from the shown function and no fix for that issue is present here."
+      }
+    },
+    {
+      "bic_found": "0066f623bce8f98b69b752ee03d46a5047c281b8",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ce23158bfe58",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1124
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 989,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains the relevant ACL inheritance logic. In smb_inherit_dacl(), the code reads the parent DACL and trusts its contents: `acl = (struct smb_acl *)parent_desc->sacl_ptr;` then `dacl = (struct smb_acl *)((char *)acl + le16_to_cpu(acl->size));` and iterates using `num_aces = le32_to_cpu(dacl->num_aces);` / `for (i = 0; i < num_aces; i++)`. This shows the vulnerable construct: the on-disk `num_aces` field is used to drive allocation/iteration without validating it against the actual parent DACL size (`pdacl_size`) or bounding it to the ACL buffer. The snippet does not show any check like `num_aces * ace_size <= pdacl_size`, so the fix is not present here."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ce23158bfe58",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1130
+        },
+        "commit": "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+        "commit_short": "8f0541186e9a",
+        "commit_msg": "ksmbd: fix heap-based overflow in set_ntacl_dacl()\n\nThe testcase use SMB2_SET_INFO_HE command to set a malformed file at",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 1050,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "Yes, the function body is enough to determine the issue. The vulnerable construct is present: it reads the parent ACL's ACE count with `num_aces = le32_to_cpu(parent_pdacl->num_aces);` at line 1021 and then allocates based on it with `aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2, GFP_KERNEL);` at line 1030. The root cause says this `num_aces` field was trusted without validating it against `pdacl_size`, which could allow an oversized heap allocation and unsafe ACE walking. In this snippet there is no check that `num_aces` is consistent with `pdacl_size` before allocation or iteration. The existing checks only validate `dacloffset` and `pdacl_size` against `acl_len` (`if (pdacl_size > acl_len || pdacl_size < sizeof(struct smb_acl))`) but do not bound `num_aces`. The loop also uses `for (i = 0; i < num_aces; i++)`, so the unvalidated count directly drives traversal. This snippet does not contain the fix for validating `num_aces` against the ACL size, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ce23158bfe58",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1134
+        },
+        "commit": "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+        "commit_short": "8f0541186e9a",
+        "commit_msg": "ksmbd: fix heap-based overflow in set_ntacl_dacl()\n\nThe testcase use SMB2_SET_INFO_HE command to set a malformed file at",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 1054,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present here. The function reads `num_aces = le32_to_cpu(parent_pdacl->num_aces);` at line 1021, but it then validates the ACL size before using `num_aces` to allocate: `if (pdacl_size > acl_len || pdacl_size < sizeof(struct smb_acl)) { ... }` at lines 1025-1028. This commit also adds the heap-allocation site `aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2, GFP_KERNEL);` at line 1030, but the subsequent ACE walk is guarded by size checks in the loop: `if (offsetof(struct smb_ace, access_req) > aces_size) break;` and `if (pace_size > aces_size) break;` at lines 1047-1052, preventing out-of-bounds traversal. Since the function already contains the corrective validation and bounds checks, it reflects the fixed version rather than the vulnerable one."
+      }
+    },
+    {
+      "bic_found": "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "0066f623bce8f98b69b752ee03d46a5047c281b8": 1,
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9": 1,
+        "8f0541186e9ad1b62accc9519cc2b7a7240272a7": 2
+      },
+      "bic_candidates": [
+        "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+        "0066f623bce8f98b69b752ee03d46a5047c281b8",
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

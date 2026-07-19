@@ -1,0 +1,318 @@
+{
+  "cveid": "CVE-2026-53259",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "f723ccaff2fb72b71ae8a9fd283f0dee4d9ae7a3"
+  ],
+  "ground_truth_bic": "eb1ac9ff6c4a5720b1a1476233be374c5dc44bff",
+  "predicted_bic": [
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 36744,
+  "root_cause": {
+    "text": "A race in the IPv6 anycast insertion path exposed a partially published struct ifacaddr6—added to idev->ac_list before inet6_acaddr_lst[] and without RTNL serialization—allowing ipv6_ac_destroy_dev() to remove and drop its refcount before hash insertion, leaving a freed object later linked in the global hash.",
+    "evidence": "The commit message explicitly shows __ipv6_dev_ac_inc() doing “add aca to ac_list” under idev->lock, then calling ipv6_add_acaddr_hash() only after write_unlock_bh(), while a concurrent ipv6_ac_destroy_dev() can “pull aca off ac_list,” have ipv6_del_acaddr_hash() be “a no-op” because “aca is not in the hash yet,” and after CPU0 later inserts it into the hash and drops the last reference, “aca is freed while still linked in inet6_acaddr_lst[]”; the fix moves ipv6_add_acaddr_hash(net, aca) inside the idev->lock section.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/ipv6/anycast.c",
+      "lineno": 372,
+      "content": "rcu_assign_pointer(idev->ac_list, aca);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/ipv6/anycast.c",
+      "lineno": 374,
+      "content": "write_unlock_bh(&idev->lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/ipv6/anycast.c",
+      "lineno": 376,
+      "content": "ipv6_add_acaddr_hash(net, aca);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the IPv6 anycast insertion path exposed a partially published struct ifacaddr6—added to idev->ac_list before inet6_acaddr_lst[] and without RTNL serialization—allowing ipv6_ac_destroy_dev() to remove and drop its refcount before hash insertion, leaving a freed object later linked in the global hash.",
+      "evidence_points": "The commit message explicitly shows __ipv6_dev_ac_inc() doing “add aca to ac_list” under idev->lock, then calling ipv6_add_acaddr_hash() only after write_unlock_bh(), while a concurrent ipv6_ac_destroy_dev() can “pull aca off ac_list,” have ipv6_del_acaddr_hash() be “a no-op” because “aca is not in the hash yet,” and after CPU0 later inserts it into the hash and drops the last reference, “aca is freed while still linked in inet6_acaddr_lst[]”; the fix moves ipv6_add_acaddr_hash(net, aca) inside the idev->lock section."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/ipv6/anycast.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/ipv6/anycast.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/ipv6/anycast.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use bottom-half-safe locking for IPv6 anycast hash updates to prevent softirq-context races and deadlocks.",
+        "what": "The change replaces spin_lock()/spin_unlock() with spin_lock_bh()/spin_unlock_bh() around accesses to acaddr_hash_lock in both ipv6_add_acaddr_hash() and ipv6_del_acaddr_hash().",
+        "how": "At runtime, these critical sections now disable softirqs/bottom halves while holding the lock, preventing concurrent bottom-half context from taking the same lock or accessing the hash list unsafely, which avoids locking races or deadlocks during add/remove operations on the IPv6 anycast address hash."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Hold idev->lock across ipv6_add_acaddr_hash() so anycast address list and hash registration are updated atomically before unlocking.",
+        "what": "The call to write_unlock_bh(&idev->lock) was moved from immediately after rcu_assign_pointer(idev->ac_list, aca) to after the call to ipv6_add_acaddr_hash(net, aca), leaving ip6_ins_rt(net, f6i) and addrconf_join_solict(idev->dev, &aca->aca_addr) still executed after the lock is released.",
+        "how": "This keeps idev->lock held while the new anycast address is inserted into the hash via ipv6_add_acaddr_hash(), ensuring the list insertion and hash registration occur under the same lock before other code can observe the partially registered state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use bottom-half-safe locking in ipv6_anycast_cleanup() to prevent softirq races on acaddr_hash_lock during anycast hash cleanup.",
+        "what": "In ipv6_anycast_cleanup(), the lock and unlock calls around the inet6_acaddr_lst hash table check were changed from spin_lock()/spin_unlock() to spin_lock_bh()/spin_unlock_bh() on acaddr_hash_lock.",
+        "how": "This makes the critical section also disable and restore bottom halves while holding acaddr_hash_lock, preventing concurrent access from softirq/bottom-half context during cleanup and avoiding races or lock misuse in contexts where the same lock is taken with bottom halves disabled."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Use bottom-half-safe locking in ipv6_anycast_cleanup() to prevent softirq races on acaddr_hash_lock during anycast hash cleanup."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Harden IPv6 anycast address/hash list updates and cleanup against softirq races by using proper bottom-half-safe locking and atomic lock coverage.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target the IPv6 anycast publication/cleanup race described in the root cause: they make list/hash updates atomic under proper locking, extend lock coverage across hash insertion, and harden cleanup with bottom-half-safe locking to prevent concurrent removal of partially published ifacaddr6 objects."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/ipv6/anycast.c",
+            "lineno": 372,
+            "content": "rcu_assign_pointer(idev->ac_list, aca);",
+            "rationale": "This publishes the ifacaddr6 on idev->ac_list before it is inserted into the global anycast hash, creating the partial-publication window described in the root cause."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/ipv6/anycast.c",
+            "lineno": 374,
+            "content": "write_unlock_bh(&idev->lock);",
+            "rationale": "Releasing idev->lock before ipv6_add_acaddr_hash() allows cleanup to race after the object is visible on idev->ac_list but before hash insertion, enabling premature removal and refcount drop."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/ipv6/anycast.c",
+            "lineno": 376,
+            "content": "ipv6_add_acaddr_hash(net, aca);",
+            "rationale": "Hash insertion occurs only after the object was already published and the device lock released, making this delayed registration part of the vulnerable ordering."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/ipv6/anycast.c",
+            "stmt_text": "rcu_assign_pointer(idev->ac_list, aca);",
+            "location": "hunk",
+            "explanation": "This statement publishes the new ifacaddr6 object on idev->ac_list before it is inserted into the global anycast hash, creating the partially published state at the core of the race."
+          },
+          {
+            "vuln_file": "net/ipv6/anycast.c",
+            "stmt_text": "write_unlock_bh(&idev->lock);",
+            "location": "hunk",
+            "explanation": "Unlocking here ends serialization before global hash insertion, allowing ipv6_ac_destroy_dev() to race with the partially published object after it is visible on idev->ac_list."
+          },
+          {
+            "vuln_file": "net/ipv6/anycast.c",
+            "stmt_text": "ipv6_add_acaddr_hash(net, aca);",
+            "location": "hunk",
+            "explanation": "This delayed hash registration occurs only after publication to idev->ac_list and after releasing idev->lock, completing the vulnerable ordering that can link a freed object into the global hash."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5eba3e48d78e",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 372
+        },
+        "commit": "c3718936ec47ae811a7ce9a618b6cb1cda835bab",
+        "commit_short": "c3718936ec47",
+        "commit_msg": "ipv6: anycast: complete RCU handling of struct ifacaddr6\n\nstruct ifacaddr6 are already freed after RCU grace period.\n\nAd",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 326,
+        "code_snippet": "commit c3718936ec47ae811a7ce9a618b6cb1cda835bab\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Fri Feb 23 20:10:54 2024 +0000\n\n    ipv6: anycast: complete RCU handling of struct ifacaddr6\n    \n    struct ifacaddr6 are already freed after RCU grace period.\n    \n    Add __rcu qualifier to aca_next pointer, and idev->ac_list\n    \n    Add relevant rcu_assign_pointer() and dereference accessors.\n    \n    ipv6_chk_acast_dev() no longer needs to acquire idev->lock.\n    \n    /proc/net/anycast6 is no",
+        "exists": true,
+        "reason": "The shown function body of `__ipv6_dev_ac_inc()` is sufficient to determine the issue because it contains the publication order of the new `ifacaddr6` object. In this commit version, the code still inserts the object into the per-device list before adding it to the global hash: `aca->aca_next = idev->ac_list;` followed by `rcu_assign_pointer(idev->ac_list, aca);`, then later after unlocking, `ipv6_add_acaddr_hash(net, aca);`. This matches the root cause: the object is exposed through `idev->ac_list` before `inet6_acaddr_lst[]`/hash insertion is completed. The comment even says `it is already exposed via idev->ac_list`, confirming early publication. Because `ipv6_ac_destroy_dev()` can remove entries from `idev->ac_list` and drop refs before hash insertion, this ordering is the vulnerable construct. The commit only adds RCU accessors (`rtnl_dereference`, `rcu_assign_pointer`) and does not change the problematic publication-vs-hash-insertion order or add RTNL serialization here. Therefore the bug is present and the actual fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5c237967e632",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 326
+        },
+        "commit": "83aa29eefdb152d65e65a90605593766b4f793ef",
+        "commit_short": "83aa29eefdb1",
+        "commit_msg": "ipv6: refactor __ipv6_dev_ac_inc()\n\nRefactor out allocation and initialization and make\nthe refcount code more readable.",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 286,
+        "code_snippet": "commit 83aa29eefdb152d65e65a90605593766b4f793ef\nAuthor: WANG Cong <xiyou.wangcong@gmail.com>\nDate:   Thu Sep 11 15:35:12 2014 -0700\n\n    ipv6: refactor __ipv6_dev_ac_inc()\n    \n    Refactor out allocation and initialization and make\n    the refcount code more readable.\n    \n    Signed-off-by: Cong Wang <xiyou.wangcong@gmail.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/ipv6/anycast.c b/net/ipv6/anycast.c\nindex 66c19320119a..952c1fd06150 100644\n--- a/net/ipv6/any",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full publication sequence in `__ipv6_dev_ac_inc()` and the refcount setup in `aca_alloc()`, which are the key elements in the described race. The vulnerable construct is present: the new anycast entry is linked into the per-device list before later work completes: `aca->aca_next = idev->ac_list; idev->ac_list = aca;` and only after unlocking does it continue with `ip6_ins_rt(rt); addrconf_join_solict(...); aca_put(aca);`. This matches the root cause of exposing a partially published `ifacaddr6` before the rest of insertion is complete. The refcount handling also shows the unfixed state relative to the later race fix: `aca_alloc()` initializes `atomic_set(&aca->aca_refcnt, 1);`, then after publication to `idev->ac_list` the code does `aca_get(aca);` with the comment `it is already exposed via idev->ac_list.` That means the object is published first and only then an extra reference is taken for post-unlock work, leaving the partially published window that the root cause describes. There is no indication here of the later correct handling that would avoid this publication race (e.g. different ordering / stronger serialization around publication and subsequent insertion). Therefore the function contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "013b4d90387a",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 286
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 355,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable insertion logic is clearly present in `ipv6_dev_ac_inc()`. After initializing the new `ifacaddr6`, the code publishes it to the per-device list first: `aca->aca_next = idev->ac_list; idev->ac_list = aca; write_unlock_bh(&idev->lock);` and only afterwards performs route/global publication work with `dst_hold(&rt->u.dst); if (ip6_ins_rt(rt, NULL, NULL)) ...`. This matches the root cause: the object is exposed via `idev->ac_list` before later insertion steps complete. The removal path `__ipv6_dev_ac_dec()` traverses `idev->ac_list`, unlinks the entry, and may drop the final reference via `aca_put(aca)` once users reaches zero, so a concurrently visible partially published object can be removed before later publication finishes. There is also no RTNL serialization or other higher-level serialization visible around `ipv6_dev_ac_inc()`/`__ipv6_dev_ac_dec()`; locking is only `idev->lock`, which is consistent with the described race. No fix is present here to defer publication until after full insertion or to serialize with RTNL."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5eba3e48d78e",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 374
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 337,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable publication order is visible directly in `ipv6_dev_ac_inc()`. After allocating and initializing `aca`, the code does `aca->aca_next = idev->ac_list; idev->ac_list = aca; write_unlock_bh(&idev->lock);` before any global insertion step. Only after unlocking does it perform `dst_hold(&rt->u.dst); if (ip6_ins_rt(rt, NULL, NULL)) dst_release(&rt->u.dst);` and then `aca_put(aca);`. This shows the object is published on `idev->ac_list` first and not fully installed elsewhere before lock release. The root-cause race description says `ipv6_ac_destroy_dev()` / removal can observe the partially published object and drop its refcount before later hash/global insertion; this early code clearly lacks any serialization such as RTNL around the insertion path and exposes the entry via `idev->ac_list` before the later route/global work. There is no fix present that would delay publication until after full insertion or otherwise serialize the operation. Therefore the function contains the vulnerable construct and is not fixed."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5eba3e48d78e",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 376
+        },
+        "commit": "2384d02520ff2a916169b2fd85ea50e923ed56c2",
+        "commit_short": "2384d02520ff",
+        "commit_msg": "net/ipv6: Add anycast addresses to a global hashtable\n\nicmp6_send() function is expensive on systems with a large number",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 326,
+        "code_snippet": "commit 2384d02520ff2a916169b2fd85ea50e923ed56c2\nAuthor: Jeff Barnhill <0xeffeff@gmail.com>\nDate:   Fri Nov 2 20:23:57 2018 +0000\n\n    net/ipv6: Add anycast addresses to a global hashtable\n    \n    icmp6_send() function is expensive on systems with a large number of\n    interfaces. Every time it’s called, it has to verify that the source\n    address does not correspond to an existing anycast address by looping\n    through every device and every anycast address on the device.  This can\n    result ",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the exact anycast insertion/removal ordering and synchronization introduced by this commit. The vulnerable construct is present in `__ipv6_dev_ac_inc()`: the object is first linked into the per-device list under `idev->lock` (`aca->aca_next = idev->ac_list; idev->ac_list = aca; aca_get(aca); write_unlock_bh(&idev->lock);`) and only afterwards inserted into the new global hash via `ipv6_add_acaddr_hash(net, aca);`. This matches the root cause: the `ifacaddr6` is published in `idev->ac_list` before `inet6_acaddr_lst[]`. The commit also shows no RTNL serialization added around this path; the insertion/removal is done with `idev->lock` plus the separate `acaddr_hash_lock`, so there is a window where destroy/removal code can observe the per-device publication before hash insertion. The removal paths `__ipv6_dev_ac_dec()` and `ipv6_ac_destroy_dev()` both unlink from `idev->ac_list`, then call `ipv6_del_acaddr_hash(aca)`, and finally drop references with `aca_put(aca)`. Because the node was initialized with `INIT_HLIST_NODE(&aca->aca_addr_lst);`, `hlist_del_init_rcu()` is harmless if the object was never hashed, so a concurrent destroy can remove and free the object before `ipv6_add_acaddr_hash()` runs, after which the stale freed object could be linked into the global hash. There is no fix here to prevent that race, such as serializing with RTNL or inserting into the global hash before publishing on `idev->ac_list`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7b900ead6cc6",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 326
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 378,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable insertion ordering is visible directly in `ipv6_dev_ac_inc()`. After allocating and initializing `aca`, the code publishes it to the per-device list first: `aca->aca_next = idev->ac_list; idev->ac_list = aca; write_unlock_bh(&idev->lock);`. Only after dropping `idev->lock` does it proceed with route/global publication work: `dst_hold(&rt->u.dst); if (ip6_ins_rt(rt, NULL, NULL)) ...`, then `addrconf_join_solict(dev, &aca->aca_addr);`, and finally `aca_put(aca);`. This matches the root cause: a partially published `ifacaddr6` is exposed through `idev->ac_list` before later insertion/publication steps complete. \n\nThe removal path is also present in `__ipv6_dev_ac_dec()`: it scans `idev->ac_list`, unlinks the matching object (`prev_aca->aca_next = aca->aca_next;` / `idev->ac_list = aca->aca_next;`), unlocks, and then drops references with `aca_put(aca);`. Thus another path can observe and remove the newly inserted object once it is linked on `idev->ac_list`.\n\nThere is no visible fix here such as serializing the operation with RTNL or deferring publication to `idev->ac_list` until all other required insertions are complete. Instead, the object is explicitly linked into `idev->ac_list` before the later steps and outside any broader serialization. Therefore this version contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_votes": {
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 3
+      },
+      "bic_candidates": [
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

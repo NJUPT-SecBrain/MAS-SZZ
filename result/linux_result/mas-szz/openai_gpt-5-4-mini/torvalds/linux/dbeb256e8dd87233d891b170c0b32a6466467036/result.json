@@ -1,0 +1,341 @@
+{
+  "cveid": "CVE-2026-46084",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "dbeb256e8dd87233d891b170c0b32a6466467036"
+  ],
+  "ground_truth_bic": "0266a177631d4c6b963b5b12dd986a8c5abdbf06",
+  "predicted_bic": [
+    "0266a177631d4c6b963b5b12dd986a8c5abdbf06"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 31030,
+  "root_cause": {
+    "text": "The MANA RDMA RSS QP destroy path (`mana_ib_destroy_qp_rss`) freed the RX work queue objects without first disabling firmware vPort RX steering, leaving stale steering state that could later direct completions to recycled CQ IDs.",
+    "evidence": "The patch adds `mana_disable_vport_rx(mpc);` before destroying the RX WQs and the comment explicitly says that otherwise “firmware still routes traffic to the destroyed queues” and can cause “bogus completions on reused CQ IDs when the ethernet driver later creates new queues on mana_open()”; the CVE description likewise states that `mana_ib_destroy_qp_rss()` destroyed RX WQs but “does not disable vPort RX steering in firmware.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/infiniband/hw/mana/qp.c",
+      "lineno": 802,
+      "content": "for (i = 0; i < (1 << ind_tbl->log_ind_tbl_size); i++) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/infiniband/hw/mana/qp.c",
+      "lineno": 803,
+      "content": "ibwq = ind_tbl->ind_tbl[i];",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/infiniband/hw/mana/qp.c",
+      "lineno": 804,
+      "content": "wq = container_of(ibwq, struct mana_ib_wq, ibwq);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The MANA RDMA RSS QP destroy path (`mana_ib_destroy_qp_rss`) freed the RX work queue objects without first disabling firmware vPort RX steering, leaving stale steering state that could later direct completions to recycled CQ IDs.",
+      "evidence_points": "The patch adds `mana_disable_vport_rx(mpc);` before destroying the RX WQs and the comment explicitly says that otherwise “firmware still routes traffic to the destroyed queues” and can cause “bogus completions on reused CQ IDs when the ethernet driver later creates new queues on mana_open()”; the CVE description likewise states that `mana_ib_destroy_qp_rss()` destroyed RX WQs but “does not disable vPort RX steering in firmware.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/infiniband/hw/mana/qp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/microsoft/mana/mana_en.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/microsoft/mana/mana_en.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "include/net/mana/mana.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Disable vPort RX steering before destroying RSS queues to prevent stale traffic from causing bogus completions on reused CQ IDs.",
+        "what": "A call to `mana_disable_vport_rx(mpc);` was inserted in `mana_ib_destroy_qp_rss()` immediately before iterating over and destroying the RSS WQ objects, along with a detailed comment explaining why RX steering must be disabled first.",
+        "how": "At runtime, the change stops the vPort from continuing to steer incoming RX traffic to queue resources that are about to be destroyed, reducing the chance of stale traffic being delivered to reused CQ IDs and preventing bogus completions later when new queues are created. It also explicitly avoids using the normal fence-based teardown path because that completion cannot be waited on from the kernel in this userspace-polled CQ scenario."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add an exported helper to disable vPort RX steering through the mana steering configuration path.",
+        "what": "A new function `mana_disable_vport_rx(struct mana_port_context *apc)` was added. It calls `mana_cfg_vport_steering(apc, TRI_STATE_FALSE, false, false, false)` and returns its result. The function is exported with `EXPORT_SYMBOL_NS(mana_disable_vport_rx, \"NET_MANA\")`.",
+        "how": "This introduces a callable interface for disabling vPort receive steering/RX by forcing the steering configuration into the false state. Other code can now invoke this helper to turn off vPort RX behavior through the existing steering configuration path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Disable vPort receive traffic and fence RX queues before destroying the vPort during queue deallocation.",
+        "what": "In `mana_dealloc_queues()`, the call to `mana_config_rss(apc, TRI_STATE_FALSE, false, false)` was replaced with `mana_disable_vport_rx(apc)`, and a new call to `mana_fence_rqs(apc)` was inserted before `mana_destroy_vport(apc)`.",
+        "how": "At runtime, queue deallocation now explicitly disables vPort RX through a dedicated helper instead of reconfiguring RSS, and then fences receive queues before destroying the vPort, which helps ensure RX activity is stopped and outstanding queue operations are quiesced before teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Add a public declaration for a vport RX-disable helper so it can be used elsewhere in the driver.",
+        "what": "A new function prototype, `int mana_disable_vport_rx(struct mana_port_context *apc);`, was added to the header alongside the existing `mana_config_rss()` and queue-management declarations.",
+        "how": "This exposes a new RX-disable operation for a vport so other code can invoke it; by declaring the function in this header, the compiler can accept calls to disable receive processing through the `mana_port_context` interface."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Disable vPort receive traffic and fence RX queues before destroying the vPort during queue deallocation."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add an exported helper to disable vPort RX steering through the mana steering configuration path."
+        },
+        {
+          "group_id": 2,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a public declaration for a vport RX-disable helper so it can be used elsewhere in the driver."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Disable vPort receive traffic and fence RX queues before destroying the vPort during queue deallocation to prevent stale RX activity from causing incorrect completions.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by disabling vPort RX steering/receive traffic and fencing RX queues before queue teardown, which prevents stale steering state from causing completions on recycled CQ IDs."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The root cause is stale vPort RX steering left enabled during RSS QP destruction. This change adds a helper specifically to disable vPort RX steering, directly addressing the missing disable step that caused the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause is the missing step of disabling firmware vPort RX steering before freeing QP/RX work queue resources. Adding a public RX-disable helper declaration is directly related to enabling that required fix elsewhere in the driver, so it is connected to the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/infiniband/hw/mana/qp.c",
+            "lineno": 802,
+            "content": "for (i = 0; i < (1 << ind_tbl->log_ind_tbl_size); i++) {",
+            "rationale": "This loop begins destroying the RSS QP's RX work queue objects, which is the vulnerable teardown path described in the root cause. The bug is that this cleanup happened before vPort RX steering was disabled, allowing stale steering state to persist."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/infiniband/hw/mana/qp.c",
+            "lineno": 803,
+            "content": "ibwq = ind_tbl->ind_tbl[i];",
+            "rationale": "This retrieves each RX work queue from the RSS indirection table for teardown. These queues were freed while firmware vPort RX steering was still active, enabling later completions to target recycled CQ IDs."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/infiniband/hw/mana/qp.c",
+            "lineno": 804,
+            "content": "wq = container_of(ibwq, struct mana_ib_wq, ibwq);",
+            "rationale": "This maps the IB work queue to the MANA work-queue object that is about to be destroyed. It is directly part of the premature cleanup sequence that occurred without first disabling RX steering."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/microsoft/mana/mana_en.c",
+            "lineno": 3274,
+            "content": "mana_destroy_vport(apc);",
+            "rationale": "The vPort destruction path occurred only after the RSS state was updated, but the root cause indicates the earlier QP destroy path failed to disable steering before queue teardown. This statement reflects the broader lifecycle operation that should be fenced by RX-disable logic."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/microsoft/mana/mana_en.c",
+            "lineno": 3269,
+            "content": "err = mana_config_rss(apc, TRI_STATE_FALSE, false, false);",
+            "rationale": "This is the corrective operation added in the fix to disable vPort RX steering. Its absence in the vulnerable path is what allowed stale steering state to remain and later misdirect completions."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/infiniband/hw/mana/qp.c",
+            "stmt_text": "for (i = 0; i < (1 << ind_tbl->log_ind_tbl_size); i++) {",
+            "location": "hunk",
+            "explanation": "This is the start of the RSS QP teardown loop that destroys RX work queue objects. In the vulnerable flow, this cleanup happened before firmware vPort RX steering was disabled, leaving stale steering state behind."
+          },
+          {
+            "vuln_file": "drivers/infiniband/hw/mana/qp.c",
+            "stmt_text": "ibwq = ind_tbl->ind_tbl[i];",
+            "location": "hunk",
+            "explanation": "This fetches each RX work queue from the RSS indirection table for destruction. It is part of the premature teardown sequence that freed queues while RX steering was still active."
+          },
+          {
+            "vuln_file": "drivers/infiniband/hw/mana/qp.c",
+            "stmt_text": "wq = container_of(ibwq, struct mana_ib_wq, ibwq);",
+            "location": "hunk",
+            "explanation": "This converts the IB work queue handle into the underlying MANA work-queue object being destroyed. It directly participates in the vulnerable cleanup path that ran before steering was disabled."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "911e5ca3e169",
+          "anchor_file": "drivers/infiniband/hw/mana/qp.c",
+          "anchor_lineno": 802
+        },
+        "commit": "0266a177631d4c6b963b5b12dd986a8c5abdbf06",
+        "commit_short": "0266a177631d",
+        "commit_msg": "RDMA/mana_ib: Add a driver for Microsoft Azure Network Adapter\n\nAdd a RDMA VF driver for Microsoft Azure Network Adapter",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/hw/mana/qp.c",
+        "display_lineno": 449,
+        "code_snippet": "commit 0266a177631d4c6b963b5b12dd986a8c5abdbf06\nAuthor: Long Li <longli@microsoft.com>\nDate:   Thu Nov 3 12:16:30 2022 -0700\n\n    RDMA/mana_ib: Add a driver for Microsoft Azure Network Adapter\n    \n    Add a RDMA VF driver for Microsoft Azure Network Adapter (MANA).\n    \n    Co-developed-by: Ajay Sharma <sharmaajay@microsoft.com>\n    Signed-off-by: Ajay Sharma <sharmaajay@microsoft.com>\n    Reviewed-by: Dexuan Cui <decui@microsoft.com>\n    Signed-off-by: Long Li <longli@microsoft.com>\n    Link: ",
+        "exists": true,
+        "reason": "The shown function `mana_ib_destroy_qp_rss()` contains the vulnerable destroy path and does not disable steering first. It directly iterates over the RSS indirection table and frees each RX WQ object: `for (i = 0; i < (1 << ind_tbl->log_ind_tbl_size); i++) { ... mana_destroy_wq_obj(mpc, GDMA_RQ, wq->rx_object); }`. There is no call before this loop to any vPort RX steering teardown or disable routine (e.g. no `mana_ib_uncfg_vport()` / no clearing of RX steering state), so the stale steering state root cause is present. The fix is also absent here because the destroy path only frees WQs and returns `0`, with no pre-disable or reset of firmware vPort RX steering."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "0266a177631d4c6b963b5b12dd986a8c5abdbf06",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "911e5ca3e169",
+          "anchor_file": "drivers/infiniband/hw/mana/qp.c",
+          "anchor_lineno": 803
+        },
+        "commit": "0266a177631d4c6b963b5b12dd986a8c5abdbf06",
+        "commit_short": "0266a177631d",
+        "commit_msg": "RDMA/mana_ib: Add a driver for Microsoft Azure Network Adapter\n\nAdd a RDMA VF driver for Microsoft Azure Network Adapter",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/hw/mana/qp.c",
+        "display_lineno": 450,
+        "code_snippet": "commit 0266a177631d4c6b963b5b12dd986a8c5abdbf06\nAuthor: Long Li <longli@microsoft.com>\nDate:   Thu Nov 3 12:16:30 2022 -0700\n\n    RDMA/mana_ib: Add a driver for Microsoft Azure Network Adapter\n    \n    Add a RDMA VF driver for Microsoft Azure Network Adapter (MANA).\n    \n    Co-developed-by: Ajay Sharma <sharmaajay@microsoft.com>\n    Signed-off-by: Ajay Sharma <sharmaajay@microsoft.com>\n    Reviewed-by: Dexuan Cui <decui@microsoft.com>\n    Signed-off-by: Long Li <longli@microsoft.com>\n    Link: ",
+        "exists": true,
+        "reason": "The vulnerable destroy path is present and it frees the RSS RX work queues without disabling steering first. In `mana_ib_destroy_qp_rss()`, the code directly iterates over the indirection table and destroys each RQ object: `for (i = 0; i < (1 << ind_tbl->log_ind_tbl_size); i++) { ... mana_destroy_wq_obj(mpc, GDMA_RQ, wq->rx_object); }`. There is no preceding call to `mana_ib_uncfg_vport()` or any equivalent firmware RX steering disable before freeing the WQ objects. The only steering teardown in this file is in the RAW QP destroy path (`mana_ib_destroy_qp_raw()`), which calls `mana_ib_uncfg_vport(mdev, pd, qp->port - 1);`, confirming the RSS destroy path lacks the needed cleanup. Since this commit introduces the driver and the shown RSS destroy function does not contain the fix, the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "0266a177631d4c6b963b5b12dd986a8c5abdbf06",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "911e5ca3e169",
+          "anchor_file": "drivers/infiniband/hw/mana/qp.c",
+          "anchor_lineno": 804
+        },
+        "commit": "0266a177631d4c6b963b5b12dd986a8c5abdbf06",
+        "commit_short": "0266a177631d",
+        "commit_msg": "RDMA/mana_ib: Add a driver for Microsoft Azure Network Adapter\n\nAdd a RDMA VF driver for Microsoft Azure Network Adapter",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/hw/mana/qp.c",
+        "display_lineno": 451,
+        "code_snippet": "commit 0266a177631d4c6b963b5b12dd986a8c5abdbf06\nAuthor: Long Li <longli@microsoft.com>\nDate:   Thu Nov 3 12:16:30 2022 -0700\n\n    RDMA/mana_ib: Add a driver for Microsoft Azure Network Adapter\n    \n    Add a RDMA VF driver for Microsoft Azure Network Adapter (MANA).\n    \n    Co-developed-by: Ajay Sharma <sharmaajay@microsoft.com>\n    Signed-off-by: Ajay Sharma <sharmaajay@microsoft.com>\n    Reviewed-by: Dexuan Cui <decui@microsoft.com>\n    Signed-off-by: Long Li <longli@microsoft.com>\n    Link: ",
+        "exists": true,
+        "reason": "The vulnerable construct is present in `mana_ib_destroy_qp_rss()`: it directly frees each RSS RX WQ object with `mana_destroy_wq_obj(mpc, GDMA_RQ, wq->rx_object);` inside the loop, and there is no preceding call to disable or reconfigure vPort RX steering. The function body shows only destruction of WQs and then `return 0;`, so the stale steering state described in the root cause would remain. No fix is present here because unlike the raw QP destroy path, which calls `mana_ib_uncfg_vport(mdev, pd, qp->port - 1);`, the RSS destroy path never unconfigures the vPort before freeing the queues."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "0266a177631d4c6b963b5b12dd986a8c5abdbf06",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "0266a177631d4c6b963b5b12dd986a8c5abdbf06": 3
+      },
+      "bic_candidates": [
+        "0266a177631d4c6b963b5b12dd986a8c5abdbf06"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

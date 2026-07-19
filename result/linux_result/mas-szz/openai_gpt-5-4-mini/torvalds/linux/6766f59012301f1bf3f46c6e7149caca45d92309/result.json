@@ -1,0 +1,178 @@
+{
+  "cveid": "CVE-2026-43181",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6766f59012301f1bf3f46c6e7149caca45d92309"
+  ],
+  "ground_truth_bic": "1cd53df733c21ae0d344a2dec941a3e2a06fefd9",
+  "predicted_bic": [
+    "2028f854b3f5b3816cd5d5dd83057a873eddc4d6"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 13971,
+  "root_cause": {
+    "text": "The GPIO sysfs teardown path unregistered the parent GPIO device before unexporting all sysfs-exported `gpio_desc` objects, so `gpiod_unexport()` could no longer resolve the descriptor’s `gpio_device`/`gdev_data` and failed to drop the final reference and remove the exported sysfs entry.",
+    "evidence": "The CVE description says that after unbinding the parent GPIO controller, “the exported attribute will remain under /sys/class/gpio because once we remove the parent device, we can no longer associate the descriptor with it in gpiod_unexport() and never drop the final reference,” and the patch fixes this by adding `gpiod_unexport_unlocked()` and calling it for all exported lines in `gpiochip_sysfs_unregister()` before `device_unregister(data->cdev_id)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpio/gpiolib-sysfs.c",
+      "lineno": 1065,
+      "content": "device_unregister(data->cdev_id);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The GPIO sysfs teardown path unregistered the parent GPIO device before unexporting all sysfs-exported `gpio_desc` objects, so `gpiod_unexport()` could no longer resolve the descriptor’s `gpio_device`/`gdev_data` and failed to drop the final reference and remove the exported sysfs entry.",
+      "evidence_points": "The CVE description says that after unbinding the parent GPIO controller, “the exported attribute will remain under /sys/class/gpio because once we remove the parent device, we can no longer associate the descriptor with it in gpiod_unexport() and never drop the final reference,” and the patch fixes this by adding `gpiod_unexport_unlocked()` and calling it for all exported lines in `gpiochip_sysfs_unregister()` before `device_unregister(data->cdev_id)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpio/gpiolib-sysfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpio/gpiolib-sysfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Refactor gpiod_unexport() to move teardown logic into an unlocked helper while keeping the public wrapper responsible for NULL checking and sysfs_lock acquisition.",
+        "what": "The original body of gpiod_unexport() was split into a new static helper, gpiod_unexport_unlocked(), which contains the export-state lookup, removal from the exported_lines list, flag clearing, sysfs cleanup, IRQ release, mutex destruction, and memory free logic. The public gpiod_unexport() function now only checks for a NULL desc, emits the warning, acquires sysfs_lock via guard(mutex), and then calls the new helper.",
+        "how": "Runtime behavior is preserved for valid callers, but the locking structure is changed so the unexport logic is isolated from the lock acquisition path. This makes the code easier to reuse safely under an already-held sysfs_lock and keeps the public API responsible only for validation and locking before teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Rework GPIO sysfs unregister teardown to use the unlocked unexport path and perform cleanup in a safer order.",
+        "what": "The function `gpiochip_sysfs_unregister(struct gpio_device *gdev)` was restructured: `scoped_guard(mutex, &sysfs_lock)` was replaced with `guard(mutex)(&sysfs_lock);`, the early `gdev_get_data(gdev)` null check was moved outside the mutex block, the `srcu` guard and `chip` lookup remain but are now followed by `gpiod_unexport_unlocked(desc)` instead of `gpiod_unexport(desc)`, and the `device_unregister()` / `kfree(data)` cleanup calls were moved to the end of the function after the GPIO descriptor loop.",
+        "how": "At runtime, the function now performs GPIO descriptor unexporting while holding the sysfs mutex via the unlocked helper, avoiding a potentially incorrect locked-path call in this context. The cleanup of sysfs device objects and associated memory still occurs, but only after all sysfs-owned GPIO descriptors have been unexported and freed, which changes the ordering to better match the teardown flow and reduce the chance of lock/order issues during unregister."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor gpiod_unexport() to move teardown logic into an unlocked helper while keeping the public wrapper responsible for NULL checking and sysfs_lock acquisition."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Rework GPIO sysfs unregister teardown to use the unlocked unexport path and perform cleanup in a safer order."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change is a refactor of gpiod_unexport() structure and locking, not a fix for the teardown ordering bug where the parent GPIO device was unregistered before exported descriptors were unexported."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly targets the teardown ordering in GPIO sysfs unregister, using the unlocked unexport path and safer cleanup order to address the same failure mode where exported GPIO descriptors were not properly unexported before the parent device was removed."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpio/gpiolib-sysfs.c",
+            "lineno": 1065,
+            "content": "device_unregister(data->cdev_id);",
+            "rationale": "This unregisters the parent GPIO sysfs device before exported GPIO descriptors are unexported, so later gpiod_unexport(desc) may no longer be able to resolve gdev_data and remove the sysfs entry or drop the final reference."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpio/gpiolib-sysfs.c",
+            "stmt_text": "device_unregister(data->cdev_id);",
+            "location": "hunk",
+            "explanation": "This unregisters the parent GPIO sysfs device before exported GPIO descriptors are unexported, so gpiod_unexport() can no longer resolve the descriptor’s gpio_device/gdev_data and fails to remove the exported sysfs entry or drop the final reference."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ff91965ad8b2",
+          "anchor_file": "drivers/gpio/gpiolib-sysfs.c",
+          "anchor_lineno": 1065
+        },
+        "commit": "2028f854b3f5b3816cd5d5dd83057a873eddc4d6",
+        "commit_short": "2028f854b3f5",
+        "commit_msg": "gpio: sysfs: add a parallel class device for each GPIO chip using device IDs\n\nIn order to enable moving away from the gl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpio/gpiolib-sysfs.c",
+        "display_lineno": 900,
+        "code_snippet": "commit 2028f854b3f5b3816cd5d5dd83057a873eddc4d6\nAuthor: Bartosz Golaszewski <brgl@kernel.org>\nDate:   Fri Jul 4 14:58:49 2025 +0200\n\n    gpio: sysfs: add a parallel class device for each GPIO chip using device IDs\n    \n    In order to enable moving away from the global GPIO numberspace-based\n    exporting of lines over sysfs: add a parallel, per-chip entry under\n    /sys/class/gpio/ for every registered GPIO chip, denoted by device ID\n    in the file name and not its base GPIO number.\n    \n    C",
+        "exists": false,
+        "reason": "The shown function bodies already include the teardown-safe structure needed for sysfs export/unexport. The root cause was that the parent GPIO device was unregistered before unexporting sysfs-exported descriptors, so `gpiod_unexport()` could not resolve the descriptor’s `gpio_device`/`gdev_data`. In this commit, the sysfs code introduces a second class device and unregisters it explicitly in `gpiochip_sysfs_unregister()`: `device_unregister(data->cdev_base); device_unregister(data->cdev_id);`. More importantly, the unexport path is still performed through descriptor state before final cleanup in `unexport_gpio_desc()`: `if (!test_and_clear_bit(FLAG_SYSFS, &desc->flags)) return -EINVAL; gpiod_unexport(desc); gpiod_free(desc);`. The new `gdev_get_data()` comment also shows the lookup logic now tolerates either class device: `Find the first device in GPIO class that matches. Whether that's the one indexed by GPIO base or device ID doesn't matter`. This snippet therefore does not contain the vulnerable teardown ordering; it reflects the added fix/architecture rather than the bug."
+      }
+    },
+    {
+      "bic_found": "2028f854b3f5b3816cd5d5dd83057a873eddc4d6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "2028f854b3f5b3816cd5d5dd83057a873eddc4d6": 1
+      },
+      "bic_candidates": [
+        "2028f854b3f5b3816cd5d5dd83057a873eddc4d6"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

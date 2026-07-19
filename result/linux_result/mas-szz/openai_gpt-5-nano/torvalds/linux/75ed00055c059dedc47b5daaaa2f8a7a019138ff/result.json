@@ -1,0 +1,245 @@
+{
+  "cveid": "CVE-2026-45894",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "75ed00055c059dedc47b5daaaa2f8a7a019138ff"
+  ],
+  "ground_truth_bic": "0bbeb01a4fafbf8422e5c8882d461d6ac4f71e15",
+  "predicted_bic": [
+    "37e91bd4b39922b31ca4e6c4eabb0d7140b14e74",
+    "80b79e141da7251d6ea82573f058ee9418896465"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 16383,
+  "root_cause": {
+    "text": "The Intel VT-d scalable-mode PASID teardown path in `intel_pasid_tear_down_entry()` modified/zeroed a live 512-bit PASID entry without first clearing its Present bit and enforcing memory ordering, allowing the IOMMU to perform a torn multi-transaction read of an inconsistent entry.",
+    "evidence": "The patch replaces the immediate `intel_pasid_clear_entry(dev, pasid, fault_ignore);` with `pasid_clear_present(pte);`, adds `dma_wmb()` in both `pasid_clear_present()` and `pasid_set_present()`, and defers `intel_pasid_clear_entry()` until after PASID-cache/IOTLB/Device-TLB invalidations; the CVE/commit explicitly states that zeroing the 64-byte entry while `P=1` risks torn hardware reads and unpredictable behavior.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/iommu/intel/pasid.c",
+      "lineno": 276,
+      "content": "intel_pasid_clear_entry(dev, pasid, fault_ignore);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/iommu/intel/pasid.h",
+      "lineno": 237,
+      "content": "pasid_set_bits(&pe->val[0], 1 << 0, 1);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The Intel VT-d scalable-mode PASID teardown path in `intel_pasid_tear_down_entry()` modified/zeroed a live 512-bit PASID entry without first clearing its Present bit and enforcing memory ordering, allowing the IOMMU to perform a torn multi-transaction read of an inconsistent entry.",
+      "evidence_points": "The patch replaces the immediate `intel_pasid_clear_entry(dev, pasid, fault_ignore);` with `pasid_clear_present(pte);`, adds `dma_wmb()` in both `pasid_clear_present()` and `pasid_set_present()`, and defers `intel_pasid_clear_entry()` until after PASID-cache/IOTLB/Device-TLB invalidations; the CVE/commit explicitly states that zeroing the 64-byte entry while `P=1` risks torn hardware reads and unpredictable behavior."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/iommu/intel/pasid.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear only the PASID entry's present bit during teardown so the entry is invalidated without losing needed state prematurely.",
+        "what": "The call to intel_pasid_clear_entry(dev, pasid, fault_ignore) was removed and replaced with a direct call to pasid_clear_present(pte) after reading the domain ID and PGTT from the PASID entry.",
+        "how": "At runtime, the code now clears only the present bit of the existing PASID table entry in place instead of invoking the broader entry-clearing helper. This preserves the already-read entry contents while marking it non-present before releasing the lock, avoiding full entry clearing behavior at this point."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear PASID entries during teardown and flush them on non-coherent IOMMUs so stale PASID mappings are not left visible to hardware.",
+        "what": "The change inserts a call to intel_pasid_clear_entry(dev, pasid, fault_ignore) after devtlb_invalidation_with_pasid(iommu, dev, pasid), and adds a conditional cache flush with clflush_cache_range(pte, sizeof(*pte)) when !ecap_coherent(iommu->ecap), before the existing intel_iommu_drain_pasid_prq(dev, pasid) call.",
+        "how": "At runtime, PASID teardown now explicitly clears the PASID table entry and ensures that the cleared entry is flushed from CPU cache on non-coherent IOMMUs, so hardware observes the removal reliably before pending PASID requests are drained. This fixes missing teardown work that could otherwise leave stale PASID state visible to the device or IOMMU."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add DMA write barriers around PASID Present bit transitions and provide a helper to clear the Present bit so PASID entry ownership changes are correctly ordered for hardware visibility.",
+        "what": "The change adds a dma_wmb() call at the start of pasid_set_present() before setting bit 0 in pe->val[0], and introduces a new static inline function pasid_clear_present(struct pasid_entry *pe) with a comment block; the new function clears bit 0 of pe->val[0] via pasid_set_bits(..., 0) and then issues dma_wmb().",
+        "how": "At runtime, setting the PASID Present bit now occurs only after a DMA write memory barrier, ensuring prior PASID entry writes are visible before hardware can observe the entry as present. The new clear helper provides a dedicated way to mark an entry not present and then enforce ordering with a DMA write barrier so the clear is visible before subsequent software actions related to ownership transition and invalidation."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add DMA write barriers around PASID Present bit transitions and provide a helper to clear the Present bit so PASID entry ownership changes are correctly ordered for hardware visibility."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear PASID entries during teardown and flush them on non-coherent IOMMUs so stale PASID mappings are not left visible to hardware."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure PASID entry invalidation and ownership transitions are correctly ordered and visible to hardware by clearing only the Present bit and enforcing DMA write barriers around Present bit changes.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by invalidating PASID entries via clearing only the Present bit and adding DMA write barriers/memory ordering around Present-bit transitions, preventing hardware from observing a torn or inconsistent live 512-bit entry during teardown."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group changes the PASID teardown path by clearing PASID entries and flushing visibility to hardware, which directly relates to preventing hardware from observing stale or inconsistent live PASID entries during teardown—the core issue in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/iommu/intel/pasid.c",
+            "lineno": 276,
+            "content": "intel_pasid_clear_entry(dev, pasid, fault_ignore);",
+            "rationale": "This teardown clears/zeroes the whole live PASID entry before first invalidating it by clearing only the Present bit. In scalable mode, that allows hardware to observe a partially updated 512-bit entry via torn multi-transaction reads."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/iommu/intel/pasid.h",
+            "lineno": 237,
+            "content": "pasid_set_bits(&pe->val[0], 1 << 0, 1);",
+            "rationale": "The Present-bit update helper lacked the required DMA write barrier/memory ordering around Present-bit transitions. The root cause explicitly involves failing to enforce ordering when changing Present, allowing hardware to see inconsistent entry contents."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/iommu/intel/pasid.c",
+            "stmt_text": "intel_pasid_clear_entry(dev, pasid, fault_ignore);",
+            "location": "hunk",
+            "explanation": "This statement clears the live PASID entry during teardown instead of first invalidating it by clearing only the Present bit. Because scalable-mode PASID entries are 512 bits and may be read by hardware in multiple transactions, zeroing the entry while it is still Present can expose a torn, inconsistent entry to the IOMMU."
+          },
+          {
+            "vuln_file": "drivers/iommu/intel/pasid.h",
+            "stmt_text": "pasid_set_bits(&pe->val[0], 1 << 0, 1);",
+            "location": "hunk",
+            "explanation": "This Present-bit update helper sets the Present bit without the required DMA write barrier or memory-ordering enforcement around visibility of PASID entry contents. The missing ordering is part of the root cause because hardware can observe inconsistent entry state when Present-bit ownership transitions are not properly ordered."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "04b1b069f151",
+          "anchor_file": "drivers/iommu/intel/pasid.c",
+          "anchor_lineno": 276
+        },
+        "commit": "37e91bd4b39922b31ca4e6c4eabb0d7140b14e74",
+        "commit_short": "37e91bd4b399",
+        "commit_msg": "iommu/vt-d: Disable non-recoverable fault processing before unbind\n\nWhen a PASID is used for SVA by the device, it's pos",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/intel/pasid.c",
+        "display_lineno": 503,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function body is sufficient because it shows the teardown sequence around the PASID entry clear. The vulnerable construct is present at line 503: `intel_pasid_clear_entry(dev, pasid, fault_ignore);`, which clears/zeroes the PASID entry directly before any invalidation steps. The root cause states that scalable-mode PASID teardown must first clear the Present bit and enforce ordering before modifying the full 512-bit entry, otherwise hardware may observe a torn inconsistent entry. In this snippet, there is no visible step that first clears only the Present bit, no explicit memory barrier/order enforcement before the entry is zeroed, and invalidations happen only afterward at lines 508-513 (`pasid_cache_invalidation_with_pasid`, `iotlb_invalidation_with_pasid`, and possibly `devtlb_invalidation_with_pasid`). `clflush_cache_range()` at lines 505-506 is only a cache flush for non-coherent platforms and does not show the required Present-bit-first teardown protocol. Therefore the vulnerable teardown logic is present and the fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "37e91bd4b39922b31ca4e6c4eabb0d7140b14e74",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "04b1b069f151",
+          "anchor_file": "drivers/iommu/intel/pasid.h",
+          "anchor_lineno": 237
+        },
+        "commit": "80b79e141da7251d6ea82573f058ee9418896465",
+        "commit_short": "80b79e141da7",
+        "commit_msg": "iommu/vt-d: Move inline helpers to header files\n\nMove inline helpers to header files so that other files can use them\nwi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/intel/pasid.h",
+        "display_lineno": 238,
+        "code_snippet": "commit 80b79e141da7251d6ea82573f058ee9418896465\nAuthor: Lu Baolu <baolu.lu@linux.intel.com>\nDate:   Mon Dec 18 15:34:45 2023 +0800\n\n    iommu/vt-d: Move inline helpers to header files\n    \n    Move inline helpers to header files so that other files can use them\n    without duplicating the code.\n    \n    Signed-off-by: Lu Baolu <baolu.lu@linux.intel.com>\n    Reviewed-by: Kevin Tian <kevin.tian@intel.com>\n    Link: https://lore.kernel.org/r/20231116015048.29675-5-baolu.lu@linux.intel.com\n    Signe",
+        "exists": false,
+        "reason": "The snippet is sufficient to determine what this helper does: it only sets the Present bit via `pasid_set_bits(&pe->val[0], 1 << 0, 1);`. The root cause concerns the teardown path in `intel_pasid_tear_down_entry()` zeroing/modifying a live 512-bit PASID entry without first clearing Present and enforcing ordering. That vulnerable teardown logic is not present in this function body. Instead, this helper appears to mark an entry present, not tear it down or clear it safely. Therefore the vulnerable construct is absent here (`has_bug=false`). The fix for teardown ordering/clearing is also not shown in this function (`is_fixed=false`)."
+      }
+    },
+    {
+      "bic_found": "80b79e141da7251d6ea82573f058ee9418896465",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "37e91bd4b39922b31ca4e6c4eabb0d7140b14e74": 1,
+        "80b79e141da7251d6ea82573f058ee9418896465": 1
+      },
+      "bic_candidates": [
+        "37e91bd4b39922b31ca4e6c4eabb0d7140b14e74",
+        "80b79e141da7251d6ea82573f058ee9418896465"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

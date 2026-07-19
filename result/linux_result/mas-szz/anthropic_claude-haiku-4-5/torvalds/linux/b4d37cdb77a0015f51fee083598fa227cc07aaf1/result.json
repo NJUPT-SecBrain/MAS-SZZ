@@ -1,0 +1,279 @@
+{
+  "cveid": "CVE-2026-23198",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b4d37cdb77a0015f51fee083598fa227cc07aaf1"
+  ],
+  "ground_truth_bic": "f70c20aaf141adb715a2d750c55154073b02a9c3",
+  "predicted_bic": [
+    "b97e6de9c96cefaa02a6a7464731ea504b45e150",
+    "56f89f3629ffd1a21d38c3d0bea23deac0e284ce"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 18,
+  "llm_tokens": 34928,
+  "root_cause": {
+    "text": "The KVM irqfd deassignment code was clobbering the irqfd's routing entry type without notifying architecture-specific code, causing kvm_arch_irq_bypass_del_producer() to fail to recognize MSI routing and incorrectly keep IRQs in bypass mode, leading to use-after-free when the irqfd structure is reallocated.",
+    "evidence": "The patch removes the code that explicitly cleared `irqfd->irq_entry.type = 0` during deassignment (lines 593-598 in the diff), which was breaking x86 and arm64's kvm_arch_irq_bypass_del_producer() that explicitly checks for `KVM_IRQ_ROUTING_MSI`. The CVE description shows that on AMD, this caused NULL pointer dereferences in amd_iommu_update_ga() when irqfd->irq_bypass_data was accessed after the irqfd structure was reallocated and zeroed. The fix instead checks if the irqfd is still active (in the list) before consuming routing information, preventing stale routing data from being used after the irqfd is removed from the active list but before the eventfd is fully detached.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "virt/kvm/eventfd.c",
+      "lineno": 222,
+      "content": "if (kvm_arch_set_irq_inatomic(&irq, kvm, KVM_USERSPACE_IRQ_SOURCE_ID, 1, false) == -EWOULDBLOCK)",
+      "confidence": 1.0
+    },
+    {
+      "file": "virt/kvm/eventfd.c",
+      "lineno": 218,
+      "content": "irq = irqfd->irq_entry;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The KVM irqfd deassignment code was clobbering the irqfd's routing entry type without notifying architecture-specific code, causing kvm_arch_irq_bypass_del_producer() to fail to recognize MSI routing and incorrectly keep IRQs in bypass mode, leading to use-after-free when the irqfd structure is reallocated.",
+      "evidence_points": "The patch removes the code that explicitly cleared `irqfd->irq_entry.type = 0` during deassignment (lines 593-598 in the diff), which was breaking x86 and arm64's kvm_arch_irq_bypass_del_producer() that explicitly checks for `KVM_IRQ_ROUTING_MSI`. The CVE description shows that on AMD, this caused NULL pointer dereferences in amd_iommu_update_ga() when irqfd->irq_bypass_data was accessed after the irqfd structure was reallocated and zeroed. The fix instead checks if the irqfd is still active (in the list) before consuming routing information, preventing stale routing data from being used after the irqfd is removed from the active list but before the eventfd is fully detached."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "virt/kvm/eventfd.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "virt/kvm/eventfd.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "virt/kvm/eventfd.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add runtime lockdep assertions to enforce documented locking requirements and replace informal comments with formal synchronization checks in irqfd_is_active() and irqfd_deactivate().",
+        "what": "Replaced informal comments about lock requirements with formal lockdep assertions in two functions: irqfd_is_active() now has lockdep_assert_once() checking that either irqfds.lock or irq_srcu is held, and irqfd_deactivate() now has lockdep_assert_held() checking that irqfds.lock is held. Also reformatted function signatures from multi-line to single-line style and expanded the irqfd_is_active() comment into a detailed explanation of the locking requirements.",
+        "how": "At runtime, these changes enable the kernel's lockdep subsystem to dynamically verify that proper locking is in place when these functions execute. If lockdep detects a violation (function called without required locks), it will trigger a warning/error. This prevents subtle race conditions and data corruption that could occur if these functions are called without proper synchronization. The assertions are checked only when lockdep is enabled (CONFIG_LOCKDEP), providing zero overhead when disabled."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a guard check to skip interrupt injection when irqfd is being deassigned, preventing use of stale routing information.",
+        "what": "Added a guard condition `unlikely(!irqfd_is_active(irqfd)) ||` before the existing `kvm_arch_set_irq_inatomic()` call, and expanded the comment to explain that interrupt injection should be skipped when the irqfd is being deassigned to avoid using stale routing information.",
+        "how": "The change prevents `kvm_arch_set_irq_inatomic()` from executing when the irqfd is inactive (being deassigned). If the irqfd is inactive, the condition short-circuits to true and `schedule_work(&irqfd->inject)` is called instead, avoiding potential use of stale routing data. The `unlikely()` macro hints to the branch predictor that this condition is rarely true."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Consolidate irqfd deactivation logic by moving seqcount-protected irq_entry.type clearing into irqfd_deactivate() function to reduce code duplication and improve maintainability.",
+        "what": "Removed explicit seqcount write-lock protection around irqfd->irq_entry.type = 0 assignment and its associated comment. The clearing of irq_entry.type is now handled implicitly within the irqfd_deactivate() function call, and the multi-line if-block braces were simplified to single-line format.",
+        "how": "The synchronization logic for protecting irq_entry.type from concurrent access by kvm_irq_routing_update is moved into irqfd_deactivate(). This refactoring consolidates the deactivation logic into a single function, reducing code duplication and making the locking strategy more maintainable. The functional behavior remains the same since irqfd_deactivate() now encapsulates the seqcount protection that was previously explicit here."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add runtime lockdep assertions to enforce documented locking requirements and replace informal comments with formal synchronization checks in irqfd_is_active() and irqfd_deactivate()."
+        },
+        {
+          "group_id": 1,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a guard check to skip interrupt injection when irqfd is being deassigned, preventing use of stale routing information."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Consolidate irqfd deactivation logic by moving seqcount-protected irq_entry.type clearing into irqfd_deactivate() function to reduce code duplication and improve maintainability."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group adds lockdep assertions and synchronization checks to irqfd functions, which is a defensive programming practice. However, the vulnerability root cause is about the irqfd routing entry type being clobbered without notifying architecture-specific code during deassignment. The group does not address the core issue of preserving routing information or notifying kvm_arch_irq_bypass_del_producer() before modifying the routing entry type. This is a locking/assertion enhancement rather than a fix for the actual use-after-free vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "This group directly addresses the vulnerability by adding a guard check to prevent interrupt injection when irqfd is being deassigned. This prevents the use-after-free condition that occurs when stale routing information is accessed after the irqfd's routing entry type has been clobbered without proper notification to architecture-specific code."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "This group performs code consolidation and refactoring by moving existing seqcount-protected type clearing logic into a helper function. While it touches the same code area (irq_entry.type clearing), it does not address the core vulnerability: the failure to notify architecture-specific code (kvm_arch_irq_bypass_del_producer) before clobbering the routing entry type. The group is a maintainability improvement, not a fix for the use-after-free caused by improper bypass mode handling."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "virt/kvm/eventfd.c",
+            "lineno": 218,
+            "content": "irq = irqfd->irq_entry;",
+            "rationale": "This line reads the irq_entry without any guard check to verify the irqfd is still valid and not being deassigned. The root cause indicates that routing entry type was being clobbered during deassignment without proper synchronization, causing stale routing information to be used. This read operation lacks protection against concurrent deassignment that modifies irq_entry."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "virt/kvm/eventfd.c",
+            "lineno": 222,
+            "content": "if (kvm_arch_set_irq_inatomic(&irq, kvm, KVM_USERSPACE_IRQ_SOURCE_ID, 1, false) == -EWOULDBLOCK)",
+            "rationale": "This line uses the irq structure that was read from irqfd->irq_entry without verifying that the irqfd is still valid and not being deassigned. If deassignment has clobbered the routing entry type, this call will pass stale routing information to kvm_arch_set_irq_inatomic, preventing proper MSI routing recognition and causing the bypass mode issue described in the root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "virt/kvm/eventfd.c",
+            "stmt_text": "if (kvm_arch_set_irq_inatomic(&irq, kvm, KVM_USERSPACE_IRQ_SOURCE_ID, 1, false) == -EWOULDBLOCK)",
+            "location": "hunk",
+            "explanation": "This statement uses the irq structure derived from irqfd->irq_entry without any guard check to verify the irqfd is still valid and not being deassigned. When deassignment clobbers the routing entry type without notifying architecture-specific code, this call passes stale routing information to kvm_arch_set_irq_inatomic, causing kvm_arch_irq_bypass_del_producer() to fail to recognize MSI routing and incorrectly keep IRQs in bypass mode, leading to use-after-free."
+          },
+          {
+            "vuln_file": "virt/kvm/eventfd.c",
+            "stmt_text": "irq = irqfd->irq_entry;",
+            "location": "hunk",
+            "explanation": "This statement reads irqfd->irq_entry without any guard check to verify the irqfd is still valid and not being deassigned. The root cause indicates that the routing entry type is clobbered during deassignment without proper synchronization. This unprotected read operation allows stale routing information to be captured and subsequently used in the kvm_arch_set_irq_inatomic call, enabling the use-after-free vulnerability."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cfbe371194d1",
+          "anchor_file": "virt/kvm/eventfd.c",
+          "anchor_lineno": 222
+        },
+        "commit": "b97e6de9c96cefaa02a6a7464731ea504b45e150",
+        "commit_short": "b97e6de9c96c",
+        "commit_msg": "KVM: x86: merge kvm_arch_set_irq with kvm_set_msi_inatomic\n\nWe do not want to do too much work in atomic context, in par",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "virt/kvm/eventfd.c",
+        "display_lineno": 205,
+        "code_snippet": "commit b97e6de9c96cefaa02a6a7464731ea504b45e150\nAuthor: Paolo Bonzini <pbonzini@redhat.com>\nDate:   Wed Oct 28 19:16:47 2015 +0100\n\n    KVM: x86: merge kvm_arch_set_irq with kvm_set_msi_inatomic\n    \n    We do not want to do too much work in atomic context, in particular\n    not walking all the VCPUs of the virtual machine.  So we want\n    to distinguish the architecture-specific injection function for irqfd\n    from kvm_set_msi.  Since it's still empty, reuse the newly added\n    kvm_arch_set_ir",
+        "exists": false,
+        "reason": "The provided function body is the irqfd wait queue callback handler (lines 188-233), which handles eventfd signaling and POLLHUP events. However, the vulnerability root cause specifically concerns the irqfd deassignment code clobbering the irqfd's routing entry type without notifying architecture-specific code via kvm_arch_irq_bypass_del_producer(). This function does not contain the deassignment logic - it only handles event injection (lines 197-209) and eventfd closure (lines 211-230). The vulnerable code would be in the irqfd_deassign() or similar deassignment function that modifies irqfd->irq_entry without proper synchronization with arch-specific bypass code. The shown snippet is insufficient to determine if the bug exists in the deassignment path, as the critical deassignment logic is not present in this function body."
+      }
+    },
+    {
+      "bic_found": "b97e6de9c96cefaa02a6a7464731ea504b45e150",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cfbe371194d1",
+          "anchor_file": "virt/kvm/eventfd.c",
+          "anchor_lineno": 218
+        },
+        "commit": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+        "commit_short": "56f89f3629ff",
+        "commit_msg": "KVM: Don't keep reference to irq routing table in irqfd struct\n\nThis makes the irqfd code keep a copy of the irq routing",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "virt/kvm/eventfd.c",
+        "display_lineno": 237,
+        "code_snippet": "commit 56f89f3629ffd1a21d38c3d0bea23deac0e284ce\nAuthor: Paul Mackerras <paulus@ozlabs.org>\nDate:   Mon Jun 30 20:51:09 2014 +1000\n\n    KVM: Don't keep reference to irq routing table in irqfd struct\n    \n    This makes the irqfd code keep a copy of the irq routing table entry\n    for each irqfd, rather than a reference to the copy in the actual\n    irq routing table maintained in kvm/virt/irqchip.c.  This will enable\n    us to change the routing table structure in future, or even not have a\n    r",
+        "exists": true,
+        "reason": "The vulnerability root cause states that 'KVM irqfd deassignment code was clobbering the irqfd's routing entry type without notifying architecture-specific code, causing kvm_arch_irq_bypass_del_producer() to fail to recognize MSI routing.' In the deassignment code (lines 475-485), the commit sets `irqfd->irq_entry.type = 0` within seqcount protection but does NOT call `kvm_arch_irq_bypass_del_producer()` to notify architecture-specific code about this change. The comment on line 477-480 was changed from mentioning 'synchronize_srcu done by caller' to just describing the clearing, but the actual notification to arch code is missing. This is the bug-introducing commit because it changes the synchronization mechanism and clears the type field without ensuring arch-specific bypass cleanup is triggered, which leads to the use-after-free vulnerability described in the root cause."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "478d66862559",
+          "anchor_file": "virt/kvm/eventfd.c",
+          "anchor_lineno": 237
+        },
+        "commit": "bd2b53b20fcd0d6c4c815b54e6d464e34429d3a4",
+        "commit_short": "bd2b53b20fcd",
+        "commit_msg": "KVM: fast-path msi injection with irqfd\n\nStore irq routing table pointer in the irqfd object,\nand use that to inject MSI",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "virt/kvm/eventfd.c",
+        "display_lineno": 142,
+        "code_snippet": "commit bd2b53b20fcd0d6c4c815b54e6d464e34429d3a4\nAuthor: Michael S. Tsirkin <mst@redhat.com>\nDate:   Thu Nov 18 19:09:08 2010 +0200\n\n    KVM: fast-path msi injection with irqfd\n    \n    Store irq routing table pointer in the irqfd object,\n    and use that to inject MSI directly without bouncing out to\n    a kernel thread.\n    \n    While we touch this structure, rearrange irqfd fields to make fastpath\n    better packed for better cache utilization.\n    \n    This also adds some comments about locki",
+        "exists": false,
+        "reason": "This commit introduces the MSI fast-path injection feature with irqfd. The code shows proper handling of the irq_entry field: (1) In kvm_irqfd_assign(), irqfd_update() is called to set irq_entry based on routing table, (2) In kvm_irqfd_deassign(), rcu_assign_pointer(irqfd->irq_entry, NULL) is explicitly called before irqfd_deactivate(), (3) The irqfd_wakeup() function checks if irq is non-NULL before using it. The vulnerability described in the root cause (clobbering routing entry type without notifying arch code) is not present in this commit - the code properly clears irq_entry to NULL during deassignment. This commit is introducing the feature, not the bug. The bug would be introduced in a later commit that removes or modifies the rcu_assign_pointer(irqfd->irq_entry, NULL) line in kvm_irqfd_deassign()."
+      }
+    },
+    {
+      "bic_found": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "b97e6de9c96cefaa02a6a7464731ea504b45e150": 1,
+        "56f89f3629ffd1a21d38c3d0bea23deac0e284ce": 1
+      },
+      "bic_candidates": [
+        "b97e6de9c96cefaa02a6a7464731ea504b45e150",
+        "56f89f3629ffd1a21d38c3d0bea23deac0e284ce"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

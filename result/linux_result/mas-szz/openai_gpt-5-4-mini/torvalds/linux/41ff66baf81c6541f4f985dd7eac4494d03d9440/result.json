@@ -1,0 +1,318 @@
+{
+  "cveid": "CVE-2026-46021",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "41ff66baf81c6541f4f985dd7eac4494d03d9440"
+  ],
+  "ground_truth_bic": "e33df1d2f3a0141cd79e770f31999ba0dd7ebfa8",
+  "predicted_bic": [
+    "4d0fe7490d7f4d61b582acbae718328284f151b9",
+    "163b00cde7cf2206e248789d2780121ad5e6a70b",
+    "4649620d9404d3aceb25891c24bab77143e3f21c"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 24,
+  "llm_tokens": 20710,
+  "root_cause": {
+    "text": "The thermal core left a governor attached to a thermal zone without proper teardown synchronization—registration failure paths skipped `thermal_set_governor(tz, NULL)` and `thermal_zone_device_unregister()` called `thermal_set_governor()` without holding the thermal zone lock, causing a cleanup leak and a race with sysfs governor updates that could use freed governor data.",
+    "evidence": "The CVE/commit says `thermal_zone_device_register_with_trips()` could fail “after adding a thermal governor” and “the governor is not removed,” leading to a memory leak; it also says `thermal_zone_device_unregister()` invoked `thermal_set_governor()` “without acquiring the thermal zone lock beforehand” and could race with “a governor update via sysfs” causing a UAF. The diff adds `thermal_set_governor(tz, NULL)` to `thermal_release()` and to the registration error path, and removes the unprotected call from `thermal_zone_device_unregister()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 1613,
+      "content": "if (result)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 1725,
+      "content": "cancel_delayed_work_sync(&tz->poll_queue);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 968,
+      "content": "complete(&tz->removal);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The thermal core failed to properly clear a thermal zone’s governor state on all teardown paths after the governor-private-data change in `thermal_set_governor()`, leaving stale governor references on registration failure and during `thermal_zone_device_unregister()` cleanup, which could cause a leak or a UAF race with sysfs updates.",
+      "evidence_points": "The patch adds `thermal_set_governor(tz, NULL);` in `thermal_release()` and in the `thermal_zone_create_device_groups()` failure path, and removes the unprotected `thermal_set_governor(tz, NULL);` from `thermal_zone_device_unregister()`, matching the CVE text that says registration failure could leak the governor and unregister could race with a sysfs governor update leading to use-after-free."
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The evidence is partially present, but the proposed root cause is not fully consistent with the patch/CVE. The CVE and commit message describe two specific issues: a missing cleanup on registration failure causing a memory leak, and an unlocked `thermal_set_governor()` in `thermal_zone_device_unregister()` racing with sysfs governor updates and potentially causing a UAF. However, the proposed root cause adds unsupported details like “stale governor references,” “governor-private-data change,” and “thermal_zone_device_unregister() cleanup” as if the unregister path still needed the added cleanup, whereas the patch actually removes the unprotected call from unregister and moves cleanup to `thermal_release()`. The explanation is also too vague about why the missing cleanup is dangerous, beyond restating the patch action."
+      }
+    },
+    {
+      "root_cause_candidate": "The thermal core left a governor attached to a thermal zone without proper teardown synchronization—registration failure paths skipped `thermal_set_governor(tz, NULL)` and `thermal_zone_device_unregister()` called `thermal_set_governor()` without holding the thermal zone lock, causing a cleanup leak and a race with sysfs governor updates that could use freed governor data.",
+      "evidence_points": "The CVE/commit says `thermal_zone_device_register_with_trips()` could fail “after adding a thermal governor” and “the governor is not removed,” leading to a memory leak; it also says `thermal_zone_device_unregister()` invoked `thermal_set_governor()` “without acquiring the thermal zone lock beforehand” and could race with “a governor update via sysfs” causing a UAF. The diff adds `thermal_set_governor(tz, NULL)` to `thermal_release()` and to the registration error path, and removes the unprotected call from `thermal_zone_device_unregister()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/thermal/thermal_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/thermal/thermal_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/thermal/thermal_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear the thermal zone governor during device release to avoid stale state during teardown.",
+        "what": "In thermal_release(), after destroying the thermal zone device groups and before destroying the mutex, a new call to thermal_set_governor(tz, NULL) was inserted for devices whose name starts with \"thermal_zone\".",
+        "how": "When a thermal zone device is being released, its governor pointer is now explicitly cleared before the zone lock is destroyed and removal is completed. This prevents the thermal zone from retaining a stale governor reference during teardown and ensures governor-related cleanup happens as part of device release."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear the thermal zone governor on device-group creation failure to avoid leaving stale state during registration cleanup.",
+        "what": "In thermal_zone_device_register_with_trips(), the error path after thermal_zone_create_device_groups() was changed from a single-line conditional to a block that now calls thermal_set_governor(tz, NULL) before jumping to remove_id when group creation fails.",
+        "how": "If creating the thermal zone's device groups fails, the code now explicitly clears the governor association before unwinding registration. This prevents the thermal zone from retaining a stale governor reference during cleanup on this failure path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Remove the explicit governor reset from thermal zone device unregistration.",
+        "what": "The call to `thermal_set_governor(tz, NULL);` was removed from `thermal_zone_device_unregister(struct thermal_zone_device *tz)`, leaving the rest of the unregister cleanup sequence unchanged.",
+        "how": "During thermal zone device unregistration, the code no longer explicitly clears the zone's governor before performing threshold, hwmon sysfs, and ID cleanup. This changes teardown behavior by skipping that governor-reset step, likely because governor detachment is handled elsewhere or is no longer needed at this point."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear the thermal zone governor during device release to avoid stale state during teardown."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear the thermal zone governor on device-group creation failure to avoid leaving stale state during registration cleanup."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove the explicit governor reset from thermal zone device unregistration."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it clears the thermal zone governor during teardown/release to avoid leaving a governor attached, which addresses the cleanup leak and teardown synchronization issue described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause by clearing the thermal zone governor during a registration failure cleanup path, addressing the stale governor leak left behind when teardown was incomplete."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly modifies thermal zone unregistration governor handling, which is part of the reported root cause involving improper governor teardown and synchronization. Even though it removes the reset rather than adding it, it is centered on the same code path and issue area."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 1613,
+            "content": "if (result)",
+            "rationale": "This registration-failure branch is where cleanup should have cleared the governor, but in the vulnerable code it skipped the required thermal_set_governor(tz, NULL) teardown, leaving stale governor state attached."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 1725,
+            "content": "cancel_delayed_work_sync(&tz->poll_queue);",
+            "rationale": "This is part of the unregistration path where governor teardown should be synchronized; the vulnerability stems from the following missing/unsafe governor reset in this cleanup sequence."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 968,
+            "content": "complete(&tz->removal);",
+            "rationale": "This marks teardown completion, and in the vulnerable flow the governor had not been cleared before release, so stale governor state could survive until this point."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 2
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "if (result)",
+            "location": "hunk",
+            "explanation": "This registration-failure branch is where cleanup should have cleared the thermal governor state, but the vulnerable flow skipped the required teardown synchronization and governor reset on this path."
+          },
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "cancel_delayed_work_sync(&tz->poll_queue);",
+            "location": "hunk",
+            "explanation": "This is the unregistration cleanup sequence in which the governor should have been detached under proper thermal zone locking; the vulnerable code path continued teardown without the synchronized governor reset, enabling stale governor state and races with sysfs updates."
+          },
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "complete(&tz->removal);",
+            "location": "hunk",
+            "explanation": "This teardown-completion statement occurs after the thermal zone should already have had its governor cleared; in the vulnerable flow, stale governor state could survive until release because the cleanup omitted the required prior reset."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "761fdf4c8c1c",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1613
+        },
+        "commit": "4d0fe7490d7f4d61b582acbae718328284f151b9",
+        "commit_short": "4d0fe7490d7f",
+        "commit_msg": "thermal: core: move trips attributes to tz->device.groups\n\nFinally, move the last thermal zone sysfs attributes to\ntz->d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 2014,
+        "code_snippet": "commit 4d0fe7490d7f4d61b582acbae718328284f151b9\nAuthor: Eduardo Valentin <edubezval@gmail.com>\nDate:   Mon Nov 7 21:08:52 2016 -0800\n\n    thermal: core: move trips attributes to tz->device.groups\n    \n    Finally, move the last thermal zone sysfs attributes to\n    tz->device.groups: trips attributes. This requires adding a\n    attribute_group to thermal_zone_device, creating it dynamically, and\n    then setting all trips attributes in it. The trips attribute is then\n    added to the tz->device.g",
+        "exists": false,
+        "reason": "The shown function body does not contain the vulnerability root cause. The bug described is about teardown synchronization for governors: registration failure paths skipped \"thermal_set_governor(tz, NULL)\" and unregister called it without holding the thermal zone lock, leading to a cleanup leak/race. In this snippet, the only governor-related call is in unregister: \"thermal_set_governor(tz, NULL);\" and it is present after freeing trip attribute storage, but there is no evidence here of missing lock handling or the failure-path omission. The diff is focused on moving trip sysfs attributes into device.groups, adding \"create_trip_attrs\"/\"thermal_zone_create_device_groups\" and freeing \"tz->trips_attribute_group.attrs\". That is unrelated to the governor teardown bug. Therefore the vulnerable construct is absent from this function body, and this commit version does not show the bug."
+      }
+    },
+    {
+      "bic_found": "4d0fe7490d7f4d61b582acbae718328284f151b9",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "761fdf4c8c1c",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1725
+        },
+        "commit": "163b00cde7cf2206e248789d2780121ad5e6a70b",
+        "commit_short": "163b00cde7cf",
+        "commit_msg": "thermal: Fix deadlock in thermal thermal_zone_device_check\n\n1851799e1d29 (\"thermal: Fix use-after-free when unregisterin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1415,
+        "code_snippet": "commit 163b00cde7cf2206e248789d2780121ad5e6a70b\nAuthor: Wei Wang <wvw@google.com>\nDate:   Tue Nov 12 12:42:23 2019 -0800\n\n    thermal: Fix deadlock in thermal thermal_zone_device_check\n    \n    1851799e1d29 (\"thermal: Fix use-after-free when unregistering thermal zone\n    device\") changed cancel_delayed_work to cancel_delayed_work_sync to avoid\n    a use-after-free issue. However, cancel_delayed_work_sync could be called\n    insides the WQ causing deadlock.\n    \n    [54109.642398] c0   1162 kwor",
+        "exists": false,
+        "reason": "The shown code does not contain the vulnerability root cause described. The relevant buggy construct would be leaving a governor attached without proper teardown synchronization, e.g. a missing/unsafe `thermal_set_governor(tz, NULL)` during error or unregister paths. In this snippet, the unregister path explicitly does `thermal_set_governor(tz, NULL);` after `cancel_delayed_work_sync(&tz->poll_queue);`, so the governor cleanup is present. The diff only changes polling cancellation (`cancel_delayed_work_sync` -> `cancel_delayed_work` in `thermal_zone_device_set_polling`, and the unregister path uses `cancel_delayed_work_sync` directly), which relates to the deadlock fix, not the governor-leak/UAF root cause. There is no evidence here of the missing governor teardown or the race with sysfs governor updates."
+      }
+    },
+    {
+      "bic_found": "163b00cde7cf2206e248789d2780121ad5e6a70b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "761fdf4c8c1c",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 968
+        },
+        "commit": "4649620d9404d3aceb25891c24bab77143e3f21c",
+        "commit_short": "4649620d9404",
+        "commit_msg": "thermal: core: Make thermal_zone_device_unregister() return after freeing the zone\n\nMake thermal_zone_device_unregister(",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 825,
+        "code_snippet": "commit 4649620d9404d3aceb25891c24bab77143e3f21c\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Dec 8 20:13:44 2023 +0100\n\n    thermal: core: Make thermal_zone_device_unregister() return after freeing the zone\n    \n    Make thermal_zone_device_unregister() wait until all of the references\n    to the given thermal zone object have been dropped and free it before\n    returning.\n    \n    This guarantees that when thermal_zone_device_unregister() returns,\n    there is no leftover ",
+        "exists": false,
+        "reason": "The shown function `thermal_zone_device_unregister()` now waits for teardown to finish and frees the zone only after that: `wait_for_completion(&tz->removal); kfree(tz);`. The release path was also changed from `kfree(tz);` to `complete(&tz->removal);`, and registration initializes the completion with `init_completion(&tz->removal);`. This indicates the synchronization/finalization fix is already present in this version, so the vulnerable cleanup/race construct described in the root cause is not present here."
+      }
+    },
+    {
+      "bic_found": "4649620d9404d3aceb25891c24bab77143e3f21c",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "4d0fe7490d7f4d61b582acbae718328284f151b9": 1,
+        "163b00cde7cf2206e248789d2780121ad5e6a70b": 1,
+        "4649620d9404d3aceb25891c24bab77143e3f21c": 1
+      },
+      "bic_candidates": [
+        "4d0fe7490d7f4d61b582acbae718328284f151b9",
+        "163b00cde7cf2206e248789d2780121ad5e6a70b",
+        "4649620d9404d3aceb25891c24bab77143e3f21c"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

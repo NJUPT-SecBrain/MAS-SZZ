@@ -1,0 +1,396 @@
+{
+  "cveid": "CVE-2026-23161",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "8a1968bd997f45a9b11aefeabdd1232e1b6c7184"
+  ],
+  "ground_truth_bic": "809bc86517cc408b5b8cb8e08e69096639432bc8",
+  "predicted_bic": [
+    "bda97eab0cc9c6385b9f26abdda6459f630f4513"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 20791,
+  "root_cause": {
+    "text": "The shmem_free_swap function retrieves the order of a swap entry via xa_get_order without holding the xarray lock, creating a race window where the entry can be split or changed (e.g., by a concurrent swap entry split or large folio swap) before the xa_cmpxchg_irq, causing use of an outdated order and potential corruption of swap data or truncation beyond the intended range.",
+    "evidence": "The CVE description and commit message explicitly state: \"It uses xa_cmpxchg_irq to erase the swap entry, but it gets the entry order before that using xa_get_order without lock protection, and it may get an outdated order value if the entry is split or changed in other ways after the xa_get_order and before the xa_cmpxchg_irq.\" The patch fixes this by open-coding the Xarray operations under the lock (xas_lock_irq) so that order retrieval and value checking are atomic.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/shmem.c",
+      "lineno": 967,
+      "content": "int order = xa_get_order(&mapping->i_pages, index);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/shmem.c",
+      "lineno": 970,
+      "content": "old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/shmem.c",
+      "lineno": 973,
+      "content": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The shmem_free_swap function retrieves the order of a swap entry via xa_get_order without holding the xarray lock, creating a race window where the entry can be split or changed (e.g., by a concurrent swap entry split or large folio swap) before the xa_cmpxchg_irq, causing use of an outdated order and potential corruption of swap data or truncation beyond the intended range.",
+      "evidence_points": "The CVE description and commit message explicitly state: \"It uses xa_cmpxchg_irq to erase the swap entry, but it gets the entry order before that using xa_get_order without lock protection, and it may get an outdated order value if the entry is split or changed in other ways after the xa_get_order and before the xa_cmpxchg_irq.\" The patch fixes this by open-coding the Xarray operations under the lock (xas_lock_irq) so that order retrieval and value checking are atomic."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Guard against freeing multi-page swap entries that extend beyond the truncation range.",
+        "what": "Added end parameter to shmem_free_swap; replaced xa_cmpxchg with xas-based logic that checks whether the entire multi-page swap entry falls within the range [index, end] before freeing.",
+        "how": "The function now uses xas_lock_irq to load the entry, retrieves order, computes block base, and only frees swap if base >= index and base+nr_pages-1 <= end; otherwise returns 0, preventing freeing swap outside intended range."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix swap entry handling during range truncation by passing the end boundary to shmem_free_swap.",
+        "what": "Added a new argument 'end - 1' to the shmem_free_swap() call in the shmem_undo_range() function, changing the function signature from (mapping, index, folio) to (mapping, index, end, folio).",
+        "how": "The shmem_free_swap() function now receives the end index of the truncation range (minus one), likely to correctly determine whether a swap entry falls within the range being truncated and to properly count freed swap entries. This fixes potential misaccounting or incorrect freeing of swap entries during range truncation."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix infinite retry in shmem_undo_range by skipping large swap entries that cross the truncation end boundary.",
+        "what": "Added declaration of 'int order', changed shmem_free_swap call to include 'end - 1' as a new argument, and added a conditional block after failed swap free that checks if the swap entry is a large entry crossing the truncation end, and if so continues instead of breaking to retry.",
+        "how": "The change prevents an infinite retry loop when shmem_free_swap fails for a large swap entry that extends beyond the end of the truncation range. It uses shmem_confirm_swap to check the order of the swap entry; if the entry's range crosses the end, it skips it, relying on prior zeroing by truncate_inode_partial_folio."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix infinite retry in shmem_undo_range by skipping large swap entries that cross the truncation end boundary."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix infinite retry in shmem_undo_range by skipping large swap entries that cross the truncation end boundary.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group modifies shmem_undo_range and shmem_free_swap to handle multi-page swap entries that cross the truncation boundary, directly addressing the same swap entry handling logic affected by the race condition. Although the root cause is a missing lock, these changes are part of the broader fix for incorrect swap entry order usage."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 967,
+            "content": "int order = xa_get_order(&mapping->i_pages, index);",
+            "rationale": "Retrieving swap entry order without holding the xarray lock creates a race window where the entry can be split or changed before the subsequent xa_cmpxchg_irq, causing use of an outdated order."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 970,
+            "content": "old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);",
+            "rationale": "This operation occurs after obtaining the order without lock; the entry's order may have changed, making the earlier order stale. The xa_cmpxchg_irq itself might also see a different entry state due to the race."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 973,
+            "content": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+            "rationale": "This statement uses the potentially outdated order to free swap entries, leading to freeing an incorrect number of pages or beyond the intended range, causing corruption."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "int order = xa_get_order(&mapping->i_pages, index);",
+            "location": "hunk",
+            "explanation": "Retrieves swap entry order without holding the xarray lock, creating a race window where the entry can be split or changed before subsequent operations."
+          },
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);",
+            "location": "hunk",
+            "explanation": "Uses the outdated order (obtained without lock) during the cmpxchg; the entry may have been split or changed, leading to incorrect swap entry removal."
+          },
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+            "location": "hunk",
+            "explanation": "Uses the potentially outdated order to free swap entries, which can free an incorrect number of pages or beyond the intended range, causing corruption."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 967
+        },
+        "commit": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "commit_short": "6ea0d1ccb110",
+        "commit_msg": "mm: shmem: return number of pages beeing freed in shmem_free_swap\n\nBoth shmem_free_swap callers expect the number of pag",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 866
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "50f381eccefd",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 866
+        },
+        "commit": "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+        "commit_short": "55f3f7eab75c",
+        "commit_msg": "XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n\nThese convenience wrappers match the other _irq and _bh wrappers we\nalread",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 664
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "eff3860bbfed",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 664
+        },
+        "commit": "b93b016313b3ba8003c3b8bb71f569af91f19fc7",
+        "commit_short": "b93b016313b3",
+        "commit_msg": "page cache: use xa_lock\n\nRemove the address_space ->tree_lock and use the xa_lock newly added to\nthe radix_tree_root.  R",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 665
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "f6bb2a2c0b81",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 665
+        },
+        "commit": "7a5d0fbb29936fad7f17b1cb001b0c33a5f13328",
+        "commit_short": "7a5d0fbb2993",
+        "commit_msg": "tmpfs: convert shmem_truncate_range to radix-swap\n\nDisable the toy swapping implementation in shmem_writepage() - it's h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 319
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 4,
+        "blame_input": {
+          "anchor_commit": "bda97eab0cc9",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 319
+        },
+        "commit": "bda97eab0cc9c6385b9f26abdda6459f630f4513",
+        "commit_short": "bda97eab0cc9",
+        "commit_msg": "tmpfs: copy truncate_inode_pages_range\n\nBring truncate.c's code for truncate_inode_pages_range() inline into\nshmem_trunc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 319
+      }
+    },
+    {
+      "bic_found": "bda97eab0cc9c6385b9f26abdda6459f630f4513",
+      "note": "blame stable (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 970
+        },
+        "commit": "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+        "commit_short": "55f3f7eab75c",
+        "commit_msg": "XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n\nThese convenience wrappers match the other _irq and _bh wrappers we\nalread",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 664
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "eff3860bbfed",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 664
+        },
+        "commit": "b93b016313b3ba8003c3b8bb71f569af91f19fc7",
+        "commit_short": "b93b016313b3",
+        "commit_msg": "page cache: use xa_lock\n\nRemove the address_space ->tree_lock and use the xa_lock newly added to\nthe radix_tree_root.  R",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 665
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "f6bb2a2c0b81",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 665
+        },
+        "commit": "7a5d0fbb29936fad7f17b1cb001b0c33a5f13328",
+        "commit_short": "7a5d0fbb2993",
+        "commit_msg": "tmpfs: convert shmem_truncate_range to radix-swap\n\nDisable the toy swapping implementation in shmem_writepage() - it's h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 319
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "bda97eab0cc9",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 319
+        },
+        "commit": "bda97eab0cc9c6385b9f26abdda6459f630f4513",
+        "commit_short": "bda97eab0cc9",
+        "commit_msg": "tmpfs: copy truncate_inode_pages_range\n\nBring truncate.c's code for truncate_inode_pages_range() inline into\nshmem_trunc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 319
+      }
+    },
+    {
+      "bic_found": "bda97eab0cc9c6385b9f26abdda6459f630f4513",
+      "note": "blame stable (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 973
+        },
+        "commit": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "commit_short": "6ea0d1ccb110",
+        "commit_msg": "mm: shmem: return number of pages beeing freed in shmem_free_swap\n\nBoth shmem_free_swap callers expect the number of pag",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 872
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "50f381eccefd",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 872
+        },
+        "commit": "7a5d0fbb29936fad7f17b1cb001b0c33a5f13328",
+        "commit_short": "7a5d0fbb2993",
+        "commit_msg": "tmpfs: convert shmem_truncate_range to radix-swap\n\nDisable the toy swapping implementation in shmem_writepage() - it's h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 326
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "bda97eab0cc9",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 326
+        },
+        "commit": "bda97eab0cc9c6385b9f26abdda6459f630f4513",
+        "commit_short": "bda97eab0cc9",
+        "commit_msg": "tmpfs: copy truncate_inode_pages_range\n\nBring truncate.c's code for truncate_inode_pages_range() inline into\nshmem_trunc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 326
+      }
+    },
+    {
+      "bic_found": "bda97eab0cc9c6385b9f26abdda6459f630f4513",
+      "note": "blame stable (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "bda97eab0cc9c6385b9f26abdda6459f630f4513": 3
+      },
+      "bic_candidates": [
+        "bda97eab0cc9c6385b9f26abdda6459f630f4513"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

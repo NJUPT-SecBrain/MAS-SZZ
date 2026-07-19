@@ -1,0 +1,423 @@
+{
+  "cveid": "CVE-2026-31731",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "45b859b0728267a6199ee5002d62e6c6f3e8c89d"
+  ],
+  "ground_truth_bic": "5a5efdaffda5d23717d9117cf36cda9eafcf2fae",
+  "predicted_bic": [
+    "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+    "33fcb595dc14678717274c270d02c7d7e0a3c404"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 64431,
+  "root_cause": {
+    "text": "Race condition where thermal_zone_pm_complete() or thermal_zone_device_resume() re-initialize the poll_queue delayed work after thermal_zone_device_unregister() has attempted to cancel it, allowing a work item to run after the thermal zone is freed (use-after-free).",
+    "evidence": "The commit message explains that re-initialization of poll_queue via INIT_DELAYED_WORK/mod_delayed_work in thermal_zone_pm_complete() and thermal_zone_device_resume() causes cancel_delayed_work_sync() in thermal_zone_device_unregister() to miss running work items, leading to use-after-free. The patch addresses this by moving the cancel_delayed_work() to thermal_zone_pm_prepare() and adding a tz->state exit check in thermal_zone_device_resume() to prevent re-initialization during removal.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 1841,
+      "content": "INIT_DELAYED_WORK(&tz->poll_queue, thermal_zone_device_resume);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 1843,
+      "content": "mod_delayed_work(system_freezable_power_efficient_wq, &tz->poll_queue, 0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 1832,
+      "content": "cancel_delayed_work(&tz->poll_queue);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 1834,
+      "content": "reinit_completion(&tz->resume);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/thermal/thermal_core.c",
+      "lineno": 1835,
+      "content": "tz->state |= TZ_STATE_FLAG_RESUMING;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Race condition where thermal_zone_pm_complete() or thermal_zone_device_resume() re-initialize the poll_queue delayed work after thermal_zone_device_unregister() has attempted to cancel it, allowing a work item to run after the thermal zone is freed (use-after-free).",
+      "evidence_points": "The commit message explains that re-initialization of poll_queue via INIT_DELAYED_WORK/mod_delayed_work in thermal_zone_pm_complete() and thermal_zone_device_resume() causes cancel_delayed_work_sync() in thermal_zone_device_unregister() to miss running work items, leading to use-after-free. The patch addresses this by moving the cancel_delayed_work() to thermal_zone_pm_prepare() and adding a tz->state exit check in thermal_zone_device_resume() to prevent re-initialization during removal."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 1832,
+            "content": "cancel_delayed_work(&tz->poll_queue);",
+            "rationale": "This line attempts to cancel the poll_queue work. However, if thermal_zone_device_unregister() concurrently cancels and frees the tz, this cancel may race, and the later re-initialization (INIT_DELAYED_WORK and mod_delayed_work) will queue work on a freed structure, causing use-after-free."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 1834,
+            "content": "reinit_completion(&tz->resume);",
+            "rationale": "This line reinitializes a completion variable that is used to synchronize with the work item. If the work item is scheduled after the tz is freed (due to the race), accessing tz->resume after free leads to use-after-free. While not directly re-queuing, it is part of the same vulnerable code path."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 1835,
+            "content": "tz->state |= TZ_STATE_FLAG_RESUMING;",
+            "rationale": "This line modifies tz->state without proper synchronization. If the tz is freed by unregister concurrently, this write accesses freed memory, contributing to use-after-free. It is part of the resume sequence that re-initializes the work."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 1841,
+            "content": "INIT_DELAYED_WORK(&tz->poll_queue, thermal_zone_device_resume);",
+            "rationale": "This is the key vulnerable statement: it re-initializes the poll_queue delayed work after thermal_zone_device_unregister() has canceled it. The unregister may free the tz, and this re-init schedules work that will run on freed memory, causing a use-after-free."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "drivers/thermal/thermal_core.c",
+            "lineno": 1843,
+            "content": "mod_delayed_work(system_freezable_power_efficient_wq, &tz->poll_queue, 0);",
+            "rationale": "This line queues the re-initialized work immediately. If the tz has been freed by a concurrent unregister, this enqueues a work item on a freed structure, directly causing the use-after-free vulnerability."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "INIT_DELAYED_WORK(&tz->poll_queue, thermal_zone_device_resume);",
+            "location": "hunk",
+            "explanation": "This statement re-initializes the poll_queue delayed work after thermal_zone_device_unregister() has canceled it. The concurrent unregister may free the thermal zone, and this re-init schedules work that will run on freed memory, leading to use-after-free."
+          },
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "mod_delayed_work(system_freezable_power_efficient_wq, &tz->poll_queue, 0);",
+            "location": "hunk",
+            "explanation": "This statement queues the re-initialized work immediately. If the thermal zone has been freed by a concurrent unregister, this enqueues a work item on a freed structure, directly causing the use-after-free vulnerability."
+          },
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "cancel_delayed_work(&tz->poll_queue);",
+            "location": "hunk",
+            "explanation": "This statement attempts to cancel the poll_queue work, but it races with the re-initialization in thermal_zone_pm_complete() or thermal_zone_device_resume(). The cancel may succeed or fail, and the subsequent re-init can still queue work after the zone is freed, contributing to the race condition."
+          },
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "reinit_completion(&tz->resume);",
+            "location": "hunk",
+            "explanation": "This statement reinitializes a completion variable used for synchronization with the work item. If the work item is scheduled after the thermal zone is freed due to the race, accessing tz->resume after free leads to use-after-free. It is part of the same vulnerable code path that re-initializes state without proper locking."
+          },
+          {
+            "vuln_file": "drivers/thermal/thermal_core.c",
+            "stmt_text": "tz->state |= TZ_STATE_FLAG_RESUMING;",
+            "location": "hunk",
+            "explanation": "This statement modifies tz->state without proper synchronization. If the thermal zone is freed by a concurrent unregister, this write accesses freed memory, contributing to the use-after-free condition. It is part of the resume sequence that re-initializes the work queue."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7aaa8047eafd",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1841
+        },
+        "commit": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+        "commit_short": "7ddca5885718",
+        "commit_msg": "thermal: core: Rearrange PM notification code\n\nMove the code run for each thermal zone by the thermal PM notify\nhandler ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1722,
+        "code_snippet": "commit 7ddca5885718c2683d75689aa065c9a3bb317e5a\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Oct 4 21:09:23 2024 +0200\n\n    thermal: core: Rearrange PM notification code\n    \n    Move the code run for each thermal zone by the thermal PM notify\n    handler to separate functions.\n    \n    This will help to make some subsequent changes look somewhat more\n    straightforward, among other things.\n    \n    No intentional functional impact.\n    \n    Signed-off-by: Rafael J. Wysock",
+        "exists": true,
+        "reason": "The thermal_zone_pm_complete() function (lines 1708-1723) reinitializes the poll_queue delayed work via INIT_DELAYED_WORK and mod_delayed_work after calling cancel_delayed_work, without any synchronization with thermal_zone_device_unregister(). This allows a race where the work can be scheduled after unregister has freed the thermal zone, leading to use-after-free. The commit merely refactors the code and does not introduce any fix for this vulnerability."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "662f920f7e39",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1722
+        },
+        "commit": "ff140fea847e1c2002a220571ab106c2456ed252",
+        "commit_short": "ff140fea847e",
+        "commit_msg": "Thermal: handle thermal zone device properly during system sleep\n\nCurrent thermal code does not handle system sleep well",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 2175,
+        "code_snippet": "commit ff140fea847e1c2002a220571ab106c2456ed252\nAuthor: Zhang Rui <rui.zhang@intel.com>\nDate:   Fri Oct 30 16:31:58 2015 +0800\n\n    Thermal: handle thermal zone device properly during system sleep\n    \n    Current thermal code does not handle system sleep well because\n    1. the cooling device cooling state may be changed during suspend\n    2. the previous temperature reading becomes invalid after resumed because\n       it is got before system sleep\n    3. updating thermal zone device during sus",
+        "exists": false,
+        "reason": "The function shown is thermal_pm_notify(), which does not directly re-initialize the poll_queue. It calls thermal_zone_device_reset() and thermal_zone_device_update(), but the vulnerable re-initialization is described as occurring in thermal_zone_pm_complete() or thermal_zone_device_resume(), which are not present here. Therefore, the vulnerable construct is absent from this function."
+      }
+    },
+    {
+      "bic_found": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7aaa8047eafd",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1843
+        },
+        "commit": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+        "commit_short": "7ddca5885718",
+        "commit_msg": "thermal: core: Rearrange PM notification code\n\nMove the code run for each thermal zone by the thermal PM notify\nhandler ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1724,
+        "code_snippet": "commit 7ddca5885718c2683d75689aa065c9a3bb317e5a\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Oct 4 21:09:23 2024 +0200\n\n    thermal: core: Rearrange PM notification code\n    \n    Move the code run for each thermal zone by the thermal PM notify\n    handler to separate functions.\n    \n    This will help to make some subsequent changes look somewhat more\n    straightforward, among other things.\n    \n    No intentional functional impact.\n    \n    Signed-off-by: Rafael J. Wysock",
+        "exists": true,
+        "reason": "The commit refactors the existing code into thermal_zone_pm_complete() and thermal_zone_pm_prepare(), but the logic is unchanged. In thermal_zone_pm_complete(), it still calls cancel_delayed_work, reinit_completion, INIT_DELAYED_WORK with thermal_zone_device_resume, and mod_delayed_work (lines 1709-1717 of the diff). This sequence can race with thermal_zone_device_unregister() which attempts to cancel the work, potentially allowing a use-after-free. No additional synchronization or registration check is added, so the vulnerability remains."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "662f920f7e39",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1724
+        },
+        "commit": "ff140fea847e1c2002a220571ab106c2456ed252",
+        "commit_short": "ff140fea847e",
+        "commit_msg": "Thermal: handle thermal zone device properly during system sleep\n\nCurrent thermal code does not handle system sleep well",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 2177,
+        "code_snippet": "commit ff140fea847e1c2002a220571ab106c2456ed252\nAuthor: Zhang Rui <rui.zhang@intel.com>\nDate:   Fri Oct 30 16:31:58 2015 +0800\n\n    Thermal: handle thermal zone device properly during system sleep\n    \n    Current thermal code does not handle system sleep well because\n    1. the cooling device cooling state may be changed during suspend\n    2. the previous temperature reading becomes invalid after resumed because\n       it is got before system sleep\n    3. updating thermal zone device during sus",
+        "exists": false,
+        "reason": "The function body does not contain the vulnerable construct (re-initialization of the poll_queue delayed work). The vulnerability root cause explicitly points to thermal_zone_pm_complete() or thermal_zone_device_resume(), not this PM notifier callback. The snippet only sets an atomic flag and iterates over the thermal zone list calling thermal_zone_device_reset() and thermal_zone_device_update(), with no direct manipulation of the poll_queue. Therefore, this function is not the source of the race condition, and no fix for that race is present here."
+      }
+    },
+    {
+      "bic_found": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7aaa8047eafd",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1832
+        },
+        "commit": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+        "commit_short": "7ddca5885718",
+        "commit_msg": "thermal: core: Rearrange PM notification code\n\nMove the code run for each thermal zone by the thermal PM notify\nhandler ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1713,
+        "code_snippet": "commit 7ddca5885718c2683d75689aa065c9a3bb317e5a\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Oct 4 21:09:23 2024 +0200\n\n    thermal: core: Rearrange PM notification code\n    \n    Move the code run for each thermal zone by the thermal PM notify\n    handler to separate functions.\n    \n    This will help to make some subsequent changes look somewhat more\n    straightforward, among other things.\n    \n    No intentional functional impact.\n    \n    Signed-off-by: Rafael J. Wysock",
+        "exists": true,
+        "reason": "The commit moves the inline code into thermal_zone_pm_complete() which contains: cancel_delayed_work, then INIT_DELAYED_WORK and mod_delayed_work on tz->poll_queue (lines 1709-1722). This is the vulnerable pattern: re-initializing the work after cancellation can race with thermal_zone_device_unregister()'s cancellation, leading to use-after-free. The commit does not introduce any fix; it only refactors. Therefore has_bug=true, is_fixed=false."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "662f920f7e39",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1713
+        },
+        "commit": "d2278f3533a8c4933c52f85784ffa73e8250c524",
+        "commit_short": "d2278f3533a8",
+        "commit_msg": "thermal: core: Synchronize suspend-prepare and post-suspend actions\n\nAfter commit 5a5efdaffda5 (\"thermal: core: Resume t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1678,
+        "code_snippet": "commit d2278f3533a8c4933c52f85784ffa73e8250c524\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Jun 14 17:22:25 2024 +0200\n\n    thermal: core: Synchronize suspend-prepare and post-suspend actions\n    \n    After commit 5a5efdaffda5 (\"thermal: core: Resume thermal zones\n    asynchronously\") it is theoretically possible that, if a system suspend\n    starts immediately after a system resume, thermal_zone_device_resume()\n    spawned by the thermal PM notifier for one of the thermal",
+        "exists": true,
+        "reason": "The function re-initializes the poll_queue delayed work after cancellation in the PM_POST_* case (lines 1695–1709) without any protection against concurrent thermal_zone_device_unregister() that may free the thermal zone. This allows a use-after-free if the work runs after unregister, matching the vulnerability root cause."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "83a7eefedc9b",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1678
+        },
+        "commit": "33fcb595dc14678717274c270d02c7d7e0a3c404",
+        "commit_short": "33fcb595dc14",
+        "commit_msg": "thermal: core: Initialize poll_queue in thermal_zone_device_init()\n\nIn preparation for a subsequent change, move the ini",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1565,
+        "code_snippet": "commit 33fcb595dc14678717274c270d02c7d7e0a3c404\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Mon Dec 18 20:26:47 2023 +0100\n\n    thermal: core: Initialize poll_queue in thermal_zone_device_init()\n    \n    In preparation for a subsequent change, move the initialization of the\n    poll_queue delayed work from thermal_zone_device_register_with_trips()\n    to thermal_zone_device_init() which is called by the former.\n    \n    However, because thermal_zone_device_init() is also calle",
+        "exists": true,
+        "reason": "The commit moves INIT_DELAYED_WORK into thermal_zone_device_init() and adds cancel_delayed_work() in thermal_pm_notify() before calling thermal_zone_device_init(). However, the root cause describes other functions (thermal_zone_pm_complete(), thermal_zone_device_resume()) that also call thermal_zone_device_init() without prior cancellation. Those paths are not modified, so the vulnerable construct (re-initializing poll_queue after it was cancelled during unregister) remains. Therefore, the code still has the bug and is not fully fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "4e814173a8c4",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1565
+        },
+        "commit": "964f4843a455d2ffb199512b08be8d5f077c4cac",
+        "commit_short": "964f4843a455",
+        "commit_msg": "Thermal: do not clear passive state during system sleep\n\ncommit ff140fea847e (\"Thermal: handle thermal zone device prope",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1509,
+        "code_snippet": "commit 964f4843a455d2ffb199512b08be8d5f077c4cac\nAuthor: Wei Wang <wvw@google.com>\nDate:   Wed Nov 7 14:36:11 2018 -0800\n\n    Thermal: do not clear passive state during system sleep\n    \n    commit ff140fea847e (\"Thermal: handle thermal zone device properly\n    during system sleep\") added PM hook to call thermal zone reset during\n    sleep. However resetting thermal zone will also clear the passive state\n    and thus cancel the polling queue which leads the passive cooling device\n    state not be",
+        "exists": false,
+        "reason": "The commit only changes the PM notify path to avoid clearing passive state during sleep. It does not involve thermal_zone_device_unregister, thermal_zone_pm_complete, or thermal_zone_device_resume, which are the functions affected by the described race condition. The vulnerable construct (re-initialization of poll_queue after cancellation) is absent in this diff."
+      }
+    },
+    {
+      "bic_found": "33fcb595dc14678717274c270d02c7d7e0a3c404",
+      "depth": 3
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7aaa8047eafd",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1834
+        },
+        "commit": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+        "commit_short": "7ddca5885718",
+        "commit_msg": "thermal: core: Rearrange PM notification code\n\nMove the code run for each thermal zone by the thermal PM notify\nhandler ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1715,
+        "code_snippet": "commit 7ddca5885718c2683d75689aa065c9a3bb317e5a\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Oct 4 21:09:23 2024 +0200\n\n    thermal: core: Rearrange PM notification code\n    \n    Move the code run for each thermal zone by the thermal PM notify\n    handler to separate functions.\n    \n    This will help to make some subsequent changes look somewhat more\n    straightforward, among other things.\n    \n    No intentional functional impact.\n    \n    Signed-off-by: Rafael J. Wysock",
+        "exists": true,
+        "reason": "The commit refactors PM notification code into separate functions thermal_zone_pm_prepare() and thermal_zone_pm_complete(). The thermal_zone_pm_complete() function (lines 1710-1729) retains the same vulnerable pattern: it calls cancel_delayed_work() on tz->poll_queue, reinitializes it with INIT_DELAYED_WORK(), and reschedules it via mod_delayed_work() without any protection against a concurrent thermal_zone_device_unregister() that may have already freed the thermal zone. This matches the described race condition where a work item can run after the zone is freed. No fix (e.g., checking tz->dead or holding an extra reference) is present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "662f920f7e39",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1715
+        },
+        "commit": "4e814173a8c4f432fd068b1c796f0416328c9d99",
+        "commit_short": "4e814173a8c4",
+        "commit_msg": "thermal: core: Fix thermal zone suspend-resume synchronization\n\nThere are 3 synchronization issues with thermal zone sus",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1548,
+        "code_snippet": "commit 4e814173a8c4f432fd068b1c796f0416328c9d99\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Mon Dec 18 20:25:02 2023 +0100\n\n    thermal: core: Fix thermal zone suspend-resume synchronization\n    \n    There are 3 synchronization issues with thermal zone suspend-resume\n    during system-wide transitions:\n    \n     1. The resume code runs in a PM notifier which is invoked after user\n        space has been thawed, so it can run concurrently with user space\n        which can trigge",
+        "exists": false,
+        "reason": "The commit replaces the global atomic_t in_suspend with a per-zone 'suspended' flag and adds proper locking (thermal_list_lock and tz->lock) around the suspend/resume list traversal and zone initialization. In the resume path (PM_POST_* case), the code now acquires thermal_list_lock, iterates over thermal_tz_list, locks each zone, sets tz->suspended = false, calls thermal_zone_device_init() and __thermal_zone_device_update() while holding tz->lock, and then releases the locks. This prevents the race condition where resume could re-initialize a zone that is simultaneously being unregistered (since unregister would also need to hold these locks and would have removed the zone from the list or would be blocked on the zone lock). The vulnerable construct (global flag without per-zone synchronization) is no longer present, and the fix is applied."
+      }
+    },
+    {
+      "bic_found": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7aaa8047eafd",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1835
+        },
+        "commit": "26c9ab8090cda1eb3d42f491cc32d227404897da",
+        "commit_short": "26c9ab8090cd",
+        "commit_msg": "thermal: core: Represent suspend-related thermal zone flags as bits\n\nInstead of using two separate fields in struct ther",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1715,
+        "code_snippet": "commit 26c9ab8090cda1eb3d42f491cc32d227404897da\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Oct 4 21:11:53 2024 +0200\n\n    thermal: core: Represent suspend-related thermal zone flags as bits\n    \n    Instead of using two separate fields in struct thermal_zone_device for\n    representing flags related to thermal zone suspend, represent them\n    explicitly as bits in one u8 \"state\" field.\n    \n    Subsequently, that field will be used for addressing race conditions\n    relat",
+        "exists": true,
+        "reason": "The commit only refactors flag representation from separate fields (suspended, resuming) to a bitfield state, leaving the vulnerable race condition unchanged. The functions thermal_zone_pm_complete() and thermal_zone_device_resume() still re-initialize the poll_queue delayed work without proper synchronization relative to thermal_zone_device_unregister(), thus the use-after-free race persists. No fix is introduced."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7ddca5885718",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1715
+        },
+        "commit": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+        "commit_short": "7ddca5885718",
+        "commit_msg": "thermal: core: Rearrange PM notification code\n\nMove the code run for each thermal zone by the thermal PM notify\nhandler ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1715,
+        "code_snippet": "commit 7ddca5885718c2683d75689aa065c9a3bb317e5a\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Fri Oct 4 21:09:23 2024 +0200\n\n    thermal: core: Rearrange PM notification code\n    \n    Move the code run for each thermal zone by the thermal PM notify\n    handler to separate functions.\n    \n    This will help to make some subsequent changes look somewhat more\n    straightforward, among other things.\n    \n    No intentional functional impact.\n    \n    Signed-off-by: Rafael J. Wysock",
+        "exists": true,
+        "reason": "The thermal_zone_pm_complete() function (lines 1702-1724) re-initializes the poll_queue delayed work by calling INIT_DELAYED_WORK and mod_delayed_work after cancel_delayed_work. This is the vulnerable construct because it can schedule work after thermal_zone_device_unregister() has attempted to cancel it, leading to a use-after-free. No fix (e.g., checking if the zone is unregistered or using proper synchronization) is present in this commit; it is a pure refactoring with 'No intentional functional impact.'"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "662f920f7e39",
+          "anchor_file": "drivers/thermal/thermal_core.c",
+          "anchor_lineno": 1715
+        },
+        "commit": "4e814173a8c4f432fd068b1c796f0416328c9d99",
+        "commit_short": "4e814173a8c4",
+        "commit_msg": "thermal: core: Fix thermal zone suspend-resume synchronization\n\nThere are 3 synchronization issues with thermal zone sus",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/thermal/thermal_core.c",
+        "display_lineno": 1548,
+        "code_snippet": "commit 4e814173a8c4f432fd068b1c796f0416328c9d99\nAuthor: Rafael J. Wysocki <rafael.j.wysocki@intel.com>\nDate:   Mon Dec 18 20:25:02 2023 +0100\n\n    thermal: core: Fix thermal zone suspend-resume synchronization\n    \n    There are 3 synchronization issues with thermal zone suspend-resume\n    during system-wide transitions:\n    \n     1. The resume code runs in a PM notifier which is invoked after user\n        space has been thawed, so it can run concurrently with user space\n        which can trigge",
+        "exists": false,
+        "reason": "The provided diff only changes thermal_pm_notify and __thermal_zone_device_update, adding per-zone suspend flag and locking. It does not touch any workqueue init/cancel logic. The vulnerability root cause is a race in re-initializing poll_queue after cancellation, which is not present in the shown functions. Therefore, the vulnerable construct is absent, and the commit does not apply the fix for that specific race."
+      }
+    },
+    {
+      "bic_found": "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "7ddca5885718c2683d75689aa065c9a3bb317e5a": 4,
+        "33fcb595dc14678717274c270d02c7d7e0a3c404": 1
+      },
+      "bic_candidates": [
+        "7ddca5885718c2683d75689aa065c9a3bb317e5a",
+        "33fcb595dc14678717274c270d02c7d7e0a3c404"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

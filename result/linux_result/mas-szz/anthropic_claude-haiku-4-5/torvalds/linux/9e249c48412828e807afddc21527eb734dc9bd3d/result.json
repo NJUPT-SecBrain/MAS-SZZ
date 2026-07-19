@@ -1,0 +1,322 @@
+{
+  "cveid": "CVE-2026-43220",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "9e249c48412828e807afddc21527eb734dc9bd3d"
+  ],
+  "ground_truth_bic": "d2a0cac10597068567d336e85fa3cbdbe8ca62bf",
+  "predicted_bic": [
+    "5ce73c524f5fb5abd7b1bfed0115474b4fb437b4"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 21571,
+  "root_cause": {
+    "text": "The `cmd_sem_val` counter was being incremented atomically outside the IOMMU spinlock, causing concurrent TLB invalidations to allocate completion sequence numbers out of order, which violated the ordering assumption required by `wait_on_sem()` for proper command completion synchronization.",
+    "evidence": "The patch moves the `atomic64_inc_return(&iommu->cmd_sem_val)` call from outside the `raw_spin_lock_irqsave(&iommu->lock, flags)` critical section to inside it via the new `get_cmdsem_val()` helper function. The helper includes `lockdep_assert_held(&iommu->lock)` to enforce that the increment is serialized. Additionally, the data type is changed from `atomic64_t` to `u64`, confirming that atomic operations are no longer needed since the variable is now protected by the spinlock. The commit message explicitly states this breaks \"the ordering assumption in wait_on_sem()\" when commands are queued out of sequence.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/iommu/amd/iommu.c",
+      "lineno": 1456,
+      "content": "data = atomic64_inc_return(&iommu->cmd_sem_val);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `cmd_sem_val` counter was being incremented atomically outside the IOMMU spinlock, causing concurrent TLB invalidations to allocate completion sequence numbers out of order, which violated the ordering assumption required by `wait_on_sem()` for proper command completion synchronization.",
+      "evidence_points": "The patch moves the `atomic64_inc_return(&iommu->cmd_sem_val)` call from outside the `raw_spin_lock_irqsave(&iommu->lock, flags)` critical section to inside it via the new `get_cmdsem_val()` helper function. The helper includes `lockdep_assert_held(&iommu->lock)` to enforce that the increment is serialized. Additionally, the data type is changed from `atomic64_t` to `u64`, confirming that atomic operations are no longer needed since the variable is now protected by the spinlock. The commit message explicitly states this breaks \"the ordering assumption in wait_on_sem()\" when commands are queued out of sequence."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/iommu/amd/amd_iommu_types.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/iommu/amd/init.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/iommu/amd/iommu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/iommu/amd/iommu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/iommu/amd/iommu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "drivers/iommu/amd/iommu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove atomic type wrapper from cmd_sem_val to fix incorrect synchronization semantics or eliminate unnecessary atomic overhead for this field.",
+        "what": "Changed the type of `cmd_sem_val` field in `struct amd_iommu` from `atomic64_t` to `u64`.",
+        "how": "This removes atomic operations semantics from the field. Previously, any access to `cmd_sem_val` would use atomic read/write operations with memory barriers; now it becomes a plain 64-bit unsigned integer with standard non-atomic access semantics. This affects synchronization guarantees and memory ordering for this field."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Replace atomic64_set with direct assignment for cmd_sem_val initialization since atomic semantics are unnecessary during single-threaded IOMMU setup.",
+        "what": "Changed `atomic64_set(&iommu->cmd_sem_val, 0)` to direct assignment `iommu->cmd_sem_val = 0` in the init_iommu_one function.",
+        "how": "This change removes the atomic operation wrapper for initializing cmd_sem_val during IOMMU initialization. Since this occurs in an __init function before the IOMMU is exposed to concurrent access, the atomic operation is unnecessary. Direct assignment is simpler and avoids the overhead of atomic instruction semantics during single-threaded initialization."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Extract command semaphore value retrieval into a dedicated helper function with built-in lock assertion for safer, more maintainable access.",
+        "what": "Added a new static function `get_cmdsem_val()` that takes an `amd_iommu` struct pointer, asserts the iommu->lock is held, increments iommu->cmd_sem_val, and returns the new value.",
+        "how": "This function provides a centralized, lock-safe way to obtain and increment a command semaphore counter. The lockdep_assert_held() call ensures the caller holds the required lock, preventing race conditions on cmd_sem_val. Callers can now use this function instead of directly accessing and modifying the semaphore value, improving encapsulation and correctness."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition by moving semaphore read and command build operations inside the spinlock-protected critical section.",
+        "what": "Moved the atomic64_inc_return(&iommu->cmd_sem_val) call and build_completion_wait() invocation from before the raw_spin_lock_irqsave() to after it, and replaced the atomic increment with a get_cmdsem_val(iommu) function call.",
+        "how": "This change ensures that the command semaphore value is read and the completion wait command is built while holding the iommu->lock spinlock, preventing race conditions where the semaphore value could be modified by concurrent operations between reading it and queuing the command. The new get_cmdsem_val() function likely provides a synchronized way to obtain the semaphore value."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition by moving semaphore value acquisition inside spinlock-protected critical section to ensure atomic command queueing.",
+        "what": "Moved the atomic64_inc_return(&iommu->cmd_sem_val) call inside the raw_spin_lock_irqsave critical section and replaced it with a get_cmdsem_val(iommu) function call. The data variable assignment and build_completion_wait() call are now executed after acquiring the lock instead of before.",
+        "how": "This change ensures that reading/incrementing the command semaphore value and building the completion wait command happen atomically within the spinlock-protected critical section. Previously, these operations occurred outside the lock, creating a race condition window where another CPU could modify cmd_sem_val between the increment and the actual command queue operations. Now the semaphore value is obtained safely under lock protection before queuing commands."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "style",
+        "intent_summary": "Remove redundant explicit return statement from void function to improve code cleanliness and follow kernel coding conventions.",
+        "what": "Removed an explicit `return;` statement at the end of the `iommu_flush_irt_and_complete()` function, which is a void function.",
+        "how": "This change has no functional impact on program behavior. The function already implicitly returns when reaching the end of a void function in C. Removing the explicit return statement does not alter control flow or execution semantics."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove atomic type wrapper from cmd_sem_val to fix incorrect synchronization semantics or eliminate unnecessary atomic overhead for this field."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Replace atomic64_set with direct assignment for cmd_sem_val initialization since atomic semantics are unnecessary during single-threaded IOMMU setup."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Extract command semaphore value retrieval into a dedicated helper function with built-in lock assertion for safer, more maintainable access."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix race condition by moving semaphore value acquisition inside spinlock-protected critical section to ensure atomic command queueing."
+        },
+        {
+          "group_id": 4,
+          "category": "style",
+          "hunk_count": 1,
+          "intent": "Remove redundant explicit return statement from void function to improve code cleanliness and follow kernel coding conventions."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix race condition by moving semaphore value acquisition and related operations inside spinlock-protected critical section to ensure atomic command queueing.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by removing the atomic type wrapper from cmd_sem_val. The vulnerability stems from atomic increments occurring outside the IOMMU spinlock, causing out-of-order sequence number allocation. By removing the atomic wrapper, the field can be properly protected by the spinlock instead, ensuring ordered increments and fixing the synchronization violation that broke wait_on_sem()'s ordering assumptions."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group addresses initialization of cmd_sem_val during setup, which is single-threaded and doesn't involve concurrency. The vulnerability root cause is about concurrent increments happening outside the spinlock during runtime TLB invalidations, causing out-of-order sequence number allocation. This group's change to use direct assignment instead of atomic64_set during initialization does not address the core issue of unprotected concurrent increments or the ordering violation in wait_on_sem()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group extracts semaphore value retrieval into a helper function with lock assertions, which is a refactoring for maintainability and safety checks. However, it does not address the core vulnerability: the atomic increment of `cmd_sem_val` occurring outside the IOMMU spinlock. The root cause requires moving the atomic increment operation inside the lock to ensure ordering, not merely extracting the retrieval logic into a helper function."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by moving semaphore value acquisition (`cmd_sem_val` counter) inside the spinlock-protected critical section. This ensures atomic operations and prevents out-of-order sequence number allocation during concurrent TLB invalidations, which is exactly what the vulnerability root cause describes."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": false,
+        "reason": "This group only removes a redundant return statement from a void function for code style/cleanliness purposes. It does not address the core vulnerability issue, which involves atomic counter increments occurring outside spinlock protection, causing out-of-order sequence number allocation in TLB invalidation operations. The change is purely stylistic refactoring unrelated to synchronization or ordering logic."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "drivers/iommu/amd/iommu.c",
+            "lineno": 1456,
+            "content": "data = atomic64_inc_return(&iommu->cmd_sem_val);",
+            "rationale": "This atomic increment happens outside the spinlock (before raw_spin_lock_irqsave on line 1459), allowing concurrent threads to increment cmd_sem_val out of order relative to actual command queueing, violating the ordering assumption required by wait_on_sem()."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/iommu/amd/iommu.c",
+            "lineno": 1456,
+            "content": "data = atomic64_inc_return(&iommu->cmd_sem_val);",
+            "rationale": "This atomic increment happens outside the spinlock (before raw_spin_lock_irqsave on line 3183), allowing concurrent TLB invalidations to allocate completion sequence numbers out of order, breaking the synchronization contract for command completion."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/iommu/amd/amd_iommu_types.h",
+            "lineno": 755,
+            "content": "atomic64_t cmd_sem_val;",
+            "rationale": "Using atomic64_t for cmd_sem_val creates a false sense of synchronization, allowing increments outside the spinlock. The field should be protected by the spinlock instead, not by atomic operations, to ensure proper ordering of sequence number allocation with command queueing."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/iommu/amd/iommu.c",
+            "stmt_text": "data = atomic64_inc_return(&iommu->cmd_sem_val);",
+            "location": "hunk",
+            "explanation": "This atomic increment of cmd_sem_val occurs outside the spinlock-protected critical section (before raw_spin_lock_irqsave), allowing concurrent TLB invalidations to allocate completion sequence numbers out of order. This violates the ordering assumption required by wait_on_sem() for proper command completion synchronization, as the sequence number allocation is not atomic with respect to command queueing."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5b0530bb16ec",
+          "anchor_file": "drivers/iommu/amd/iommu.c",
+          "anchor_lineno": 1456
+        },
+        "commit": "5ce73c524f5fb5abd7b1bfed0115474b4fb437b4",
+        "commit_short": "5ce73c524f5f",
+        "commit_msg": "iommu/amd: Use atomic64_inc_return() in iommu.c\n\nUse atomic64_inc_return(&ref) instead of atomic64_add_return(1, &ref)\nt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/amd/iommu.c",
+        "display_lineno": 1233,
+        "code_snippet": "commit 5ce73c524f5fb5abd7b1bfed0115474b4fb437b4\nAuthor: Uros Bizjak <ubizjak@gmail.com>\nDate:   Mon Oct 7 10:43:31 2024 +0200\n\n    iommu/amd: Use atomic64_inc_return() in iommu.c\n    \n    Use atomic64_inc_return(&ref) instead of atomic64_add_return(1, &ref)\n    to use optimized implementation and ease register pressure around\n    the primitive for targets that implement optimized variant.\n    \n    Signed-off-by: Uros Bizjak <ubizjak@gmail.com>\n    Cc: Joerg Roedel <joro@8bytes.org>\n    Cc: Surav",
+        "exists": false,
+        "reason": "This commit is a pure refactoring that replaces `atomic64_add_return(1, &iommu->cmd_sem_val)` with `atomic64_inc_return(&iommu->cmd_sem_val)`. Both operations are functionally equivalent - they atomically increment the counter and return the new value. The vulnerability root cause describes a problem where `cmd_sem_val` counter was being incremented atomically OUTSIDE the IOMMU spinlock, causing ordering violations. However, this commit does not change the locking behavior or the location where the atomic operation occurs relative to the spinlock. The atomic increment still happens outside the `raw_spin_lock_irqsave(&iommu->lock, flags)` call in both locations shown in the diff. This is purely an optimization/refactoring commit that uses a more efficient atomic primitive without addressing the underlying synchronization issue described in the vulnerability root cause."
+      }
+    },
+    {
+      "bic_found": "5ce73c524f5fb5abd7b1bfed0115474b4fb437b4",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "5ce73c524f5fb5abd7b1bfed0115474b4fb437b4": 1
+      },
+      "bic_candidates": [
+        "5ce73c524f5fb5abd7b1bfed0115474b4fb437b4"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

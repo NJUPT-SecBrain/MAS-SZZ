@@ -1,0 +1,391 @@
+{
+  "cveid": "CVE-2026-23271",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "c9bc1753b3cc41d0e01fbca7f035258b5f4db0ae"
+  ],
+  "ground_truth_bic": "592903cdcbf606a838056bae6d03fc557806c914",
+  "predicted_bic": [
+    "a8b0ca17b80e92faab46ee7179ba9e99ccb61233",
+    "33b07b8be7f0e1e8e4184e3473d71f174e4b0641"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 34,
+  "llm_tokens": 21566,
+  "root_cause": {
+    "text": "The perf events subsystem allowed software-event call paths to invoke `__perf_event_overflow()` without IRQs disabled, so overflow handling was not serialized against `perf_remove_from_context()`/`perf_event_exit_event()` and could access event resources after they were released.",
+    "evidence": "The CVE/commit explicitly says “software events can end up running it with only preemption disabled” and that this “opens up a race vs perf_event_exit_event() ... [which can] free various things the overflow path expects to be present, like the BPF program”; the patch adds `lockdep_assert_irqs_disabled()` to `perf_event_overflow()`, wraps `perf_swevent_event()` in `guard(irqsave)()` with an active-state check, and changes `perf_swevent_hrtimer()` to call `perf_event_overflow()` instead of `__perf_event_overflow()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/events/core.c",
+      "lineno": 10780,
+      "content": "return __perf_event_overflow(event, 1, data, regs);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/events/core.c",
+      "lineno": 12158,
+      "content": "if (__perf_event_overflow(event, 1, &data, regs))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The perf events subsystem allowed software-event call paths to invoke `__perf_event_overflow()` without IRQs disabled, so overflow handling was not serialized against `perf_remove_from_context()`/`perf_event_exit_event()` and could access event resources after they were released.",
+      "evidence_points": "The CVE/commit explicitly says “software events can end up running it with only preemption disabled” and that this “opens up a race vs perf_event_exit_event() ... [which can] free various things the overflow path expects to be present, like the BPF program”; the patch adds `lockdep_assert_irqs_disabled()` to `perf_event_overflow()`, wraps `perf_swevent_event()` in `guard(irqsave)()` with an active-state check, and changes `perf_swevent_hrtimer()` to call `perf_event_overflow()` instead of `__perf_event_overflow()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Assert that perf_event_overflow() runs with interrupts disabled to enforce the required calling context and catch unsafe concurrency with event removal paths.",
+        "what": "A block comment was added at the start of perf_event_overflow() explaining that it is entered from a hardware PMI with interrupts expected to be disabled, followed by a new call to lockdep_assert_irqs_disabled() before returning __perf_event_overflow(event, 1, data, regs).",
+        "how": "At runtime this adds a lockdep assertion that verifies interrupts are disabled when perf_event_overflow() is called, catching invalid call contexts during debugging and helping enforce the intended serialization against concurrent perf_event_remove_from_context() paths; normal behavior is unchanged when the condition holds."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a lockdep preemption-disabled assertion to perf_swevent_event() to validate the required execution context that keeps the event safely alive.",
+        "what": "A multi-line comment was added to perf_swevent_event() documenting the execution contexts in which the function can run, followed by insertion of a lockdep_assert_preemption_disabled() call before local64_add(nr, &event->count).",
+        "how": "At runtime, the new assertion verifies in lockdep-enabled builds that preemption is disabled when this function executes, catching invalid call contexts during debugging and helping ensure the perf_event object remains protected from RCU-related lifetime issues while it is accessed."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add IRQ-safe state validation in perf_swevent_event() to serialize with event teardown and avoid handling released or inactive events.",
+        "what": "The change inserts a new guarded critical section at the start of the sampling path in perf_swevent_event(): a comment explaining serialization requirements, a guard(irqsave)() call, and an early return if event->state is not PERF_EVENT_STATE_ACTIVE before proceeding to PERF_SAMPLE_PERIOD handling and perf_swevent_overflow().",
+        "how": "At runtime, this makes software event sampling execute under IRQ-save protection and skips processing for inactive events, preventing concurrent teardown paths such as perf_event_release_kernel() -> perf_remove_from_context() from releasing or removing the event while this function is handling it."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "guard",
+        "intent_summary": "Add a lockdep preemption-state assertion to perf_tp_event() to enforce that tracepoint handling runs with preemption disabled.",
+        "what": "A comment was added stating that the tracepoint callback runs with preemption disabled, followed by an inserted call to lockdep_assert_preemption_disabled() at the start of perf_tp_event().",
+        "how": "At runtime, this adds a lockdep assertion that verifies perf_tp_event() is only executed with preemption disabled, helping detect incorrect call contexts during debugging without changing normal successful execution behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "guard",
+        "intent_summary": "Assert that perf_bp_event() is invoked with interrupts disabled in exception context to catch invalid calling contexts.",
+        "what": "A comment was added to note that perf_bp_event() runs in exception context with interrupts disabled, followed by an inserted call to lockdep_assert_irqs_disabled() before perf_sample_data_init().",
+        "how": "At runtime this adds a lockdep assertion that verifies interrupts are disabled when perf_bp_event() is entered, helping detect incorrect call contexts during debugging without changing normal behavior when the condition is met."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the standard perf_event_overflow() helper in the hrtimer software event path to fix overflow handling behavior.",
+        "what": "The call inside perf_swevent_hrtimer() was changed from __perf_event_overflow(event, 1, &data, regs) to perf_event_overflow(event, &data, regs), removing the explicit sample count argument and switching to a different overflow handling helper.",
+        "how": "At runtime, overflow processing for this software event hrtimer now goes through perf_event_overflow() instead of the lower-level __perf_event_overflow() path, which ensures the event uses the standard overflow handling behavior expected by the current API and avoids passing a hardcoded count directly."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 3,
+          "intent": "Add IRQ-safe state validation in perf_swevent_event() to serialize with event teardown and avoid handling released or inactive events."
+        },
+        {
+          "group_id": 1,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Assert that perf_bp_event() is invoked with interrupts disabled in exception context to catch invalid calling contexts."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use the standard perf_event_overflow() helper in the hrtimer software event path to fix overflow handling behavior."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Strengthen perf event handling against teardown races by asserting the required non-preemptible/IRQ-safe execution context and validating event state before processing software event overflows.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "REJECT",
+        "core_intent": "Add lockdep assertions to enforce required execution context constraints in perf event handlers.",
+        "outliers": [],
+        "reason": "Both hunks add guard assertions validating low-level context requirements in perf callbacks, but they target different handlers and different invariants (preemption-disabled vs interrupts-disabled), so the stated representative intent is too narrow to explain the full coherent subset."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Strengthen perf software event handling by adding execution-context assertions and IRQ-safe state checks to prevent races with event teardown/removal.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "REJECT",
+        "core_intent": "Add lockdep assertions to perf event delivery paths to validate required execution context during event handling.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Strengthen perf event software-overflow handling by adding execution-context assertions and IRQ-safe event-state checks to prevent races with event teardown/removal.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "REJECT",
+        "core_intent": "Add runtime assertions in perf event handling paths to validate required execution context constraints when events are triggered.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target the root cause: software perf overflow paths running without the required IRQ/preemption-disabled context, which allowed races with event removal/teardown. Adding context assertions and IRQ-safe state checks is specifically aimed at preventing overflow handling from accessing events after release."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The vulnerability is caused by perf overflow/event paths being callable in the wrong execution context (without IRQs disabled), leading to races with event teardown. These changes add assertions that enforce/check the required context constraints in perf event trigger paths, directly targeting the same root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause is software-event paths calling __perf_event_overflow() without the proper IRQ-disabled/serialized handling. Switching the hrtimer software event path to the standard perf_event_overflow() helper directly addresses that overflow handling issue in a software-event call path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 5,
+            "file_path": "kernel/events/core.c",
+            "lineno": 12158,
+            "content": "if (__perf_event_overflow(event, 1, &data, regs))",
+            "rationale": "This directly invokes __perf_event_overflow() from the hrtimer software-event path instead of the safe wrapper, enabling overflow handling without the required IRQ-disabled serialization against event teardown."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/events/core.c",
+            "lineno": 10780,
+            "content": "return __perf_event_overflow(event, 1, data, regs);",
+            "rationale": "This wrapper forwards directly to __perf_event_overflow() without enforcing or asserting the required IRQ-disabled context, which is the core unsafe behavior described in the root cause."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "kernel/events/core.c",
+            "lineno": 10866,
+            "content": "return perf_swevent_overflow(event, 1, data, regs);",
+            "rationale": "This software-event call path reaches overflow handling; before the fix, it lacked IRQ-safe state validation/serialization, allowing concurrent teardown while overflow processing accessed event resources."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/events/core.c",
+            "stmt_text": "return __perf_event_overflow(event, 1, data, regs);",
+            "location": "hunk",
+            "explanation": "This wrapper directly forwards to __perf_event_overflow() without ensuring or asserting that IRQs are disabled. That missing serialization is the root cause allowing software-event overflow handling to race with perf_remove_from_context()/perf_event_exit_event() and access released event resources."
+          },
+          {
+            "vuln_file": "kernel/events/core.c",
+            "stmt_text": "if (__perf_event_overflow(event, 1, &data, regs))",
+            "location": "hunk",
+            "explanation": "This hrtimer software-event path invokes __perf_event_overflow() directly instead of the safe wrapper, so overflow handling can run without the required IRQ-disabled context and race with event teardown."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "77de62ad3de3",
+          "anchor_file": "kernel/events/core.c",
+          "anchor_lineno": 10780
+        },
+        "commit": "a8b0ca17b80e92faab46ee7179ba9e99ccb61233",
+        "commit_short": "a8b0ca17b80e",
+        "commit_msg": "perf: Remove the nmi parameter from the swevent and overflow interface\n\nThe nmi parameter indicated if we could do wakeu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/events/core.c",
+        "display_lineno": 4626,
+        "code_snippet": "commit a8b0ca17b80e92faab46ee7179ba9e99ccb61233\nAuthor: Peter Zijlstra <a.p.zijlstra@chello.nl>\nDate:   Mon Jun 27 14:41:57 2011 +0200\n\n    perf: Remove the nmi parameter from the swevent and overflow interface\n    \n    The nmi parameter indicated if we could do wakeups from the current\n    context, if not, we would set some state and self-IPI and let the\n    resulting interrupt do the wakeup.\n    \n    For the various event classes:\n    \n      - hardware: nmi=0; PMI is in fact an NMI or we run i",
+        "exists": true,
+        "reason": "The diff is sufficient because it directly shows the overflow path and how software events reach `__perf_event_overflow()`. The vulnerable construct is present: software-event call paths still invoke `__perf_event_overflow()`/`perf_event_overflow()` without any requirement that IRQs be disabled. Specifically, `__perf_sw_event(...){ ... do_perf_sw_event(...); }` has no IRQ disabling around the call, `do_perf_sw_event()` calls `perf_swevent_event(event, nr, data, regs)`, and `perf_swevent_event()` calls `perf_swevent_overflow(...)`, which in turn calls `__perf_event_overflow(event, throttle, data, regs)`. Also `perf_swevent_hrtimer()` calls `perf_event_overflow(event, &data, regs)`, which now immediately returns `__perf_event_overflow(event, 1, data, regs)`. The commit removes the `nmi` parameter and changes behavior to always defer wakeups/disable via `irq_work_queue(&event->pending)`, e.g. `event->pending_disable = 1; irq_work_queue(&event->pending);` and similarly for wakeups, but this does not address the stated root cause: serialization by entering `__perf_event_overflow()` with IRQs disabled. There is no added `local_irq_disable()`, `lockdep_assert_irqs_disabled()`, or any equivalent protection in the shown paths. Therefore the buggy condition remains present and the fix is not yet in this function set."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "1880c4ae182a",
+          "anchor_file": "kernel/events/core.c",
+          "anchor_lineno": 4626
+        },
+        "commit": "f6c7d5fe58b4846ee0cb4b98b6042489705eced4",
+        "commit_short": "f6c7d5fe58b4",
+        "commit_msg": "perf_counter: theres more to overflow than writing events\n\nPrepare for more generic overflow handling. The new perf_coun",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/events/core.c",
+        "display_lineno": 2045,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet only shows the function signature `static void perf_swcounter_update(struct perf_counter *counter)` and no body or call sites. The root cause is specifically about software-event paths invoking `__perf_event_overflow()` without IRQs disabled, but this snippet does not show whether `perf_swcounter_update()` calls overflow handling at all, nor whether IRQs are disabled or serialized. Because the relevant logic is not present in the shown code, there is not enough context to determine either the vulnerable construct or the fix."
+      }
+    },
+    {
+      "bic_found": "a8b0ca17b80e92faab46ee7179ba9e99ccb61233",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "77de62ad3de3",
+          "anchor_file": "kernel/events/core.c",
+          "anchor_lineno": 12158
+        },
+        "commit": "33b07b8be7f0e1e8e4184e3473d71f174e4b0641",
+        "commit_short": "33b07b8be7f0",
+        "commit_msg": "perf: Use static variant of perf_event_overflow in core.c\n\nNo need to have an additional function layer.\n\nSigned-off-by:",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/events/core.c",
+        "display_lineno": 5353,
+        "code_snippet": "commit 33b07b8be7f0e1e8e4184e3473d71f174e4b0641\nAuthor: Robert Richter <robert.richter@amd.com>\nDate:   Thu Apr 5 18:24:43 2012 +0200\n\n    perf: Use static variant of perf_event_overflow in core.c\n    \n    No need to have an additional function layer.\n    \n    Signed-off-by: Robert Richter <robert.richter@amd.com>\n    Signed-off-by: Peter Zijlstra <a.p.zijlstra@chello.nl>\n    Link: http://lkml.kernel.org/r/1333643084-26776-4-git-send-email-robert.richter@amd.com\n    Signed-off-by: Ingo Molnar <m",
+        "exists": false,
+        "reason": "The shown function body is sufficient because it contains the exact overflow call site relevant to the root cause. The vulnerability is that software-event paths could call `__perf_event_overflow()` without IRQs disabled. In this snippet, the hrtimer software-event path was changed from `if (perf_event_overflow(event, &data, regs))` to `if (__perf_event_overflow(event, 1, &data, regs))`. The added second argument `1` indicates the static/internal variant is being called with IRQs disabled semantics already satisfied for this path, rather than using the generic wrapper. Thus the vulnerable construct described in the root cause—invoking `__perf_event_overflow()` without IRQs disabled—is not present here; this call site already uses the fixed handling."
+      }
+    },
+    {
+      "bic_found": "33b07b8be7f0e1e8e4184e3473d71f174e4b0641",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "a8b0ca17b80e92faab46ee7179ba9e99ccb61233": 1,
+        "33b07b8be7f0e1e8e4184e3473d71f174e4b0641": 1
+      },
+      "bic_candidates": [
+        "a8b0ca17b80e92faab46ee7179ba9e99ccb61233",
+        "33b07b8be7f0e1e8e4184e3473d71f174e4b0641"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

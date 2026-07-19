@@ -1,0 +1,434 @@
+{
+  "cveid": "CVE-2026-46106",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "07004a8c4b572171934390148ee48c4175c77eed"
+  ],
+  "ground_truth_bic": "340f0c7067a95281ad13734f8225f49c6cf52067",
+  "predicted_bic": [
+    "baa23a8d4360d981a49913841a726edede5cdd54",
+    "340f0c7067a95281ad13734f8225f49c6cf52067",
+    "0bcfd9aa4dafa03b88d68bf66b694df2a3e76cf3"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 63047,
+  "root_cause": {
+    "text": "The remount operation in `tracefs_apply_options()` traverses the eventfs hierarchy (`ei->children`) while holding only an RCU read lock, but the `eventfs_inode` lifetime is protected by SRCU and its children list is serialized by `eventfs_mutex`, leading to use-after-free, list corruption, and attribute write races with concurrent removals or attribute updates.",
+    "evidence": "CVE description explicitly states: \"list_for_each_entry over ei->children races with the list_del_rcu() in eventfs_remove_rec() -- LIST_POISON1 deref\"; \"eventfs_inodes are freed via call_srcu(&eventfs_srcu, ...). rcu_read_lock() does not extend an SRCU grace period, so ti->private can be reclaimed\"; \"The writes to ei->attr race with eventfs_set_attr(), which holds eventfs_mutex.\" The patch introduces `eventfs_remount_lock()`/`_unlock()` that acquires `eventfs_mutex` and `srcu_read_lock(&eventfs_srcu)` to properly protect the traversal.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/tracefs/inode.c",
+      "lineno": 340,
+      "content": "rcu_read_lock();",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/tracefs/inode.c",
+      "lineno": 341,
+      "content": "list_for_each_entry_rcu(ti, &tracefs_inodes, list) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/tracefs/inode.c",
+      "lineno": 358,
+      "content": "eventfs_remount(ti, update_uid, update_gid);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/tracefs/inode.c",
+      "lineno": 360,
+      "content": "rcu_read_unlock();",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/tracefs/inode.c",
+      "lineno": 409,
+      "content": "ti->flags &= ~TRACEFS_EVENT_INODE;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/tracefs/event_inode.c",
+      "lineno": 245,
+      "content": "struct eventfs_inode *ei_child;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/tracefs/event_inode.c",
+      "lineno": 248,
+      "content": "if (WARN_ON_ONCE(level > 3))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The remount operation in `tracefs_apply_options()` traverses the eventfs hierarchy (`ei->children`) while holding only an RCU read lock, but the `eventfs_inode` lifetime is protected by SRCU and its children list is serialized by `eventfs_mutex`, leading to use-after-free, list corruption, and attribute write races with concurrent removals or attribute updates.",
+      "evidence_points": "CVE description explicitly states: \"list_for_each_entry over ei->children races with the list_del_rcu() in eventfs_remove_rec() -- LIST_POISON1 deref\"; \"eventfs_inodes are freed via call_srcu(&eventfs_srcu, ...). rcu_read_lock() does not extend an SRCU grace period, so ti->private can be reclaimed\"; \"The writes to ei->attr race with eventfs_set_attr(), which holds eventfs_mutex.\" The patch introduces `eventfs_remount_lock()`/`_unlock()` that acquires `eventfs_mutex` and `srcu_read_lock(&eventfs_srcu)` to properly protect the traversal."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "fs/tracefs/inode.c",
+            "lineno": 340,
+            "content": "rcu_read_lock();",
+            "rationale": "Acquires RCU read lock to protect traversal of eventfs hierarchy, but eventfs_inode lifetime is protected by SRCU, leading to use-after-free."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/tracefs/inode.c",
+            "lineno": 341,
+            "content": "list_for_each_entry_rcu(ti, &tracefs_inodes, list) {",
+            "rationale": "Loop iterates over tracefs_inodes under RCU, but the eventfs_inode children list is serialized by eventfs_mutex, not RCU, causing race conditions."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "fs/tracefs/inode.c",
+            "lineno": 358,
+            "content": "eventfs_remount(ti, update_uid, update_gid);",
+            "rationale": "Calls eventfs_remount while holding RCU read lock; this function traverses ei->children without proper protection (SRCU/mutex), enabling use-after-free and list corruption."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "fs/tracefs/inode.c",
+            "lineno": 360,
+            "content": "rcu_read_unlock();",
+            "rationale": "Releases RCU read lock after vulnerable traversal, but the lack of SRCU protection means the eventfs_inode may be freed concurrently."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "fs/tracefs/inode.c",
+            "lineno": 409,
+            "content": "ti->flags &= ~TRACEFS_EVENT_INODE;",
+            "rationale": "Clears flag to prevent eventfs call during remount, but relies on RCU cycle for safety while eventfs uses SRCU, leading to race with concurrent removals."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/tracefs/event_inode.c",
+            "lineno": 245,
+            "content": "struct eventfs_inode *ei_child;",
+            "rationale": "Declaration of local variable used to traverse ei->children; the subsequent traversal (not fully shown) occurs under RCU lock but children list is mutex-protected."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/tracefs/event_inode.c",
+            "lineno": 248,
+            "content": "if (WARN_ON_ONCE(level > 3))",
+            "rationale": "Part of the eventfs_remount-like function that traverses hierarchy; the check does not address the missing synchronization, so this path remains vulnerable."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/tracefs/inode.c",
+            "stmt_text": "rcu_read_lock();",
+            "location": "hunk",
+            "explanation": "Acquires RCU read lock to protect traversal, but eventfs_inode lifetime is protected by SRCU and its children list by eventfs_mutex, leading to use-after-free and list corruption when concurrent removal occurs."
+          },
+          {
+            "vuln_file": "fs/tracefs/inode.c",
+            "stmt_text": "list_for_each_entry_rcu(ti, &tracefs_inodes, list) {",
+            "location": "hunk",
+            "explanation": "Iterates over tracefs_inodes under RCU, but the list is not RCU-protected; concurrent modifications (e.g., removal) can cause use-after-free or corruption."
+          },
+          {
+            "vuln_file": "fs/tracefs/inode.c",
+            "stmt_text": "eventfs_remount(ti, update_uid, update_gid);",
+            "location": "hunk",
+            "explanation": "Calls eventfs_remount while holding only RCU read lock; the function traverses ei->children without SRCU or mutex protection, enabling use-after-free and race with concurrent removals or attribute updates."
+          },
+          {
+            "vuln_file": "fs/tracefs/inode.c",
+            "stmt_text": "rcu_read_unlock();",
+            "location": "hunk",
+            "explanation": "Releases RCU read lock after the vulnerable traversal, but the lack of proper synchronization (SRCU) allows the eventfs_inode to be freed or its children list corrupted while the operation still uses them."
+          },
+          {
+            "vuln_file": "fs/tracefs/inode.c",
+            "stmt_text": "ti->flags &= ~TRACEFS_EVENT_INODE;",
+            "location": "hunk",
+            "explanation": "Clears the flag to suppress eventfs calls, but relies on RCU cycle for safety while eventfs uses SRCU, causing race conditions with concurrent removals that can lead to use-after-free or missed cleanup."
+          },
+          {
+            "vuln_file": "fs/tracefs/event_inode.c",
+            "stmt_text": "struct eventfs_inode *ei_child;",
+            "location": "hunk",
+            "explanation": "Declares a local variable used to traverse ei->children; the subsequent traversal (in eventfs_remount) occurs under RCU lock, but the children list is protected by eventfs_mutex, leading to race conditions."
+          },
+          {
+            "vuln_file": "fs/tracefs/event_inode.c",
+            "stmt_text": "if (WARN_ON_ONCE(level > 3))",
+            "location": "hunk",
+            "explanation": "Part of the eventfs_remount-like function that traverses the eventfs hierarchy; the check does not address the missing synchronization, so the function remains vulnerable to use-after-free and list corruption when called under RCU."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f67950b2887f",
+          "anchor_file": "fs/tracefs/inode.c",
+          "anchor_lineno": 340
+        },
+        "commit": "baa23a8d4360d981a49913841a726edede5cdd54",
+        "commit_short": "baa23a8d4360",
+        "commit_msg": "tracefs: Reset permissions on remount if permissions are options\n\nThere's an inconsistency with the way permissions are ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/inode.c",
+        "display_lineno": 369,
+        "code_snippet": "commit baa23a8d4360d981a49913841a726edede5cdd54\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 2 16:08:23 2024 -0400\n\n    tracefs: Reset permissions on remount if permissions are options\n    \n    There's an inconsistency with the way permissions are handled in tracefs.\n    Because the permissions are generated when accessed, they default to the\n    root inode's permission if they were never set by the user. If the user\n    sets the permissions, then a flag is set and the p",
+        "exists": true,
+        "reason": "The function `tracefs_apply_options()` holds an RCU read lock (line 369) and calls `eventfs_remount()` (line 378) inside that critical section. According to the vulnerability root cause, `eventfs_remount` traverses the eventfs children list (`ei->children`) while only RCU-protected, but the list is serialized by `eventfs_mutex` and its lifetime is SRCU-protected, leading to use-after-free and race conditions. This commit introduces this unsafe pattern; there is no fix (e.g., switching to appropriate locking) present in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ee4e0379475e",
+          "anchor_file": "fs/tracefs/inode.c",
+          "anchor_lineno": 369
+        },
+        "commit": "4282d60689d4f21b40692029080440cc58e8a17d",
+        "commit_short": "4282d60689d4",
+        "commit_msg": "tracefs: Add new tracefs file system\n\nAdd a separate file system to handle the tracing directory. Currently it\nis part o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/inode.c",
+        "display_lineno": 180,
+        "code_snippet": "commit 4282d60689d4f21b40692029080440cc58e8a17d\nAuthor: Steven Rostedt (Red Hat) <rostedt@goodmis.org>\nDate:   Tue Jan 20 11:36:55 2015 -0500\n\n    tracefs: Add new tracefs file system\n    \n    Add a separate file system to handle the tracing directory. Currently it\n    is part of debugfs, but that is starting to show its limits.\n    \n    One thing is that in order to access the tracing infrastructure, you need\n    to mount debugfs. As that includes debugging from all sorts of sub systems\n    in ",
+        "exists": false,
+        "reason": "The commit introduces the initial tracefs file system with a simple `tracefs_apply_options()` that only modifies the root inode's mode and ownership. There is no traversal of any eventfs children list, no RCU or SRCU locking issues, and no eventfs_inode structures. The vulnerability described (use-after-free during remount due to RCU vs SRCU mismatch) is not present in this code."
+      }
+    },
+    {
+      "bic_found": "baa23a8d4360d981a49913841a726edede5cdd54",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f67950b2887f",
+          "anchor_file": "fs/tracefs/inode.c",
+          "anchor_lineno": 341
+        },
+        "commit": "baa23a8d4360d981a49913841a726edede5cdd54",
+        "commit_short": "baa23a8d4360",
+        "commit_msg": "tracefs: Reset permissions on remount if permissions are options\n\nThere's an inconsistency with the way permissions are ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/inode.c",
+        "display_lineno": 370,
+        "code_snippet": "commit baa23a8d4360d981a49913841a726edede5cdd54\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 2 16:08:23 2024 -0400\n\n    tracefs: Reset permissions on remount if permissions are options\n    \n    There's an inconsistency with the way permissions are handled in tracefs.\n    Because the permissions are generated when accessed, they default to the\n    root inode's permission if they were never set by the user. If the user\n    sets the permissions, then a flag is set and the p",
+        "exists": true,
+        "reason": "The commit adds a loop under rcu_read_lock() that calls eventfs_remount() for each eventfs inode. This introduces the traversal of eventfs hierarchy under RCU read lock without proper protection (SRCU/mutex), which matches the root cause description of use-after-free and list corruption during remount."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ee4e0379475e",
+          "anchor_file": "fs/tracefs/inode.c",
+          "anchor_lineno": 370
+        },
+        "commit": "4282d60689d4f21b40692029080440cc58e8a17d",
+        "commit_short": "4282d60689d4",
+        "commit_msg": "tracefs: Add new tracefs file system\n\nAdd a separate file system to handle the tracing directory. Currently it\nis part o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/inode.c",
+        "display_lineno": 181,
+        "code_snippet": "commit 4282d60689d4f21b40692029080440cc58e8a17d\nAuthor: Steven Rostedt (Red Hat) <rostedt@goodmis.org>\nDate:   Tue Jan 20 11:36:55 2015 -0500\n\n    tracefs: Add new tracefs file system\n    \n    Add a separate file system to handle the tracing directory. Currently it\n    is part of debugfs, but that is starting to show its limits.\n    \n    One thing is that in order to access the tracing infrastructure, you need\n    to mount debugfs. As that includes debugging from all sorts of sub systems\n    in ",
+        "exists": false,
+        "reason": "The commit introduces the initial tracefs file system, but it does not include any eventfs hierarchy or 'ei->children' traversal. The vulnerable construct described (use-after-free in tracefs_apply_options traversing eventfs children under RCU) is not present in this version. The function only applies options to the root inode without iterating over children."
+      }
+    },
+    {
+      "bic_found": "baa23a8d4360d981a49913841a726edede5cdd54",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f67950b2887f",
+          "anchor_file": "fs/tracefs/inode.c",
+          "anchor_lineno": 358
+        },
+        "commit": "baa23a8d4360d981a49913841a726edede5cdd54",
+        "commit_short": "baa23a8d4360",
+        "commit_msg": "tracefs: Reset permissions on remount if permissions are options\n\nThere's an inconsistency with the way permissions are ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/inode.c",
+        "display_lineno": 378,
+        "code_snippet": "commit baa23a8d4360d981a49913841a726edede5cdd54\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 2 16:08:23 2024 -0400\n\n    tracefs: Reset permissions on remount if permissions are options\n    \n    There's an inconsistency with the way permissions are handled in tracefs.\n    Because the permissions are generated when accessed, they default to the\n    root inode's permission if they were never set by the user. If the user\n    sets the permissions, then a flag is set and the p",
+        "exists": false,
+        "reason": "The provided function body shows that tracefs_apply_options() does not directly traverse eventfs hierarchy (ei->children) under RCU read lock. Instead, it iterates over a newly introduced tracefs_inodes list, which is RCU-safe, and calls eventfs_remount() for inodes with the TRACEFS_EVENT_INODE flag. The vulnerable construct described in the root cause (direct traversal of ei->children) is not present in this function; it may reside in eventfs_remount(), which is not shown. Therefore, based solely on this code, the vulnerable construct is absent (has_bug=false), and no fix for that vulnerability is included here (is_fixed=false)."
+      }
+    },
+    {
+      "bic_found": "baa23a8d4360d981a49913841a726edede5cdd54",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f67950b2887f",
+          "anchor_file": "fs/tracefs/inode.c",
+          "anchor_lineno": 360
+        },
+        "commit": "baa23a8d4360d981a49913841a726edede5cdd54",
+        "commit_short": "baa23a8d4360",
+        "commit_msg": "tracefs: Reset permissions on remount if permissions are options\n\nThere's an inconsistency with the way permissions are ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/inode.c",
+        "display_lineno": 380,
+        "code_snippet": "commit baa23a8d4360d981a49913841a726edede5cdd54\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 2 16:08:23 2024 -0400\n\n    tracefs: Reset permissions on remount if permissions are options\n    \n    There's an inconsistency with the way permissions are handled in tracefs.\n    Because the permissions are generated when accessed, they default to the\n    root inode's permission if they were never set by the user. If the user\n    sets the permissions, then a flag is set and the p",
+        "exists": false,
+        "reason": "The vulnerable construct described (traversal of eventfs hierarchy ei->children under RCU read lock) is no longer present in tracefs_apply_options after this commit. The code now iterates over a separate RCU-protected list of tracefs_inodes and calls eventfs_remount() for eventfs inodes. The direct unsafe traversal has been removed, so has_bug is false. However, the commit does not add proper SRCU or mutex locking for the underlying eventfs traversal, so the vulnerability is not fixed (is_fixed=false). The shown diff is sufficient to determine that the vulnerable construct is absent from this function."
+      }
+    },
+    {
+      "bic_found": "baa23a8d4360d981a49913841a726edede5cdd54",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f67950b2887f",
+          "anchor_file": "fs/tracefs/inode.c",
+          "anchor_lineno": 409
+        },
+        "commit": "0bcfd9aa4dafa03b88d68bf66b694df2a3e76cf3",
+        "commit_short": "0bcfd9aa4daf",
+        "commit_msg": "tracefs: Clear EVENT_INODE flag in tracefs_drop_inode()\n\nWhen the inode is being dropped from the dentry, the TRACEFS_EV",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/inode.c",
+        "display_lineno": 440,
+        "code_snippet": "commit 0bcfd9aa4dafa03b88d68bf66b694df2a3e76cf3\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 23 01:14:29 2024 -0400\n\n    tracefs: Clear EVENT_INODE flag in tracefs_drop_inode()\n    \n    When the inode is being dropped from the dentry, the TRACEFS_EVENT_INODE\n    flag needs to be cleared to prevent a remount from calling\n    eventfs_remount() on the tracefs_inode private data. There's a race\n    between the inode is dropped (and the dentry freed) to where the inode is\n   ",
+        "exists": false,
+        "reason": "The commit adds the tracefs_drop_inode function which correctly clears the TRACEFS_EVENT_INODE flag when the inode is being freed, and removes the outdated tracefs_d_iput function. The vulnerable traversals in tracefs_apply_options are not present in this code snippet; thus the shown functions contain no vulnerable construct and have the intended fix."
+      }
+    },
+    {
+      "bic_found": "0bcfd9aa4dafa03b88d68bf66b694df2a3e76cf3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f67950b2887f",
+          "anchor_file": "fs/tracefs/event_inode.c",
+          "anchor_lineno": 245
+        },
+        "commit": "340f0c7067a95281ad13734f8225f49c6cf52067",
+        "commit_short": "340f0c7067a9",
+        "commit_msg": "eventfs: Update all the eventfs_inodes from the events descriptor\n\nThe change to update the permissions of the eventfs_i",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/event_inode.c",
+        "display_lineno": 311,
+        "code_snippet": "commit 340f0c7067a95281ad13734f8225f49c6cf52067\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 23 01:14:28 2024 -0400\n\n    eventfs: Update all the eventfs_inodes from the events descriptor\n    \n    The change to update the permissions of the eventfs_inode had the\n    misconception that using the tracefs_inode would find all the\n    eventfs_inodes that have been updated and reset them on remount.\n    The problem with this approach is that the eventfs_inodes are freed when\n ",
+        "exists": true,
+        "reason": "The commit introduces eventfs_set_attrs() which iterates ei->children via list_for_each_entry without any lock (e.g., eventfs_mutex or SRCU protection). The calling function eventfs_remount() also does not acquire proper locks. This traversal is exactly the vulnerable pattern described in the root cause: unsynchronized access to the children list during remount, leading to use-after-free and list corruption. The code does not include the fix (proper locking), so the vulnerable construct remains."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "27c046484382",
+          "anchor_file": "fs/tracefs/event_inode.c",
+          "anchor_lineno": 311
+        },
+        "commit": "baa23a8d4360d981a49913841a726edede5cdd54",
+        "commit_short": "baa23a8d4360",
+        "commit_msg": "tracefs: Reset permissions on remount if permissions are options\n\nThere's an inconsistency with the way permissions are ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/event_inode.c",
+        "display_lineno": 314,
+        "code_snippet": "commit baa23a8d4360d981a49913841a726edede5cdd54\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 2 16:08:23 2024 -0400\n\n    tracefs: Reset permissions on remount if permissions are options\n    \n    There's an inconsistency with the way permissions are handled in tracefs.\n    Because the permissions are generated when accessed, they default to the\n    root inode's permission if they were never set by the user. If the user\n    sets the permissions, then a flag is set and the p",
+        "exists": false,
+        "reason": "The function eventfs_remount() only modifies the EVENTFS_SAVE_UID and EVENTFS_SAVE_GID flags on the current eventfs_inode and its entry_attrs. It does not traverse the ei->children list, which is the vulnerable construct described in the root cause (RCU-protected traversal without proper SRCU/mutex protection). Therefore, this function does not contain the vulnerable construct, nor does it contain a fix for that vulnerability."
+      }
+    },
+    {
+      "bic_found": "340f0c7067a95281ad13734f8225f49c6cf52067",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f67950b2887f",
+          "anchor_file": "fs/tracefs/event_inode.c",
+          "anchor_lineno": 248
+        },
+        "commit": "340f0c7067a95281ad13734f8225f49c6cf52067",
+        "commit_short": "340f0c7067a9",
+        "commit_msg": "eventfs: Update all the eventfs_inodes from the events descriptor\n\nThe change to update the permissions of the eventfs_i",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/event_inode.c",
+        "display_lineno": 314,
+        "code_snippet": "commit 340f0c7067a95281ad13734f8225f49c6cf52067\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 23 01:14:28 2024 -0400\n\n    eventfs: Update all the eventfs_inodes from the events descriptor\n    \n    The change to update the permissions of the eventfs_inode had the\n    misconception that using the tracefs_inode would find all the\n    eventfs_inodes that have been updated and reset them on remount.\n    The problem with this approach is that the eventfs_inodes are freed when\n ",
+        "exists": true,
+        "reason": "The commit introduces `eventfs_set_attrs()` which traverses `ei->children` via `list_for_each_entry` without holding `eventfs_mutex` or acquiring an SRCU lock. This traversal occurs during remount (via `eventfs_remount()`) and directly matches the root cause: accessing the children list without proper synchronization, leading to use-after-free and list corruption."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "27c046484382",
+          "anchor_file": "fs/tracefs/event_inode.c",
+          "anchor_lineno": 314
+        },
+        "commit": "baa23a8d4360d981a49913841a726edede5cdd54",
+        "commit_short": "baa23a8d4360",
+        "commit_msg": "tracefs: Reset permissions on remount if permissions are options\n\nThere's an inconsistency with the way permissions are ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/tracefs/event_inode.c",
+        "display_lineno": 317,
+        "code_snippet": "commit baa23a8d4360d981a49913841a726edede5cdd54\nAuthor: Steven Rostedt (Google) <rostedt@goodmis.org>\nDate:   Thu May 2 16:08:23 2024 -0400\n\n    tracefs: Reset permissions on remount if permissions are options\n    \n    There's an inconsistency with the way permissions are handled in tracefs.\n    Because the permissions are generated when accessed, they default to the\n    root inode's permission if they were never set by the user. If the user\n    sets the permissions, then a flag is set and the p",
+        "exists": false,
+        "reason": "The function `eventfs_remount()` modifies permission flags (`EVENTFS_SAVE_UID`, `EVENTFS_SAVE_GID`) on the current `eventfs_inode` and its `entry_attrs` array. It does not traverse the `ei->children` list or perform any RCU-protected operations. The root cause describes a use-after-free in `tracefs_apply_options()` due to traversing the children list under RCU while SRCU and `eventfs_mutex` are required. Since this function does not contain that vulnerable construct, `has_bug` is false and no fix is present."
+      }
+    },
+    {
+      "bic_found": "340f0c7067a95281ad13734f8225f49c6cf52067",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "baa23a8d4360d981a49913841a726edede5cdd54": 4,
+        "0bcfd9aa4dafa03b88d68bf66b694df2a3e76cf3": 1,
+        "340f0c7067a95281ad13734f8225f49c6cf52067": 2
+      },
+      "bic_candidates": [
+        "baa23a8d4360d981a49913841a726edede5cdd54",
+        "340f0c7067a95281ad13734f8225f49c6cf52067",
+        "0bcfd9aa4dafa03b88d68bf66b694df2a3e76cf3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

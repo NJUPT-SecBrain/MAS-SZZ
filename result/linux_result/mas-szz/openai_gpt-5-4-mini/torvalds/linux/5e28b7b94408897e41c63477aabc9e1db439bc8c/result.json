@@ -1,0 +1,345 @@
+{
+  "cveid": "CVE-2026-46215",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "5e28b7b94408897e41c63477aabc9e1db439bc8c"
+  ],
+  "ground_truth_bic": "53096728b8910c6916ecc6c46a5abc5c678b58d9",
+  "predicted_bic": [
+    "12f15d52d38ac53f7c70ea3d4b3d76afed04e064",
+    "53096728b8910c6916ecc6c46a5abc5c678b58d9"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 21856,
+  "root_cause": {
+    "text": "In `drm_gem_change_handle_ioctl()` the DRM GEM prime handle reassign logic briefly left the old GEM object mapped by two live IDR entries, so a concurrent `gem_close` could remove one handle while the other still pointed to a freed object, causing a use-after-free race in `drm_gem` handle management.",
+    "evidence": "The CVE text says “the ioctl briefly had a single object with two idr entries; a concurrent gem_close could delete the object and remove one of the handles while leaving the other one dangling,” and the patch fixes it by “First idr_replace the old handle to NULL” before completing the prime swap, mirroring the race-avoidance pattern used in `gem_close`/`create_tail`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/drm_gem.c",
+      "lineno": 1057,
+      "content": "idr_remove(&file_priv->object_idr, handle);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/drm_gem.c",
+      "lineno": 1045,
+      "content": "ret = idr_alloc(&file_priv->object_idr, obj, handle, handle + 1,",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/drm_gem.c",
+      "lineno": 1044,
+      "content": "spin_lock(&file_priv->table_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/drm_gem.c",
+      "lineno": 1042,
+      "content": "mutex_lock(&file_priv->prime.lock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In `drm_gem_change_handle_ioctl()` the DRM GEM prime handle reassign logic briefly left the old GEM object mapped by two live IDR entries, so a concurrent `gem_close` could remove one handle while the other still pointed to a freed object, causing a use-after-free race in `drm_gem` handle management.",
+      "evidence_points": "The CVE text says “the ioctl briefly had a single object with two idr entries; a concurrent gem_close could delete the object and remove one of the handles while leaving the other one dangling,” and the patch fixes it by “First idr_replace the old handle to NULL” before completing the prime swap, mirroring the race-avoidance pattern used in `gem_close`/`create_tail`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpu/drm/drm_gem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpu/drm/drm_gem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/gpu/drm/drm_gem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Add a second GEM object pointer local to support additional object handling in drm_gem_change_handle_ioctl().",
+        "what": "The local variable declaration in drm_gem_change_handle_ioctl() was expanded from a single pointer, `struct drm_gem_object *obj;`, to two pointers, `struct drm_gem_object *obj, *idrobj;`.",
+        "how": "This change only introduces an additional pointer variable in the function scope, allowing the function to track a second GEM object reference during execution; the runtime behavior is not changed by this line alone, but it prepares the function for additional object handling logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix concurrent handle replacement by validating the IDR entry and rolling back on mismatch or allocation failure.",
+        "what": "The code adds a comment explaining the object-idr allocation approach, then changes the `idr_alloc()` path in `drm_gem_change_handle_ioctl()` to explicitly handle allocation failure and to verify the inserted object by calling `idr_replace(&file_priv->object_idr, NULL, handle)`. If the replaced value is not the expected `obj`, it restores the previous entry, removes the new handle, sets `ret = -ENOENT`, and exits through `out_unlock` after unlocking `table_lock`.",
+        "how": "At runtime, this makes the handle-change operation safer under concurrent DRM PRIME bookkeeping. It now detects if the object IDR entry does not contain the expected object after insertion, rolls back the temporary mapping, and returns an error instead of proceeding with an inconsistent handle-to-object association."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Restore the GEM object handle mapping on failure and warn if the replacement unexpectedly collides.",
+        "what": "In the error path after a failed operation, the code now calls `idr_replace(&file_priv->object_idr, obj, handle)` immediately after `idr_remove(&file_priv->object_idr, handle)`, stores the return value in `idrobj`, and adds `WARN_ON(idrobj != NULL)` before releasing `table_lock` and jumping to `out_unlock`.",
+        "how": "If the preceding step fails, the handle is now removed and then the GEM object is reinserted into the IDR at the same handle, with a warning if that replacement unexpectedly finds an existing entry. This changes the failure cleanup so the object table is restored to a consistent state instead of leaving the handle unmapped."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Add a second GEM object pointer local to support additional object handling in drm_gem_change_handle_ioctl()."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Restore the GEM object handle mapping on failure and warn if the replacement unexpectedly collides."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Restore or validate GEM object handle replacement in the IDR, rolling back and warning on failure or collision.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change is in drm_gem_change_handle_ioctl() and introduces an additional GEM object pointer to support handle reassignment logic, which matches the area and mechanism involved in the reported double-live-IDR/use-after-free race."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address GEM handle replacement in the IDR, including validation, rollback, and collision handling. This matches the root cause where a temporary double-mapped handle state could allow concurrent close to free an object still referenced by another IDR entry, leading to use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpu/drm/drm_gem.c",
+            "lineno": 1045,
+            "content": "ret = idr_alloc(&file_priv->object_idr, obj, handle, handle + 1,",
+            "rationale": "This replacement allocates the new IDR entry for the GEM object; in the vulnerable pre-fix logic, failure handling did not properly validate or roll back the old mapping, allowing two live handles to briefly refer to the same object and enabling a UAF race during concurrent close."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpu/drm/drm_gem.c",
+            "lineno": 1042,
+            "content": "mutex_lock(&file_priv->prime.lock);",
+            "rationale": "This starts the handle-replacement critical section, but the bug was that the surrounding sequence did not correctly preserve consistent IDR state during replacement, leaving a race window for concurrent gem_close."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpu/drm/drm_gem.c",
+            "lineno": 1044,
+            "content": "spin_lock(&file_priv->table_lock);",
+            "rationale": "The IDR update occurs under this lock, and the vulnerability stems from the pre-fix replacement path not safely maintaining the handle mapping across the IDR transition, which could expose stale/freed object references."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/drm_gem.c",
+            "lineno": 1057,
+            "content": "idr_remove(&file_priv->object_idr, handle);",
+            "rationale": "This rollback removal is the missing corrective action for the buggy replacement path; before the fix, the code failed to restore consistent handle ownership after a failed or colliding reassign, which is the direct cause of the stale mapping race."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/drm_gem.c",
+            "stmt_text": "idr_remove(&file_priv->object_idr, handle);",
+            "location": "hunk",
+            "explanation": "This rollback statement is directly tied to restoring consistent handle ownership after a failed or colliding prime handle reassignment. The root cause is that the pre-fix logic could leave the old GEM object referenced by two live IDR entries, enabling a concurrent close to free the object while another handle still pointed to it."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/drm_gem.c",
+            "stmt_text": "ret = idr_alloc(&file_priv->object_idr, obj, handle, handle + 1,",
+            "location": "hunk",
+            "explanation": "This is the handle replacement step that creates the new IDR entry for the GEM object. In the vulnerable flow, the replacement path failed to safely preserve or validate mapping consistency, allowing two live entries to transiently reference the same object and triggering the UAF race."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/drm_gem.c",
+            "stmt_text": "spin_lock(&file_priv->table_lock);",
+            "location": "hunk",
+            "explanation": "This lock guards the IDR update, and the vulnerability arose in the pre-fix replacement sequence that did not maintain consistent handle mapping across the transition under this protection, leaving a race window for concurrent gem_close."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/drm_gem.c",
+            "stmt_text": "mutex_lock(&file_priv->prime.lock);",
+            "location": "hunk",
+            "explanation": "This begins the critical section for prime handle replacement, but the bug was in the surrounding pre-fix logic that still allowed inconsistent IDR state during reassignment, which contributed to the race leading to use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d8a70292c3e1",
+          "anchor_file": "drivers/gpu/drm/drm_gem.c",
+          "anchor_lineno": 1057
+        },
+        "commit": "12f15d52d38ac53f7c70ea3d4b3d76afed04e064",
+        "commit_short": "12f15d52d38a",
+        "commit_msg": "drm: Do not allow userspace to trigger kernel warnings in drm_gem_change_handle_ioctl()\n\nSince GEM bo handles are u32 in",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/drm_gem.c",
+        "display_lineno": 997,
+        "code_snippet": "commit 12f15d52d38ac53f7c70ea3d4b3d76afed04e064\nAuthor: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>\nDate:   Fri Jan 23 14:15:40 2026 +0000\n\n    drm: Do not allow userspace to trigger kernel warnings in drm_gem_change_handle_ioctl()\n    \n    Since GEM bo handles are u32 in the uapi and the internal implementation\n    uses idr_alloc() which uses int ranges, passing a new handle larger than\n    INT_MAX trivially triggers a kernel warning:\n    \n    idr_alloc():\n    ...\n            if (WARN_ON_ONCE(st",
+        "exists": false,
+        "reason": "The shown function body only contains the INT_MAX validation and handle normalization fix, not the race described in the root cause. Specifically, it now does `if (args->new_handle > INT_MAX) return -EINVAL;` and copies `args->new_handle` into `handle`, then uses that validated `handle` in `idr_alloc()` and `idr_remove()`. The vulnerable construct about briefly leaving the old GEM object mapped by two live IDR entries and a concurrent `gem_close` UAF is not present in this snippet. Therefore the function shown does not contain the vulnerability and already includes the commit’s fix for the warning issue."
+      }
+    },
+    {
+      "bic_found": "12f15d52d38ac53f7c70ea3d4b3d76afed04e064",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d8a70292c3e1",
+          "anchor_file": "drivers/gpu/drm/drm_gem.c",
+          "anchor_lineno": 1045
+        },
+        "commit": "12f15d52d38ac53f7c70ea3d4b3d76afed04e064",
+        "commit_short": "12f15d52d38a",
+        "commit_msg": "drm: Do not allow userspace to trigger kernel warnings in drm_gem_change_handle_ioctl()\n\nSince GEM bo handles are u32 in",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/drm_gem.c",
+        "display_lineno": 985,
+        "code_snippet": "commit 12f15d52d38ac53f7c70ea3d4b3d76afed04e064\nAuthor: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>\nDate:   Fri Jan 23 14:15:40 2026 +0000\n\n    drm: Do not allow userspace to trigger kernel warnings in drm_gem_change_handle_ioctl()\n    \n    Since GEM bo handles are u32 in the uapi and the internal implementation\n    uses idr_alloc() which uses int ranges, passing a new handle larger than\n    INT_MAX trivially triggers a kernel warning:\n    \n    idr_alloc():\n    ...\n            if (WARN_ON_ONCE(st",
+        "exists": false,
+        "reason": "The shown function body is already the post-fix version and does not contain the vulnerable race described in the root cause. The only logic added by this commit is a bounds check and int conversion: `if (args->new_handle > INT_MAX) return -EINVAL; handle = args->new_handle;`. The subsequent uses are consistently on `handle`, e.g. `if (args->handle == handle)`, `idr_alloc(..., handle, handle + 1, ...)`, and rollback uses `idr_remove(..., handle)`. There is no indication in this snippet that the old handle is left mapped by two live IDR entries or that the old entry remains concurrently reachable after reassignment. This commit appears to address a different issue (preventing `idr_alloc()` warnings for handles above `INT_MAX`), not the UAF race, and the fix for the race is not visible here because the vulnerable construct is absent from this snippet."
+      }
+    },
+    {
+      "bic_found": "12f15d52d38ac53f7c70ea3d4b3d76afed04e064",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d8a70292c3e1",
+          "anchor_file": "drivers/gpu/drm/drm_gem.c",
+          "anchor_lineno": 1044
+        },
+        "commit": "53096728b8910c6916ecc6c46a5abc5c678b58d9",
+        "commit_short": "53096728b891",
+        "commit_msg": "drm: Add DRM prime interface to reassign GEM handle\n\nCRIU restore of drm buffer objects requires the ability to create\no",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/drm_gem.c",
+        "display_lineno": 961,
+        "code_snippet": "commit 53096728b8910c6916ecc6c46a5abc5c678b58d9\nAuthor: David Francis <David.Francis@amd.com>\nDate:   Thu Jul 17 10:35:55 2025 -0400\n\n    drm: Add DRM prime interface to reassign GEM handle\n    \n    CRIU restore of drm buffer objects requires the ability to create\n    or import a buffer object with a specific gem handle.\n    \n    Add new drm ioctl DRM_IOCTL_GEM_CHANGE_HANDLE, which takes\n    the gem handle of an object and moves that object to a\n    specified new gem handle.\n    \n    This ioctl ",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": true,\n  \"is_fixed\": false,\n  \"reason\": \"The snippet shows the exact handle-reassignment logic in `drm_gem_change_handle_ioctl()`: it first allocates `args->new_han"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "b9a572f47199",
+          "anchor_file": "drivers/gpu/drm/drm_gem.c",
+          "anchor_lineno": 961
+        },
+        "commit": "673a394b1e3b69be886ff24abfd6df97c52e8d08",
+        "commit_short": "673a394b1e3b",
+        "commit_msg": "drm: Add GEM (\"graphics execution manager\") to i915 driver.\n\nGEM allows the creation of persistent buffer objects access",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/drm_gem.c",
+        "display_lineno": 356,
+        "code_snippet": "commit 673a394b1e3b69be886ff24abfd6df97c52e8d08\nAuthor: Eric Anholt <eric@anholt.net>\nDate:   Wed Jul 30 12:06:12 2008 -0700\n\n    drm: Add GEM (\"graphics execution manager\") to i915 driver.\n    \n    GEM allows the creation of persistent buffer objects accessible by the\n    graphics device through new ioctls for managing execution of commands on the\n    device.  The userland API is almost entirely driver-specific to ensure that\n    any driver building on this model can easily map the interface to",
+        "exists": false,
+        "reason": "The shown code does not contain the vulnerable prime handle reassign logic from `drm_gem_change_handle_ioctl()` at all. This file only has handle create/delete/lookup/open/close paths such as `drm_gem_handle_create()`, `drm_gem_handle_delete()`, and `drm_gem_close_ioctl()`. The race described in the root cause requires the specific handle-reassignment sequence with two live IDR entries, but there is no such statement or function in this snippet. Since the vulnerable construct is absent, `has_bug` is false, and because there is also no corresponding fix in this code, `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "53096728b8910c6916ecc6c46a5abc5c678b58d9",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d8a70292c3e1",
+          "anchor_file": "drivers/gpu/drm/drm_gem.c",
+          "anchor_lineno": 1042
+        },
+        "commit": "53096728b8910c6916ecc6c46a5abc5c678b58d9",
+        "commit_short": "53096728b891",
+        "commit_msg": "drm: Add DRM prime interface to reassign GEM handle\n\nCRIU restore of drm buffer objects requires the ability to create\no",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/drm_gem.c",
+        "display_lineno": 959,
+        "code_snippet": "commit 53096728b8910c6916ecc6c46a5abc5c678b58d9\nAuthor: David Francis <David.Francis@amd.com>\nDate:   Thu Jul 17 10:35:55 2025 -0400\n\n    drm: Add DRM prime interface to reassign GEM handle\n    \n    CRIU restore of drm buffer objects requires the ability to create\n    or import a buffer object with a specific gem handle.\n    \n    Add new drm ioctl DRM_IOCTL_GEM_CHANGE_HANDLE, which takes\n    the gem handle of an object and moves that object to a\n    specified new gem handle.\n    \n    This ioctl ",
+        "exists": false,
+        "reason": "The vulnerable race described in the root cause is not present here; this function holds the prime lock across the handle reassign sequence and removes the old handle only after the new one is installed. Specifically, it does `mutex_lock(&file_priv->prime.lock);`, then adds the new IDR entry with `idr_alloc(...)`, updates the prime mapping with `drm_prime_add_buf_handle(...)`, calls `drm_prime_remove_buf_handle(&file_priv->prime, args->handle);`, and only then removes the old IDR entry via `idr_remove(&file_priv->object_idr, args->handle);` before unlocking. This ordering and locking prevent the old GEM object from being left mapped by two live IDR entries during the reassignment, so the vulnerable construct is absent and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "53096728b8910c6916ecc6c46a5abc5c678b58d9",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "12f15d52d38ac53f7c70ea3d4b3d76afed04e064": 2,
+        "53096728b8910c6916ecc6c46a5abc5c678b58d9": 2
+      },
+      "bic_candidates": [
+        "12f15d52d38ac53f7c70ea3d4b3d76afed04e064",
+        "53096728b8910c6916ecc6c46a5abc5c678b58d9"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

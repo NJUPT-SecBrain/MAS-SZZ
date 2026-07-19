@@ -1,0 +1,409 @@
+{
+  "cveid": "CVE-2026-43434",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "8ef2c15aeae07647f530d30f6daaf79eb801bcd1"
+  ],
+  "ground_truth_bic": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+  "predicted_bic": [
+    "eafedbc7c050c44744fbdf80bdf3315e860b7513"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 25,
+  "llm_tokens": 57856,
+  "root_cause": {
+    "text": "Rust Binder’s page_range code trusted a VMA returned by `vma_lookup()` based only on address, without verifying it was still the original Binder-owned VMA, so a closed/replaced VMA at the same address could receive Binder page inserts or zaps.",
+    "evidence": "The CVE/commit explicitly says “if the vma is closed and replaced with a different vma at the same address, this can lead to Rust Binder installing pages into the wrong vma,” and the patch adds `vm_private_data`/`vm_ops` tagging plus `check_vma()` before `vm_insert_page()` and `zap_page_range_single()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/android/binder/page_range.rs",
+      "lineno": 404,
+      "content": "if let Some(vma) = mmap_read.vma_lookup(vma_addr) {",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/android/binder/page_range.rs",
+      "lineno": 404,
+      "content": ".vma_lookup(vma_addr)",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/android/binder/page_range.rs",
+      "lineno": 408,
+      "content": ".vm_insert_page(user_page_addr, &new_page)",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/android/binder/page_range.rs",
+      "lineno": 722,
+      "content": "vma.zap_page_range_single(user_page_addr, PAGE_SIZE);",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Rust Binder’s page_range code trusted a VMA returned by `vma_lookup()` based only on address, without verifying it was still the original Binder-owned VMA, so a closed/replaced VMA at the same address could receive Binder page inserts or zaps.",
+      "evidence_points": "The CVE/commit explicitly says “if the vma is closed and replaced with a different vma at the same address, this can lead to Rust Binder installing pages into the wrong vma,” and the patch adds `vm_private_data`/`vm_ops` tagging plus `check_vma()` before `vm_insert_page()` and `zap_page_range_single()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/android/binder/page_range.rs",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/android/binder/page_range.rs",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/android/binder/page_range.rs",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/android/binder/page_range.rs",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/android/binder/page_range.rs",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add VMA identity checks using vm_ops and private owner data to ensure binder page operations only target the correct mapping.",
+        "what": "A new static zero-initialized vm_operations_struct named BINDER_VM_OPS was added, along with a new helper function check_vma(vma, owner) that reads a VMA's vm_ops and vm_private_data, verifies they match BINDER_VM_OPS and the provided ShrinkablePageRange owner pointer, and returns the VMA as a mixed-map VMA only if both checks succeed; otherwise it returns None.",
+        "how": "At runtime, this introduces identity validation for VMAs before they are treated as binder-managed mixed-map mappings, preventing code from operating on the wrong VMA when installing or zapping pages unless both the expected vm_ops marker and private owner pointer match."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize binder VMA private data and operations during registration so the mapping can be correctly identified and managed later.",
+        "what": "The change adds two unsafe assignments in `register_with_vma`: it stores a mutable `c_void` pointer derived from `self` into `(*vma.as_ptr()).vm_private_data`, and it assigns `&BINDER_VM_OPS` to `(*vma.as_ptr()).vm_ops`, along with safety comments explaining that the VMA is owned and these fields are not used through `VmaNew` methods.",
+        "how": "At runtime, the VMA is now explicitly associated with this binder object through `vm_private_data` and given binder-specific VMA operations through `vm_ops`, enabling later VMA callbacks or comparisons to identify and handle the mapping correctly instead of leaving those fields unset."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add stricter VMA validation via `check_vma` before `vm_insert_page` to reject invalid mappings and return `ESRCH` early.",
+        "what": "The chained VMA validation logic was changed from calling `.as_mixedmap_vma().ok_or(ESRCH)?` directly on the result of `vma_lookup(...)` to passing the looked-up VMA into `check_vma(..., self)`, then unwrapping its result with `.ok_or(ESRCH)?` before calling `.vm_insert_page(...)`; the warning block and page insertion call remain otherwise unchanged.",
+        "how": "At runtime, the code now performs VMA validation through `check_vma` instead of only checking whether the VMA is a mixedmap VMA. This can reject VMAs that previously would have been accepted if they were merely mixedmap, preventing insertion into an invalid or mismatched VMA and ensuring additional constraints associated with `self` are enforced before `vm_insert_page` runs."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "refactor",
+        "intent_summary": "Store the immutable `range` pointer in a local before dereferencing it to make the lifetime guarantee explicit and clarify unsafe access.",
+        "what": "A new local variable `range_ptr` is introduced, the raw pointer `(*info).range` is first stored into `range_ptr`, and the reference `range` is then created from `range_ptr` instead of directly from `(*info).range`; the safety comment is also updated to state that `range` outlives its `PageInfo` values.",
+        "how": "This preserves the `range` raw pointer independently of the `PageInfo` access path before creating a reference, making the lifetime/ownership relationship explicit and avoiding repeated direct dereferencing of `info` when obtaining `range`, without changing the intended runtime behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "guard",
+        "intent_summary": "Add VMA validation before zapping a page range so the operation only runs on a checked mapping.",
+        "what": "The code changes the result of `mmap_read.vma_lookup(vma_addr)` from being used directly as `vma` to first being bound as `unchecked_vma`, then passed through a new `check_vma(unchecked_vma, range_ptr)` validation step; the page address calculation and `zap_page_range_single(user_page_addr, PAGE_SIZE)` call are moved inside this additional nested `if let Some(vma)` block.",
+        "how": "At runtime, the page zap now only occurs when both the VMA lookup succeeds and the returned VMA passes `check_vma` against `range_ptr`. This prevents `zap_page_range_single` from operating on an unchecked or invalid VMA, avoiding incorrect page invalidation on mismatched mappings."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Add stricter VMA validation via `check_vma` before `vm_insert_page` to reject invalid mappings and return `ESRCH` early."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize binder VMA private data and operations during registration so the mapping can be correctly identified and managed later."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Store the immutable `range` pointer in a local before dereferencing it to make the lifetime guarantee explicit and clarify unsafe access."
+        },
+        {
+          "group_id": 3,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add VMA validation before zapping a page range so the operation only runs on a checked mapping."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Strengthen binder VMA validation before page insertion by verifying the mapping identity and rejecting invalid or unrelated VMAs early.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by no longer trusting a VMA based only on address. They add identity/ownership validation (vm_ops/private data and check_vma) before binder page insertion, ensuring the VMA is still the original Binder mapping and rejecting replaced or unrelated VMAs."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The root cause is failure to verify that a looked-up VMA is still the original Binder-owned mapping. Initializing Binder-specific VMA private data and operations during registration provides the identity/ownership markers needed to later recognize and validate the correct Binder VMA, directly addressing that issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "This change only clarifies pointer lifetime/unsafe dereference handling for `range`; it does not add or modify validation that the looked-up VMA is the original Binder-owned VMA, which is the root cause of the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The root cause is failure to verify that the looked-up VMA is still the correct Binder-owned mapping before operating on it. This group adds VMA validation before zapping a page range, directly addressing that missing ownership/identity check."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/android/binder/page_range.rs",
+            "lineno": 404,
+            "content": ".vma_lookup(vma_addr)",
+            "rationale": "This is the core trust boundary error: the code looks up a VMA only by address and proceeds without verifying it is still the original Binder-owned mapping."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/android/binder/page_range.rs",
+            "lineno": 408,
+            "content": ".vm_insert_page(user_page_addr, &new_page)",
+            "rationale": "This performs the page insertion into the VMA returned solely from address lookup, enabling insertion into a replaced or unrelated VMA at the same address."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/android/binder/page_range.rs",
+            "lineno": 720,
+            "content": "if let Some(vma) = mmap_read.vma_lookup(vma_addr) {",
+            "rationale": "This zapping path repeats the same flawed assumption by accepting any VMA found at the stored address, without checking Binder ownership or identity."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/android/binder/page_range.rs",
+            "lineno": 722,
+            "content": "vma.zap_page_range_single(user_page_addr, PAGE_SIZE);",
+            "rationale": "This destructive operation is applied to whatever VMA was found at the address, so a stale/replaced mapping can be incorrectly modified."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/android/binder/page_range.rs",
+            "stmt_text": "if let Some(vma) = mmap_read.vma_lookup(vma_addr) {",
+            "location": "hunk 4",
+            "explanation": "This statement embodies the root cause by trusting any VMA returned for the address alone, without verifying it is still the original Binder-owned mapping. That allows subsequent operations to act on a closed and replaced VMA at the same address."
+          },
+          {
+            "vuln_file": "drivers/android/binder/page_range.rs",
+            "stmt_text": ".vma_lookup(vma_addr)",
+            "location": "hunk 2",
+            "explanation": "This lookup uses only the virtual address as the trust criterion. Without checking Binder ownership or VMA identity, the code can retrieve an unrelated replacement VMA and proceed as though it were the original Binder mapping."
+          },
+          {
+            "vuln_file": "drivers/android/binder/page_range.rs",
+            "stmt_text": ".vm_insert_page(user_page_addr, &new_page)",
+            "location": "hunk 2",
+            "explanation": "This inserts a Binder page into the VMA previously obtained solely by address lookup. Because the VMA was not validated, the insertion can target a stale or unrelated replacement mapping."
+          },
+          {
+            "vuln_file": "drivers/android/binder/page_range.rs",
+            "stmt_text": "vma.zap_page_range_single(user_page_addr, PAGE_SIZE);",
+            "location": "hunk 4",
+            "explanation": "This destructive operation is performed on the VMA accepted by address-only lookup. If that VMA was replaced after the original Binder mapping was closed, the code can incorrectly zap pages in a non-Binder mapping."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4fc87c240b8f",
+          "anchor_file": "drivers/android/binder/page_range.rs",
+          "anchor_lineno": 404
+        },
+        "commit": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+        "commit_short": "eafedbc7c050",
+        "commit_msg": "rust_binder: add Rust Binder driver\n\nWe're generally not proponents of rewrites (nasty uncomfortable things\nthat make yo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/android/binder/page_range.rs",
+        "display_lineno": 404,
+        "code_snippet": "commit eafedbc7c050c44744fbdf80bdf3315e860b7513\nAuthor: Alice Ryhl <aliceryhl@google.com>\nDate:   Fri Sep 19 06:42:07 2025 +0000\n\n    rust_binder: add Rust Binder driver\n    \n    We're generally not proponents of rewrites (nasty uncomfortable things\n    that make you late for dinner!). So why rewrite Binder?\n    \n    Binder has been evolving over the past 15+ years to meet the evolving\n    needs of Android. Its responsibilities, expectations, and complexity\n    have grown considerably during tha",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact VMA lookup and page insert/zap logic in both allocation and shrinker paths. The vulnerable construct is present: the code stores only `inner.vma_addr = vma.start()` in `register_with_vma`, but does not store or later validate that the looked-up VMA is still the original Binder-owned VMA. In `use_page_slow`, it does `...mmap_read_lock().vma_lookup(vma_addr).ok_or(ESRCH)?.as_mixedmap_vma().ok_or(ESRCH)?.vm_insert_page(user_page_addr, &new_page)` — this trusts any VMA returned for `vma_addr` based solely on address, with only a mixedmap-type check. Likewise, in `rust_shrink_free_page`, after `if let Some(vma) = mmap_read.vma_lookup(vma_addr) { let user_page_addr = vma_addr + (page_index << PAGE_SHIFT); vma.zap_page_range_single(user_page_addr, PAGE_SIZE); }`, it again acts on whatever VMA currently exists at that address, with no identity/ownership verification. This matches the root cause exactly: a closed/replaced VMA at the same address could receive Binder page inserts or zaps. No fix is present because there is no stored original-VMA identity token, no comparison against the original VMA, and no Binder-specific validation beyond address lookup."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4fc87c240b8f",
+          "anchor_file": "drivers/android/binder/page_range.rs",
+          "anchor_lineno": 404
+        },
+        "commit": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+        "commit_short": "eafedbc7c050",
+        "commit_msg": "rust_binder: add Rust Binder driver\n\nWe're generally not proponents of rewrites (nasty uncomfortable things\nthat make yo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/android/binder/page_range.rs",
+        "display_lineno": 404,
+        "code_snippet": "commit eafedbc7c050c44744fbdf80bdf3315e860b7513\nAuthor: Alice Ryhl <aliceryhl@google.com>\nDate:   Fri Sep 19 06:42:07 2025 +0000\n\n    rust_binder: add Rust Binder driver\n    \n    We're generally not proponents of rewrites (nasty uncomfortable things\n    that make you late for dinner!). So why rewrite Binder?\n    \n    Binder has been evolving over the past 15+ years to meet the evolving\n    needs of Android. Its responsibilities, expectations, and complexity\n    have grown considerably during tha",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains the relevant VMA lookup and page insert/zap logic in both `use_page_slow` and `rust_shrink_free_page`. The vulnerable construct is present: in `use_page_slow`, the code does `mmap_read_lock().vma_lookup(vma_addr).ok_or(ESRCH)?.as_mixedmap_vma().ok_or(ESRCH)?.vm_insert_page(user_page_addr, &new_page)` and only validates the VMA by address (`vma_lookup(vma_addr)`). There is no verification that the returned VMA is still the original Binder-owned VMA that was registered in `register_with_vma`; only `inner.vma_addr = vma.start()` is stored, with no stored VMA identity/object to compare against later. Likewise, the shrinker path `rust_shrink_free_page` does `if let Some(vma) = mmap_read.vma_lookup(vma_addr) { ... vma.zap_page_range_single(user_page_addr, PAGE_SIZE); }`, again trusting any VMA found at that address. This matches the root cause exactly: a closed/replaced VMA at the same address could receive Binder page insertion or zapping. No fix is present because there is no check tying the looked-up VMA back to the originally registered Binder VMA beyond the address."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4fc87c240b8f",
+          "anchor_file": "drivers/android/binder/page_range.rs",
+          "anchor_lineno": 408
+        },
+        "commit": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+        "commit_short": "eafedbc7c050",
+        "commit_msg": "rust_binder: add Rust Binder driver\n\nWe're generally not proponents of rewrites (nasty uncomfortable things\nthat make yo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/android/binder/page_range.rs",
+        "display_lineno": 408,
+        "code_snippet": "commit eafedbc7c050c44744fbdf80bdf3315e860b7513\nAuthor: Alice Ryhl <aliceryhl@google.com>\nDate:   Fri Sep 19 06:42:07 2025 +0000\n\n    rust_binder: add Rust Binder driver\n    \n    We're generally not proponents of rewrites (nasty uncomfortable things\n    that make you late for dinner!). So why rewrite Binder?\n    \n    Binder has been evolving over the past 15+ years to meet the evolving\n    needs of Android. Its responsibilities, expectations, and complexity\n    have grown considerably during tha",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains the relevant VMA lookup and page insert/zap logic in both `use_page_slow` and `rust_shrink_free_page`. The vulnerable construct is present: the code stores only an address (`Inner { ... vma_addr: usize, }`) and later trusts a VMA returned by address lookup alone. In `register_with_vma`, it records only `inner.vma_addr = vma.start();` and does not store/validate VMA identity. In `use_page_slow`, it performs `mmap_read_lock().vma_lookup(vma_addr).ok_or(ESRCH)?.as_mixedmap_vma().ok_or(ESRCH)?.vm_insert_page(user_page_addr, &new_page)`; this checks only that some VMA currently exists at `vma_addr` and is a mixedmap VMA, but does not verify it is still the original Binder-owned VMA that was registered. Likewise, in the shrinker path `rust_shrink_free_page`, it does `if let Some(vma) = mmap_read.vma_lookup(vma_addr) { ... vma.zap_page_range_single(user_page_addr, PAGE_SIZE); }`, again acting on any VMA found at that address without confirming identity/ownership. This exactly matches the root cause: a closed/replaced VMA at the same address could receive Binder page inserts or zaps. No fix is present in this code—there is no stored original VMA object/identifier, no comparison against the originally registered VMA, and no Binder-specific ownership validation before `vm_insert_page` or `zap_page_range_single`."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4fc87c240b8f",
+          "anchor_file": "drivers/android/binder/page_range.rs",
+          "anchor_lineno": 722
+        },
+        "commit": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+        "commit_short": "eafedbc7c050",
+        "commit_msg": "rust_binder: add Rust Binder driver\n\nWe're generally not proponents of rewrites (nasty uncomfortable things\nthat make yo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/android/binder/page_range.rs",
+        "display_lineno": 722,
+        "code_snippet": "commit eafedbc7c050c44744fbdf80bdf3315e860b7513\nAuthor: Alice Ryhl <aliceryhl@google.com>\nDate:   Fri Sep 19 06:42:07 2025 +0000\n\n    rust_binder: add Rust Binder driver\n    \n    We're generally not proponents of rewrites (nasty uncomfortable things\n    that make you late for dinner!). So why rewrite Binder?\n    \n    Binder has been evolving over the past 15+ years to meet the evolving\n    needs of Android. Its responsibilities, expectations, and complexity\n    have grown considerably during tha",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains the full relevant VMA lookup and page insert/zap logic in both `use_page_slow` and `rust_shrink_free_page`. The vulnerable construct is present: the code stores only an address (`Inner { ... vma_addr: usize, }`), sets it in `register_with_vma` with `inner.vma_addr = vma.start();`, and later trusts a fresh VMA returned only by address lookup. In `use_page_slow`, it does `vma_lookup(vma_addr)...as_mixedmap_vma()...vm_insert_page(user_page_addr, &new_page)` with no verification that the returned VMA is still the original Binder-owned VMA. Likewise in `rust_shrink_free_page`, it does `if let Some(vma) = mmap_read.vma_lookup(vma_addr) { ... vma.zap_page_range_single(user_page_addr, PAGE_SIZE); }` again based only on `vma_addr`. This matches the root cause exactly: a closed/replaced VMA at the same address could be used for Binder page insertion or zapping. There is no fix present such as storing/verifying VMA identity, checking a Binder-specific association, or otherwise confirming that the looked-up VMA is the original registered one before acting on it."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "eafedbc7c050c44744fbdf80bdf3315e860b7513",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "eafedbc7c050c44744fbdf80bdf3315e860b7513": 4
+      },
+      "bic_candidates": [
+        "eafedbc7c050c44744fbdf80bdf3315e860b7513"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,383 @@
+{
+  "cveid": "CVE-2026-43007",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "2feec5ae5df785658924ab6bd91280dc3926507c"
+  ],
+  "ground_truth_bic": "129776ac2e38231fa9c02ce20e116c99de291666",
+  "predicted_bic": [
+    "129776ac2e38231fa9c02ce20e116c99de291666"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 84022,
+  "root_cause": {
+    "text": "The QAIC control path only freed DBC resources for `QAIC_TRANS_DEACTIVATE_FROM_DEV` in `qaic_manage_ioctl()` when the user process was still waiting, so if the owner exited early the deactivation response was dropped and the device/host DBC state became unsynchronized, leaving the DBC marked busy indefinitely.",
+    "evidence": "The patch adds handling in `resp_worker()` for deactivation transactions when `found` is false, and the commit message says that if “the user has gone away before receiving and handling the deactivation, the host will be out-of-sync with the DBCs available for use” and that `save_dbc_buf()` will hang waiting for `dbc[n]->in_use` to become false; it also changes `decode_deactivate()` to only act on `status` when `usr` is present, confirming the bug was in user-context-only cleanup.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/accel/qaic/qaic_control.c",
+      "lineno": 1422,
+      "content": "if (!found)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/accel/qaic/qaic_control.c",
+      "lineno": 1424,
+      "content": "kfree(msg);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/accel/qaic/qaic_control.c",
+      "lineno": 1426,
+      "content": "kfree(resp);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/accel/qaic/qaic_control.c",
+      "lineno": 1112,
+      "content": "if (!ret && !elem.buf)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/accel/qaic/qaic_control.c",
+      "lineno": 1113,
+      "content": "ret = -ETIMEDOUT;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The QAIC control path only freed DBC resources for `QAIC_TRANS_DEACTIVATE_FROM_DEV` in `qaic_manage_ioctl()` when the user process was still waiting, so if the owner exited early the deactivation response was dropped and the device/host DBC state became unsynchronized, leaving the DBC marked busy indefinitely.",
+      "evidence_points": "The patch adds handling in `resp_worker()` for deactivation transactions when `found` is false, and the commit message says that if “the user has gone away before receiving and handling the deactivation, the host will be out-of-sync with the DBCs available for use” and that `save_dbc_buf()` will hang waiting for `dbc[n]->in_use` to become false; it also changes `decode_deactivate()` to only act on `status` when `usr` is present, confirming the bug was in user-context-only cleanup."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/accel/qaic/qaic_control.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/accel/qaic/qaic_control.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/accel/qaic/qaic_control.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a NULL check before entering deactivate error handling to avoid acting on an absent user context.",
+        "what": "The condition guarding the error-handling block in `decode_deactivate()` was changed from `if (status)` to `if (usr && status)`, adding a check that `usr` is non-NULL before entering the block.",
+        "how": "At runtime, the error recovery path will now only run when both the user context pointer `usr` is valid and `status` indicates failure. This prevents dereferencing or acting on a missing user context during deactivate handling, avoiding unintended error handling when no user resource state is available."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle interrupted waits as success when the response has already been processed, preventing a spurious -ERESTARTSYS return.",
+        "what": "In msg_xfer(), after taking cntl_mutex and checking whether elem.list is still linked, a new else-if branch was added: if ret equals -ERESTARTSYS, ret is reset to 0. The existing timeout and unexpected-response checks that follow were left unchanged.",
+        "how": "This change treats an interrupted wait as successful when the response worker has already processed the response but the caller was awakened by a signal. It prevents msg_xfer() from propagating -ERESTARTSYS in that case and allows the function to continue returning the response status normally instead of reporting an interruption."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Preserve device-side deactivate handling in timed-out responses so DBC resources are released and later activations do not hang.",
+        "what": "The code changes the `if (!found)` block in `resp_worker()` from a single-line early drop of `msg` into a scoped block that first parses the received message: it reads `msg->hdr.count` and `msg->hdr.len`, iterates over the contained transactions, checks for `QAIC_TRANS_DEACTIVATE_FROM_DEV`, and calls `decode_deactivate(qdev, trans_hdr, &len, NULL)` for matching entries before finally freeing `msg`. The existing `kfree(msg);` remains, but is now preceded by this additional transaction scanning logic.",
+        "how": "When the response packet is no longer associated with an expected request, the worker now still inspects the message for device-originated deactivate transactions and processes them before discarding the packet. This allows DBC resources to be released on the host even if the user side has already gone away, preventing stale `in_use` state that could otherwise cause later `save_dbc_buf()` calls to hang waiting for a deactivation that will never be observed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a NULL check before entering deactivate error handling to avoid acting on an absent user context."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Handle interrupted waits as success when the response has already been processed, preventing a spurious -ERESTARTSYS return."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Preserve device-side deactivate handling in timed-out responses so DBC resources are released and later activations do not hang."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is about mishandling the deactivate path when the user process is no longer waiting/available, which leaves DBC state stuck busy. Adding a NULL check before deactivate error handling directly addresses this early-exit/absent-user-context case in the deactivate flow."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change targets the deactivation wait/response handling in qaic_manage_ioctl(), which is directly tied to the root cause where the response could be dropped if the owner exited early. Treating interrupted waits as success when the response was already processed addresses the same control-path synchronization issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly targets the described root cause: dropped deactivate responses causing DBC resources to remain busy indefinitely. Preserving device-side deactivate handling in timed-out responses would ensure the DBC state is released and kept in sync."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/accel/qaic/qaic_control.c",
+            "lineno": 1422,
+            "content": "if (!found)",
+            "rationale": "This condition gates whether the deactivate response is processed or dropped. In the vulnerable logic, a timed-out response from QAIC_TRANS_DEACTIVATE_FROM_DEV could be discarded when the waiting user process had already exited, preventing DBC cleanup and leaving the host/device DBC state unsynchronized and busy indefinitely."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/accel/qaic/qaic_control.c",
+            "lineno": 1424,
+            "content": "kfree(msg);",
+            "rationale": "This is the action taken when the response is treated as timed out and dropped. Dropping the deactivate packet here is the direct behavior that causes the device-side deactivate handling to be lost, so DBC resources are not released."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/accel/qaic/qaic_control.c",
+            "lineno": 1426,
+            "content": "kfree(resp);",
+            "rationale": "Freeing the response unconditionally after the timeout/drop path means the deactivate completion is not preserved for later handling. This contributes to the lost deactivation response that keeps DBC state busy."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/accel/qaic/qaic_control.c",
+            "lineno": 1112,
+            "content": "if (!ret && !elem.buf)",
+            "rationale": "This pre-fix wait-result check treated the operation as timed out when no buffer was present, even if the response had already been processed. That kind of premature timeout handling can cause the deactivation response path to be mishandled and dropped."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/accel/qaic/qaic_control.c",
+            "lineno": 1113,
+            "content": "ret = -ETIMEDOUT;",
+            "rationale": "Assigning a timeout here drives the code into the response-dropping path. For deactivate operations, that behavior is what allowed the DBC release response to be discarded instead of completing cleanup."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/accel/qaic/qaic_control.c",
+            "stmt_text": "if (!found)",
+            "location": "hunk",
+            "explanation": "This condition decides whether a deactivation response is handled or discarded. In the vulnerable logic, a missed/late response for QAIC_TRANS_DEACTIVATE_FROM_DEV could be dropped, preventing DBC resource release and leaving host/device DBC state out of sync."
+          },
+          {
+            "vuln_file": "drivers/accel/qaic/qaic_control.c",
+            "stmt_text": "kfree(msg);",
+            "location": "hunk",
+            "explanation": "This is the drop path for the timed-out response. When executed for a deactivate response, it discards the device-side deactivation handling, so DBC cleanup never occurs."
+          },
+          {
+            "vuln_file": "drivers/accel/qaic/qaic_control.c",
+            "stmt_text": "kfree(resp);",
+            "location": "hunk",
+            "explanation": "Freeing the response here completes the discard of the deactivate completion, preventing it from being preserved for later processing and contributing to the stuck busy DBC state."
+          },
+          {
+            "vuln_file": "drivers/accel/qaic/qaic_control.c",
+            "stmt_text": "if (!ret && !elem.buf)",
+            "location": "hunk",
+            "explanation": "This wait-result check can treat the operation as timed out even when the response was already processed, which can send deactivate handling down the wrong path and cause the response to be lost."
+          },
+          {
+            "vuln_file": "drivers/accel/qaic/qaic_control.c",
+            "stmt_text": "ret = -ETIMEDOUT;",
+            "location": "hunk",
+            "explanation": "This assignment forces the timeout/drop behavior. For deactivate operations, that leads to discarding the response instead of completing DBC cleanup."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45ebe43ea00d",
+          "anchor_file": "drivers/accel/qaic/qaic_control.c",
+          "anchor_lineno": 1422
+        },
+        "commit": "129776ac2e38231fa9c02ce20e116c99de291666",
+        "commit_short": "129776ac2e38",
+        "commit_msg": "accel/qaic: Add control path\n\nAdd the control path component that talks to the management processor (QSM)\nto load worklo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/accel/qaic/qaic_control.c",
+        "display_lineno": 1387,
+        "code_snippet": "commit 129776ac2e38231fa9c02ce20e116c99de291666\nAuthor: Jeff Hugo <jeff.hugo@oss.qualcomm.com>\nDate:   Mon Mar 27 09:54:53 2023 -0600\n\n    accel/qaic: Add control path\n    \n    Add the control path component that talks to the management processor (QSM)\n    to load workloads onto the AIC100 device. This implements the KMD portion\n    of the NNC protocol over the QAIC_CONTROL MHI channel and the\n    DRM_IOCTL_QAIC_MANAGE IOCTL to userspace. With this functionality, QAIC\n    clients are able to loa",
+        "exists": false,
+        "reason": "The shown function bodies already include the relevant deactivation-response handling. In `decode_deactivate()`, when the device replies with success, it explicitly calls `release_dbc(qdev, dbc_id);` and returns 0. When there is a device-side failure, it also re-enables the DBC with `enable_dbc(qdev, dbc_id, usr);` before returning `-ECANCELED`. The root cause described a missing resource release only when the user process was no longer waiting, but this snippet is the initial implementation and does not show the later buggy condition where deactivation responses were dropped only for waiting users. Instead, the control path’s response handling in `resp_worker()` and `msg_xfer()` is generic, and the deactivation decode path itself does the correct cleanup on success. Therefore the vulnerable construct is not present in this commit snippet, and the fix state cannot be identified as already present beyond the shown correct release logic."
+      }
+    },
+    {
+      "bic_found": "129776ac2e38231fa9c02ce20e116c99de291666",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45ebe43ea00d",
+          "anchor_file": "drivers/accel/qaic/qaic_control.c",
+          "anchor_lineno": 1424
+        },
+        "commit": "129776ac2e38231fa9c02ce20e116c99de291666",
+        "commit_short": "129776ac2e38",
+        "commit_msg": "accel/qaic: Add control path\n\nAdd the control path component that talks to the management processor (QSM)\nto load worklo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/accel/qaic/qaic_control.c",
+        "display_lineno": 1389,
+        "code_snippet": "commit 129776ac2e38231fa9c02ce20e116c99de291666\nAuthor: Jeff Hugo <jeff.hugo@oss.qualcomm.com>\nDate:   Mon Mar 27 09:54:53 2023 -0600\n\n    accel/qaic: Add control path\n    \n    Add the control path component that talks to the management processor (QSM)\n    to load workloads onto the AIC100 device. This implements the KMD portion\n    of the NNC protocol over the QAIC_CONTROL MHI channel and the\n    DRM_IOCTL_QAIC_MANAGE IOCTL to userspace. With this functionality, QAIC\n    clients are able to loa",
+        "exists": false,
+        "reason": "The shown file contains the control-path encode/decode logic, including deactivation handling, but this commit is the initial implementation and does not show the later buggy behavior described in the root cause. In particular, `decode_deactivate()` already frees device-side DBC state on a successful response: `if (status) { enable_dbc(qdev, dbc_id, usr); return -ECANCELED; } release_dbc(qdev, dbc_id);`. The root cause says resources were only freed when the user process was still waiting and the deactivation response was dropped if the owner exited early, but that timing/ownership bug is not visible in this function body. The file also has `qaic_release_usr()` sending `QAIC_TRANS_TERMINATE_TO_DEV` on user release, indicating a separate cleanup path exists in this commit. Based on this snippet alone, there is no direct evidence of the vulnerable construct being present here, and the later fix cannot be seen because this is the initial add-control-path commit."
+      }
+    },
+    {
+      "bic_found": "129776ac2e38231fa9c02ce20e116c99de291666",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45ebe43ea00d",
+          "anchor_file": "drivers/accel/qaic/qaic_control.c",
+          "anchor_lineno": 1426
+        },
+        "commit": "129776ac2e38231fa9c02ce20e116c99de291666",
+        "commit_short": "129776ac2e38",
+        "commit_msg": "accel/qaic: Add control path\n\nAdd the control path component that talks to the management processor (QSM)\nto load worklo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/accel/qaic/qaic_control.c",
+        "display_lineno": 1391,
+        "code_snippet": "commit 129776ac2e38231fa9c02ce20e116c99de291666\nAuthor: Jeff Hugo <jeff.hugo@oss.qualcomm.com>\nDate:   Mon Mar 27 09:54:53 2023 -0600\n\n    accel/qaic: Add control path\n    \n    Add the control path component that talks to the management processor (QSM)\n    to load workloads onto the AIC100 device. This implements the KMD portion\n    of the NNC protocol over the QAIC_CONTROL MHI channel and the\n    DRM_IOCTL_QAIC_MANAGE IOCTL to userspace. With this functionality, QAIC\n    clients are able to loa",
+        "exists": false,
+        "reason": "The shown function bodies already include the deactivation response handling path, and nothing in this new control-path code shows the specific bug root cause described. In particular, `decode_deactivate()` handles a successful device response by calling `release_dbc(qdev, dbc_id);` and on device error it re-enables the DBC with `enable_dbc(qdev, dbc_id, usr); return -ECANCELED;`. The user-exit/owner-lost scenario is not visible in this snippet as a missing cleanup branch in `qaic_manage_ioctl()`; instead, the actual ioctl path only copies results back to userspace (`if (ret == -ECANCELED || !ret) { ... copy_to_user(...) }`) and does not itself show the special-case logic that would leak DBC state. Since the vulnerable construct is specifically \"only freed DBC resources for QAIC_TRANS_DEACTIVATE_FROM_DEV in qaic_manage_ioctl() when the user process was still waiting,\" and this code does not contain that incomplete handling, `has_bug` is false. Because the buggy construct is absent, there is also no fix to detect here, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "129776ac2e38231fa9c02ce20e116c99de291666",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45ebe43ea00d",
+          "anchor_file": "drivers/accel/qaic/qaic_control.c",
+          "anchor_lineno": 1112
+        },
+        "commit": "129776ac2e38231fa9c02ce20e116c99de291666",
+        "commit_short": "129776ac2e38",
+        "commit_msg": "accel/qaic: Add control path\n\nAdd the control path component that talks to the management processor (QSM)\nto load worklo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/accel/qaic/qaic_control.c",
+        "display_lineno": 1073,
+        "code_snippet": "commit 129776ac2e38231fa9c02ce20e116c99de291666\nAuthor: Jeff Hugo <jeff.hugo@oss.qualcomm.com>\nDate:   Mon Mar 27 09:54:53 2023 -0600\n\n    accel/qaic: Add control path\n    \n    Add the control path component that talks to the management processor (QSM)\n    to load workloads onto the AIC100 device. This implements the KMD portion\n    of the NNC protocol over the QAIC_CONTROL MHI channel and the\n    DRM_IOCTL_QAIC_MANAGE IOCTL to userspace. With this functionality, QAIC\n    clients are able to loa",
+        "exists": false,
+        "reason": "The provided code does show the relevant control-path deactivation handling, but it does not contain the vulnerable construct described in the root cause. The key logic is in `decode_deactivate()`, where a successful device response calls `release_dbc(qdev, dbc_id);` and a failed response re-enables the DBC with `enable_dbc(qdev, dbc_id, usr);`. The user-facing ioctl path in this commit (`qaic_manage_ioctl()` and `qaic_manage()`) always decodes the response returned by `msg_xfer()`, and `qaic_release_usr()` separately sends a terminate message on user release. There is no shown code that conditionally frees DBC resources only if the user is still waiting, nor any special handling for a dropped `QAIC_TRANS_DEACTIVATE_FROM_DEV` response due to early owner exit. Because the vulnerable synchronization bug is absent from this initial add-control-path commit, `has_bug` is false and there is no fix already present to mark as fixed."
+      }
+    },
+    {
+      "bic_found": "129776ac2e38231fa9c02ce20e116c99de291666",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45ebe43ea00d",
+          "anchor_file": "drivers/accel/qaic/qaic_control.c",
+          "anchor_lineno": 1113
+        },
+        "commit": "129776ac2e38231fa9c02ce20e116c99de291666",
+        "commit_short": "129776ac2e38",
+        "commit_msg": "accel/qaic: Add control path\n\nAdd the control path component that talks to the management processor (QSM)\nto load worklo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/accel/qaic/qaic_control.c",
+        "display_lineno": 1074,
+        "code_snippet": "commit 129776ac2e38231fa9c02ce20e116c99de291666\nAuthor: Jeff Hugo <jeff.hugo@oss.qualcomm.com>\nDate:   Mon Mar 27 09:54:53 2023 -0600\n\n    accel/qaic: Add control path\n    \n    Add the control path component that talks to the management processor (QSM)\n    to load workloads onto the AIC100 device. This implements the KMD portion\n    of the NNC protocol over the QAIC_CONTROL MHI channel and the\n    DRM_IOCTL_QAIC_MANAGE IOCTL to userspace. With this functionality, QAIC\n    clients are able to loa",
+        "exists": false,
+        "reason": "The shown code already handles deactivation responses in the control path, but it does not exhibit the specific vulnerable construct described. In this commit, the relevant logic is in `decode_deactivate()`: `if (status) { ... enable_dbc(qdev, dbc_id, usr); return -ECANCELED; } release_dbc(qdev, dbc_id);`. This means a successful `QAIC_TRANS_DEACTIVATE_FROM_DEV` response explicitly calls `release_dbc()`, so the \"only freed DBC resources when the user process was still waiting\" root cause is not present in this snippet. The user-exit path also has `qaic_release_usr()` sending `QAIC_TRANS_TERMINATE_TO_DEV` and waiting with `msg_xfer(..., true)`, which indicates the control path was designed to clean up on release rather than leaving the DBC busy indefinitely. Because the vulnerable construct is absent here, `has_bug` is false, and there is no evidence of a later fix in this same commit body."
+      }
+    },
+    {
+      "bic_found": "129776ac2e38231fa9c02ce20e116c99de291666",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "129776ac2e38231fa9c02ce20e116c99de291666": 5
+      },
+      "bic_candidates": [
+        "129776ac2e38231fa9c02ce20e116c99de291666"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

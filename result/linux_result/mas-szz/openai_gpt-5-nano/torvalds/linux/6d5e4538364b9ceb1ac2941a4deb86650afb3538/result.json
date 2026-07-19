@@ -1,0 +1,497 @@
+{
+  "cveid": "CVE-2026-23450",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6d5e4538364b9ceb1ac2941a4deb86650afb3538"
+  ],
+  "ground_truth_bic": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+  "predicted_bic": [
+    "8270d9c21041470f58348248b9d9dcf3bf79592e",
+    "341adeec9adad0874f29a0a1af35638207352a39",
+    "ddcc9b7feb451c5c8145d11879a6585a4ddd317d",
+    "0558226cebee256aa3f8ec0cc5a800a10bf120a6"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 46,
+  "llm_tokens": 39321,
+  "root_cause": {
+    "text": "smc_tcp_syn_recv_sock() locklessly dereferenced clcsock->sk_user_data to obtain an smc_sock without RCU or taking a stable reference, even though the close path can concurrently clear sk_user_data and free the independent smc_sock object.",
+    "evidence": "The CVE/commit states that smc_tcp_syn_recv_sock() “reads sk_user_data to get the smc_sock pointer,” while smc_close_active() concurrently “sets clcsock->sk_user_data to NULL” and “the smc_sock itself can be freed,” causing “NULL pointer dereference” and “use-after-free”; the patch adds rcu_read_lock(), rcu_dereference via smc_clcsock_user_data_rcu(), refcount_inc_not_zero(&smc->sk.sk_refcnt), RCU assignment helpers for sk_user_data, and SOCK_RCU_FREE to make that access safe.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/smc/af_smc.c",
+      "lineno": 134,
+      "content": "smc = smc_clcsock_user_data(sk);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/smc.h",
+      "lineno": 346,
+      "content": "((uintptr_t)clcsk->sk_user_data & ~SK_USER_DATA_NOCOPY);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/smc_close.c",
+      "lineno": 221,
+      "content": "smc->clcsock->sk->sk_user_data = NULL;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/af_smc.c",
+      "lineno": 257,
+      "content": "clcsk->sk_user_data = NULL;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "smc_tcp_syn_recv_sock() locklessly dereferenced clcsock->sk_user_data to obtain an smc_sock without RCU or taking a stable reference, even though the close path can concurrently clear sk_user_data and free the independent smc_sock object.",
+      "evidence_points": "The CVE/commit states that smc_tcp_syn_recv_sock() “reads sk_user_data to get the smc_sock pointer,” while smc_close_active() concurrently “sets clcsock->sk_user_data to NULL” and “the smc_sock itself can be freed,” causing “NULL pointer dereference” and “use-after-free”; the patch adds rcu_read_lock(), rcu_dereference via smc_clcsock_user_data_rcu(), refcount_inc_not_zero(&smc->sk.sk_refcnt), RCU assignment helpers for sk_user_data, and SOCK_RCU_FREE to make that access safe."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/smc/af_smc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/smc/af_smc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/smc/af_smc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/smc/af_smc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/smc/af_smc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "net/smc/af_smc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 6,
+        "file_path": "net/smc/smc.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 7,
+        "file_path": "net/smc/smc_close.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect SMC socket lookup with RCU and a live refcount grab so SYN receive handling drops connections instead of using a concurrently freed socket.",
+        "what": "The code replaces a direct call to smc_clcsock_user_data(sk) with an RCU-protected lookup using rcu_read_lock(), smc_clcsock_user_data_rcu(sk), and rcu_read_unlock(), and adds a check that the returned smc pointer is non-NULL and that refcount_inc_not_zero(&smc->sk.sk_refcnt) succeeds; if either check fails, it unlocks RCU, sets smc to NULL, and jumps to the drop path.",
+        "how": "At runtime, this makes retrieval of the smc socket from the listener socket safe against concurrent teardown by ensuring the pointer is read under RCU protection and the object is only used if its reference count can be successfully acquired. It prevents use-after-free or dereference of an invalid socket structure during SYN receive processing, and drops the request when the backing smc socket is no longer available."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the smc socket reference on both success and drop paths to fix a socket reference leak while safely handling a null smc pointer.",
+        "what": "A call to sock_put(&smc->sk) was added before returning the child socket on the successful path, and a conditional sock_put(&smc->sk) was added in the drop error path before returning NULL.",
+        "how": "This decrements the reference count of the smc socket object in both success and failure cases, preventing a leaked socket reference and ensuring the socket is properly released when no longer needed; the null check in the drop path avoids dereferencing smc when it is absent."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use rcu_assign_sk_user_data() to clear sk_user_data safely when restoring SMC fallback callbacks.",
+        "what": "The assignment of clcsk->sk_user_data to NULL inside smc_fback_restore_callbacks() was replaced with a call to rcu_assign_sk_user_data(clcsk, NULL), while the surrounding callback lock and callback restoration code remain unchanged.",
+        "how": "At runtime, clearing the socket's user-data pointer now uses the kernel helper intended for RCU-safe updates instead of a plain direct store, ensuring the pointer is reset with the proper synchronization semantics for readers that may access sk_user_data concurrently."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the RCU-aware helper to assign sk_user_data with SK_USER_DATA_NOCOPY instead of manually storing the flagged pointer.",
+        "what": "The direct assignment of clcsk->sk_user_data using a casted pointer ORed with SK_USER_DATA_NOCOPY was replaced with a call to __rcu_assign_sk_user_data_with_flags(clcsk, smc, SK_USER_DATA_NOCOPY).",
+        "how": "At runtime, the socket user-data pointer and its associated flag are now set through the kernel helper that performs the assignment with the expected RCU-aware semantics instead of manually encoding and storing the value, improving correctness and safety of callback-related socket metadata updates."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the RCU-aware helper to assign `sk_user_data` with `SK_USER_DATA_NOCOPY` instead of manually encoding the flagged pointer.",
+        "what": "The code replaces a direct assignment to `smc->clcsock->sk->sk_user_data` that manually cast `smc` to `uintptr_t` and ORed it with `SK_USER_DATA_NOCOPY` with a call to `__rcu_assign_sk_user_data_with_flags(smc->clcsock->sk, smc, SK_USER_DATA_NOCOPY)`.",
+        "how": "At runtime, the socket's `sk_user_data` is now set through the kernel helper that performs flagged user-data assignment using the expected RCU-aware mechanism instead of open-coding the bitwise pointer assignment, preserving the same association while using the proper API semantics."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Make SMC listen socket user-data and lifetime management RCU-safe by using RCU assignment for `sk_user_data` and enabling RCU-based socket freeing.",
+        "what": "The change replaces the direct assignment `smc->clcsock->sk->sk_user_data = NULL;` with `rcu_assign_sk_user_data(smc->clcsock->sk, NULL);` inside the callback lock section, and adds a new call `sock_set_flag(sk, SOCK_RCU_FREE);` before initializing the listening socket backlog and state.",
+        "how": "Using `rcu_assign_sk_user_data()` updates `sk_user_data` with RCU-safe semantics instead of a plain store, and setting `SOCK_RCU_FREE` marks the socket for RCU-based freeing; together these changes make socket user-data clearing and socket lifetime handling safe for concurrent RCU readers during listen setup and error handling."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 6,
+        "change_category": "guard",
+        "intent_summary": "Add an RCU-safe helper for accessing clcsock sk_user_data to prevent unsafe reads of the socket user-data pointer.",
+        "what": "A new static inline helper function named smc_clcsock_user_data_rcu(const struct sock *clcsk) was added, returning a struct smc_sock * by calling rcu_dereference_sk_user_data(clcsk).",
+        "how": "This introduces an RCU-safe accessor for clcsk->sk_user_data, enabling callers to read that socket user-data pointer with the proper synchronization semantics instead of using the existing direct bit-masking accessor."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 7,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the RCU-safe helper to clear `sk_user_data` during active SMC socket close to avoid unsafe concurrent pointer updates.",
+        "what": "The code replaces a direct assignment to `smc->clcsock->sk->sk_user_data = NULL` with a call to `rcu_assign_sk_user_data(smc->clcsock->sk, NULL)` while leaving the surrounding callback lock and shutdown logic unchanged.",
+        "how": "At runtime, clearing the socket's `sk_user_data` now uses the kernel helper intended for RCU-safe updates, ensuring the pointer is reset with the proper synchronization semantics instead of a plain store, which helps prevent races or unsafe concurrent access by readers."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Release the smc socket reference on both success and drop paths to fix a socket reference leak while safely handling a null smc pointer."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Make SMC listen socket user-data and lifetime management RCU-safe by using RCU assignment for `sk_user_data` and enabling RCU-based socket freeing."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add an RCU-safe helper for accessing clcsock sk_user_data to prevent unsafe reads of the socket user-data pointer."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use the RCU-safe helper to clear `sk_user_data` during active SMC socket close to avoid unsafe concurrent pointer updates."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Safely manage SMC socket lifetime during SYN receive handling by acquiring a protected live reference and releasing it on all paths to prevent use-after-free and reference leaks.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Make SMC socket user-data assignment and cleanup RCU-safe, including using RCU-aware sk_user_data helpers and enabling RCU-based socket lifetime management.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by replacing the unsafe lockless sk_user_data dereference with protected lookup/ref acquisition during SYN receive handling, preventing use-after-free when close concurrently clears and frees the smc_sock, and by releasing that reference on all paths."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The root cause is unsafe concurrent access to clcsock->sk_user_data and freeing of the associated smc_sock. These changes directly address that by making sk_user_data assignment/clearing RCU-safe and enabling RCU-based socket lifetime management, which is specifically aimed at preventing the lockless use-after-free race described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause is an unsafe lockless dereference of clcsock->sk_user_data without RCU or a stable reference. This group directly addresses that by adding an RCU-safe helper for accessing sk_user_data, which matches the vulnerability mechanism."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The root cause is a race around concurrent access to clcsock->sk_user_data during close. This change specifically makes clearing sk_user_data in the active SMC close path RCU-safe, directly addressing the unsafe concurrent pointer update involved in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/smc/af_smc.c",
+            "lineno": 134,
+            "content": "smc = smc_clcsock_user_data(sk);",
+            "rationale": "This is the direct unsafe lookup: it locklessly dereferences clcsock->sk_user_data to obtain the smc_sock without RCU protection or taking a live reference, enabling use-after-free when close concurrently clears sk_user_data and frees the smc_sock."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "net/smc/smc.h",
+            "lineno": 346,
+            "content": "((uintptr_t)clcsk->sk_user_data & ~SK_USER_DATA_NOCOPY);",
+            "rationale": "This helper implementation directly reads sk_user_data without any RCU read-side protection, embodying the root cause behind the unsafe pointer acquisition used by smc_tcp_syn_recv_sock()."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/smc/af_smc.c",
+            "lineno": 257,
+            "content": "clcsk->sk_user_data = NULL;",
+            "rationale": "This close/cleanup-side plain store clears sk_user_data without RCU-aware synchronization, allowing concurrent lockless readers to race with pointer invalidation and subsequent smc_sock freeing."
+          },
+          {
+            "hunk_index": 7,
+            "file_path": "net/smc/smc_close.c",
+            "lineno": 221,
+            "content": "smc->clcsock->sk->sk_user_data = NULL;",
+            "rationale": "This active close path clears sk_user_data with a non-RCU store while readers may access it locklessly, contributing to the race that makes the dereferenced smc_sock pointer stale and freed."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/smc/af_smc.c",
+            "stmt_text": "smc = smc_clcsock_user_data(sk);",
+            "location": "hunk",
+            "explanation": "This is the direct vulnerable read in smc_tcp_syn_recv_sock(): it obtains the smc_sock from clcsock->sk_user_data without RCU protection or a stable reference, matching the root cause of a concurrent close clearing sk_user_data and freeing the smc_sock."
+          },
+          {
+            "vuln_file": "net/smc/smc.h",
+            "stmt_text": "((uintptr_t)clcsk->sk_user_data & ~SK_USER_DATA_NOCOPY);",
+            "location": "hunk",
+            "explanation": "This helper code performs the underlying unsafe raw read of sk_user_data without RCU read-side protection, enabling callers such as smc_tcp_syn_recv_sock() to retrieve a potentially stale smc_sock pointer."
+          },
+          {
+            "vuln_file": "net/smc/smc_close.c",
+            "stmt_text": "smc->clcsock->sk->sk_user_data = NULL;",
+            "location": "hunk",
+            "explanation": "This close-path non-RCU store clears sk_user_data concurrently with lockless readers, creating the race window in which smc_tcp_syn_recv_sock() can observe or dereference a stale pointer before the smc_sock is freed."
+          },
+          {
+            "vuln_file": "net/smc/af_smc.c",
+            "stmt_text": "clcsk->sk_user_data = NULL;",
+            "location": "hunk",
+            "explanation": "This plain store also clears sk_user_data without RCU-aware synchronization, contributing to the same concurrent invalidation race against lockless readers of sk_user_data."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 134
+        },
+        "commit": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+        "commit_short": "8270d9c21041",
+        "commit_msg": "net/smc: Limit backlog connections\n\nCurrent implementation does not handling backlog semantics, one\npotential risk is th",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 85,
+        "code_snippet": "commit 8270d9c21041470f58348248b9d9dcf3bf79592e\nAuthor: D. Wythe <alibuda@linux.alibaba.com>\nDate:   Thu Feb 10 17:11:35 2022 +0800\n\n    net/smc: Limit backlog connections\n    \n    Current implementation does not handling backlog semantics, one\n    potential risk is that server will be flooded by infinite amount\n    connections, even if client was SMC-incapable.\n    \n    This patch works to put a limit on backlog connections, referring to the\n    TCP implementation, we divides SMC connections in",
+        "exists": true,
+        "reason": "The diff is sufficient because it includes the full body of the newly introduced function `smc_tcp_syn_recv_sock()`, which is exactly where the root-cause pattern must be checked. In that function, the code does `smc = smc_clcsock_user_data(sk);` and then immediately dereferences `smc` in `atomic_read(&smc->queued_smc_hs)`, `sk_acceptq_is_full(&smc->sk)`, and `smc->ori_af_ops->syn_recv_sock(...)`. There is no visible RCU read-side critical section, no locking around `sk->sk_user_data`, and no stable reference acquisition for the returned `smc_sock`. This matches the stated root cause: lockless dereference of `clcsock->sk_user_data` to obtain an `smc_sock` that may be concurrently cleared/freed by close. The code shown does not contain any fix such as `rcu_dereference*`, `rcu_read_lock()`, or refcounting before use. Therefore the vulnerable construct is present and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3079e342d265",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 85
+        },
+        "commit": "f16a7dd5cf27eeda187425c9c7d96802a549f9c4",
+        "commit_short": "f16a7dd5cf27",
+        "commit_msg": "smc: netlink interface for SMC sockets\n\nSupport for SMC socket monitoring via netlink sockets of protocol\nNETLINK_SOCK_D",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 68,
+        "code_snippet": "commit f16a7dd5cf27eeda187425c9c7d96802a549f9c4\nAuthor: Ursula Braun <ubraun@linux.vnet.ibm.com>\nDate:   Mon Jan 9 16:55:26 2017 +0100\n\n    smc: netlink interface for SMC sockets\n    \n    Support for SMC socket monitoring via netlink sockets of protocol\n    NETLINK_SOCK_DIAG.\n    \n    Signed-off-by: Ursula Braun <ubraun@linux.vnet.ibm.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/smc/af_smc.c b/net/smc/af_smc.c\nindex 3f543d58bc5c..5d4208ad029e 100644\n--- a/net/s",
+        "exists": false,
+        "reason": "The provided function body only shows hash insertion logic: it takes `h = sk->sk_prot->h.smc_hash`, locks `h->lock`, calls `sk_add_node(sk, head)`, updates protocol usage, and unlocks. It does not reference `clcsock->sk_user_data`, does not obtain an `smc_sock`, and does not show `smc_tcp_syn_recv_sock()` or any close-path concurrency handling. Since the stated root cause is specifically about lockless dereference of `clcsock->sk_user_data` without RCU/refcounting, this snippet lacks the relevant logic needed to determine vulnerability or fix status."
+      }
+    },
+    {
+      "bic_found": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/smc.h",
+          "anchor_lineno": 346
+        },
+        "commit": "341adeec9adad0874f29a0a1af35638207352a39",
+        "commit_short": "341adeec9ada",
+        "commit_msg": "net/smc: Forward wakeup to smc socket waitqueue after fallback\n\nWhen we replace TCP with SMC and a fallback occurs, ther",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/smc.h",
+        "display_lineno": 282,
+        "code_snippet": "commit 341adeec9adad0874f29a0a1af35638207352a39\nAuthor: Wen Gu <guwen@linux.alibaba.com>\nDate:   Wed Jan 26 23:33:04 2022 +0800\n\n    net/smc: Forward wakeup to smc socket waitqueue after fallback\n    \n    When we replace TCP with SMC and a fallback occurs, there may be\n    some socket waitqueue entries remaining in smc socket->wq, such\n    as eppoll_entries inserted by userspace applications.\n    \n    After the fallback, data flows over TCP/IP and only clcsocket->wq\n    will be woken up. Applica",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the complete accessor logic used to obtain the smc_sock from clcsk->sk_user_data. The function directly returns `((uintptr_t)clcsk->sk_user_data & ~SK_USER_DATA_NOCOPY)` cast to `struct smc_sock *`, with no RCU read-side protection, no refcount acquisition, and no other stabilization of the pointed object. This matches the root cause: a lockless dereference of `clcsk->sk_user_data` to obtain an `smc_sock` even though another path may concurrently clear `sk_user_data` and free the independent `smc_sock`. Therefore the vulnerable construct is present, and the fix is not present in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "6449520391df",
+          "anchor_file": "net/smc/smc.h",
+          "anchor_lineno": 282
+        },
+        "commit": "0cfdd8f92cac01afbb12e4500514036a2b78756b",
+        "commit_short": "0cfdd8f92cac",
+        "commit_msg": "smc: connection and link group creation\n\n* create smc_connection for SMC-sockets\n* determine suitable link group for a c",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/smc.h",
+        "display_lineno": 66,
+        "code_snippet": "commit 0cfdd8f92cac01afbb12e4500514036a2b78756b\nAuthor: Ursula Braun <ubraun@linux.vnet.ibm.com>\nDate:   Mon Jan 9 16:55:17 2017 +0100\n\n    smc: connection and link group creation\n    \n    * create smc_connection for SMC-sockets\n    * determine suitable link group for a connection\n    * create a new link group if necessary\n    \n    Signed-off-by: Ursula Braun <ubraun@linux.vnet.ibm.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/smc/smc.h b/net/smc/smc.h\nindex 594",
+        "exists": false,
+        "reason": "The provided function body is a small helper that converts/copies 3 bytes of a host value into `net`: `t = cpu_to_be32(host);` and `memcpy(net, ((u8 *)&t) + 1, 3);`. It does not reference `smc_tcp_syn_recv_sock()`, `clcsock`, `sk_user_data`, `smc_sock`, locking, RCU, or refcounting. Since the vulnerable construct described in the root cause is completely absent from this function body, this snippet does not contain the bug. It also does not show any corresponding fix for the `sk_user_data` dereference issue."
+      }
+    },
+    {
+      "bic_found": "341adeec9adad0874f29a0a1af35638207352a39",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/smc_close.c",
+          "anchor_lineno": 221
+        },
+        "commit": "ddcc9b7feb451c5c8145d11879a6585a4ddd317d",
+        "commit_short": "ddcc9b7feb45",
+        "commit_msg": "net/smc: check variable before dereferencing in smc_close.c\n\nsmc->clcsock and smc->clcsock->sk are used before the check",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/smc_close.c",
+        "display_lineno": 214,
+        "code_snippet": "commit ddcc9b7feb451c5c8145d11879a6585a4ddd317d\nAuthor: Karsten Graul <kgraul@linux.ibm.com>\nDate:   Tue Sep 15 22:57:09 2020 +0200\n\n    net/smc: check variable before dereferencing in smc_close.c\n    \n    smc->clcsock and smc->clcsock->sk are used before the check if they can\n    be dereferenced. Fix this by checking the variables first.\n    \n    Fixes: a60a2b1e0af1 (\"net/smc: reduce active tcp_listen workers\")\n    Reported-by: kernel test robot <lkp@intel.com>\n    Reported-by: Dan Carpenter <d",
+        "exists": false,
+        "reason": "The diff shows the relevant logic in `smc_close_active()` clearly enough to decide. The bug addressed by this commit is dereferencing `smc->clcsock->sk` before checking it. In the pre-change code, `smc->clcsock->sk->sk_data_ready = smc->clcsk_data_ready;` and `smc->clcsock->sk->sk_user_data = NULL;` occur before any null check, while only `kernel_sock_shutdown()` was guarded by `if (smc->clcsock && smc->clcsock->sk)`. In this commit version, those dereferences were moved inside the guard: `if (smc->clcsock && smc->clcsock->sk) { smc->clcsock->sk->sk_data_ready = ...; smc->clcsock->sk->sk_user_data = NULL; rc = kernel_sock_shutdown(...); }`. Therefore the vulnerable construct described by this commit message is no longer present, and the function already contains the fix."
+      }
+    },
+    {
+      "bic_found": "ddcc9b7feb451c5c8145d11879a6585a4ddd317d",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 257
+        },
+        "commit": "0558226cebee256aa3f8ec0cc5a800a10bf120a6",
+        "commit_short": "0558226cebee",
+        "commit_msg": "net/smc: Fix slab-out-of-bounds issue in fallback\n\nsyzbot reported a slab-out-of-bounds/use-after-free issue,\nwhich was ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 251,
+        "code_snippet": "commit 0558226cebee256aa3f8ec0cc5a800a10bf120a6\nAuthor: Wen Gu <guwen@linux.alibaba.com>\nDate:   Fri Apr 22 15:56:19 2022 +0800\n\n    net/smc: Fix slab-out-of-bounds issue in fallback\n    \n    syzbot reported a slab-out-of-bounds/use-after-free issue,\n    which was caused by accessing an already freed smc sock in\n    fallback-specific callback functions of clcsock.\n    \n    This patch fixes the issue by restoring fallback-specific\n    callback functions to original ones and resetting clcsock\n    ",
+        "exists": false,
+        "reason": "The provided function body is sufficient to evaluate the specific root-cause condition because it shows the close/teardown-side handling of `sk_user_data`. In this snippet, the code takes `write_lock_bh(&clcsk->sk_callback_lock);` and then clears the pointer with `clcsk->sk_user_data = NULL;` before restoring callbacks. The stated vulnerability root cause is in `smc_tcp_syn_recv_sock()`, which 'locklessly dereferenced clcsock->sk_user_data ... without RCU or taking a stable reference'. That vulnerable dereference is not present anywhere in this function body. This snippet only shows the concurrent clearing side, not the unsafe reader. Therefore the vulnerable construct is absent here, so `has_bug` is false. Likewise, the fix for the root cause would be in the reader (`smc_tcp_syn_recv_sock()`) adding proper synchronization/reference handling; no such fix is shown in this function, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "0558226cebee256aa3f8ec0cc5a800a10bf120a6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "8270d9c21041470f58348248b9d9dcf3bf79592e": 1,
+        "341adeec9adad0874f29a0a1af35638207352a39": 1,
+        "ddcc9b7feb451c5c8145d11879a6585a4ddd317d": 1,
+        "0558226cebee256aa3f8ec0cc5a800a10bf120a6": 1
+      },
+      "bic_candidates": [
+        "8270d9c21041470f58348248b9d9dcf3bf79592e",
+        "341adeec9adad0874f29a0a1af35638207352a39",
+        "ddcc9b7feb451c5c8145d11879a6585a4ddd317d",
+        "0558226cebee256aa3f8ec0cc5a800a10bf120a6"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

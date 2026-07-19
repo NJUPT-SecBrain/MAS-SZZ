@@ -1,0 +1,373 @@
+{
+  "cveid": "CVE-2026-23466",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "01f2557aa684e514005541e71a3d01f4cd45c170"
+  ],
+  "ground_truth_bic": "919bb54e989c1edef87e9797be125c94c450fc65",
+  "predicted_bic": [
+    "919bb54e989c1edef87e9797be125c94c450fc65"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 28297,
+  "root_cause": {
+    "text": "GGTT MMIO access protection relied solely on `drm_dev_enter()` hotplug mechanism, which is not invoked during failed driver load scenarios, and devm release functions cannot guarantee all asynchronous BO freeing completes before GGTT MMIO region teardown, leaving a race condition window where MMIO access occurs after the region is invalidated.",
+    "evidence": "The CVE description explicitly states two failure modes: (1) \"if driver load fails, this protection is insufficient because drm_dev_unplug() is never called,\" and (2) \"devm release functions cannot guarantee that all BOs with GGTT mappings are destroyed before the GGTT MMIO region is removed, as some BOs may be freed asynchronously by worker threads.\" The patch replaces the `drm_dev_enter()/drm_dev_exit()` calls in `ggtt_node_remove()` with an explicit `XE_GGTT_FLAGS_ONLINE` flag protected by `ggtt->lock`, which is cleared in `dev_fini_ggtt()` before `drain_workqueue()` is called, ensuring MMIO access is disabled before asynchronous workers can execute.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 417,
+      "content": "bound = drm_dev_enter(&xe->drm, &idx);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 421,
+      "content": "xe_ggtt_clear(ggtt, node->base.start, node->base.size);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 420,
+      "content": "if (bound)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "GGTT MMIO access protection relied solely on `drm_dev_enter()` hotplug mechanism, which is not invoked during failed driver load scenarios, and devm release functions cannot guarantee all asynchronous BO freeing completes before GGTT MMIO region teardown, leaving a race condition window where MMIO access occurs after the region is invalidated.",
+      "evidence_points": "The CVE description explicitly states two failure modes: (1) \"if driver load fails, this protection is insufficient because drm_dev_unplug() is never called,\" and (2) \"devm release functions cannot guarantee that all BOs with GGTT mappings are destroyed before the GGTT MMIO region is removed, as some BOs may be freed asynchronously by worker threads.\" The patch replaces the `drm_dev_enter()/drm_dev_exit()` calls in `ggtt_node_remove()` with an explicit `XE_GGTT_FLAGS_ONLINE` flag protected by `ggtt->lock`, which is cleared in `dev_fini_ggtt()` before `drain_workqueue()` is called, ensuring MMIO access is disabled before asynchronous workers can execute."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt_types.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Protect ggtt->flags modification with mutex lock during device finalization to prevent race conditions.",
+        "what": "Added a scoped_guard mutex lock around a bitwise AND assignment that clears the XE_GGTT_FLAGS_ONLINE flag in the ggtt->flags field, placed before the drain_workqueue call.",
+        "how": "This change ensures that modifications to ggtt->flags are protected by the ggtt->lock mutex during device finalization. The scoped_guard automatically acquires the lock for the duration of the flag update, preventing concurrent access to the flags field and ensuring the ONLINE flag is safely cleared before workqueue draining begins."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Mark GGTT as online before registering its cleanup handler to ensure correct initialization state during device lifecycle management.",
+        "what": "Added a single line that sets the XE_GGTT_FLAGS_ONLINE flag in ggtt->flags immediately before calling devm_add_action_or_reset().",
+        "how": "This change marks the GGTT (Graphics Global Translation Table) as online/initialized before registering its cleanup handler. This ensures that the GGTT is flagged as operational before the deferred cleanup action is registered, preventing potential issues where cleanup code might execute on an uninitialized or incorrectly-marked GGTT state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Simplify GGTT node removal by replacing drm_dev_enter() with direct flag check and reorder mutex locking.",
+        "what": "Removed local variables `xe` and `idx`, removed the `drm_dev_enter()` call, moved `mutex_lock()` before the `bound` assignment, and replaced the `drm_dev_enter()` result with a direct flag check `ggtt->flags & XE_GGTT_FLAGS_ONLINE`.",
+        "how": "The change simplifies the bound state detection by replacing a runtime device entry check with a direct flag inspection. This eliminates the need for device reference tracking and the associated index variable, while moving the mutex lock earlier in the function. The functional behavior is preserved: `bound` is still set to indicate whether the GGTT is online before conditionally clearing it."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove unbalanced drm_dev_exit() call that was incorrectly paired with a device entry operation in GGTT node removal.",
+        "what": "Removed two lines: a call to drm_dev_exit(idx) and a blank line that followed it, located before the free_node label in the ggtt_node_remove function.",
+        "how": "This removal eliminates a device exit operation that was being performed during GGTT node removal. The drm_dev_exit(idx) call was decrementing a reference count or exiting a device context that was presumably entered earlier. Without this call, the corresponding device entry point is no longer balanced, which could lead to resource leaks or incorrect device state tracking if the entry was made elsewhere in the code path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "other",
+        "intent_summary": "Add XE_GGTT_FLAGS_ONLINE flag to track GGTT online state with proper locking documentation.",
+        "what": "Added a new macro definition XE_GGTT_FLAGS_ONLINE with value BIT(1), realigned the existing XE_GGTT_FLAGS_64K macro for consistency, and updated the documentation comment to describe the new flag and its locking semantics.",
+        "how": "This change introduces a new flag bit that can be set in the xe_ggtt.flags field to indicate whether the GGTT is online. The flag is protected by ggtt->lock after initialization, allowing safe concurrent access to this state. The macro definition enables code to use a named constant instead of magic numbers when checking or setting this online status."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Protect ggtt->flags modification with mutex lock during device finalization to prevent race conditions."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Mark GGTT as online before registering its cleanup handler to ensure correct initialization state during device lifecycle management."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Simplify GGTT node removal by replacing drm_dev_enter() with direct flag check and reorder mutex locking."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove unbalanced drm_dev_exit() call that was incorrectly paired with a device entry operation in GGTT node removal."
+        },
+        {
+          "group_id": 4,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add XE_GGTT_FLAGS_ONLINE flag to track GGTT online state with proper locking documentation."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses race conditions on ggtt->flags modification during finalization, but the root cause is about GGTT MMIO access protection lacking proper synchronization during failed driver load and asynchronous BO freeing. The vulnerability requires preventing MMIO access after region invalidation, not just protecting flags modification. This is a related but distinct issue that doesn't directly address the core MMIO access race condition window."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group addresses initialization state management by marking GGTT as online before cleanup handler registration. However, the vulnerability root cause is about MMIO access protection during failed driver load and race conditions between asynchronous BO freeing and GGTT teardown. This group does not address the core issues: (1) lack of drm_dev_enter() invocation during failed load, (2) inability to guarantee async BO freeing completion before MMIO region invalidation, or (3) the race condition window itself. The change is a state management improvement but does not mitigate the actual vulnerability mechanism."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by replacing the unreliable drm_dev_enter() hotplug mechanism with a direct flag check for GGTT node removal. This change removes the dependency on the hotplug mechanism that fails during failed driver load scenarios, which is a core element of the vulnerability. The mutex locking reordering also relates to synchronization concerns around MMIO access protection."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": false,
+        "reason": "The group removes an unbalanced drm_dev_exit() call, which is a correctness fix for improper pairing of entry/exit operations. However, the vulnerability root cause is about the inadequacy of drm_dev_enter() hotplug mechanism itself (not invoked during failed driver load) and race conditions between asynchronous BO freeing and GGTT MMIO teardown. Removing an unbalanced exit call does not address the core issues of missing protection during failed load scenarios or the devm/async freeing race condition."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by introducing an explicit XE_GGTT_FLAGS_ONLINE flag to track GGTT online state. This provides an additional protection mechanism beyond relying solely on drm_dev_enter() hotplug mechanism. By tracking GGTT online state with proper locking, this flag can be used to guard MMIO access and prevent it from occurring after the GGTT region is invalidated, mitigating the race condition window described in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 417,
+            "content": "bound = drm_dev_enter(&xe->drm, &idx);",
+            "rationale": "This line represents the vulnerable reliance on drm_dev_enter() hotplug mechanism for GGTT MMIO access protection. The root cause explicitly states this mechanism is not invoked during failed driver load scenarios, leaving MMIO access unprotected during asynchronous BO freeing operations that may occur after GGTT teardown."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 420,
+            "content": "if (bound)",
+            "rationale": "This conditional check gates GGTT clear operations based solely on the drm_dev_enter() result, which is insufficient protection. The vulnerability arises because this check does not account for the race condition where devm release functions may not complete asynchronous BO freeing before GGTT MMIO region teardown, allowing MMIO access after invalidation."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 421,
+            "content": "xe_ggtt_clear(ggtt, node->base.start, node->base.size);",
+            "rationale": "This GGTT MMIO access operation is protected only by the drm_dev_enter() check, which fails to protect against the race condition during failed driver load scenarios where asynchronous BO freeing may occur after GGTT region invalidation."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "bound = drm_dev_enter(&xe->drm, &idx);",
+            "location": "hunk",
+            "explanation": "This statement represents the vulnerable reliance on drm_dev_enter() hotplug mechanism for GGTT MMIO access protection. The root cause explicitly states this mechanism is not invoked during failed driver load scenarios, leaving MMIO access unprotected during asynchronous BO freeing operations that may occur after GGTT teardown."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "xe_ggtt_clear(ggtt, node->base.start, node->base.size);",
+            "location": "hunk",
+            "explanation": "This GGTT MMIO access operation is protected only by the drm_dev_enter() check, which fails to protect against the race condition during failed driver load scenarios where asynchronous BO freeing may occur after GGTT region invalidation. This statement directly performs MMIO access that can occur after the GGTT region has been torn down."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "if (bound)",
+            "location": "hunk",
+            "explanation": "This conditional check gates GGTT clear operations based solely on the drm_dev_enter() result, which is insufficient protection. The vulnerability arises because this check does not account for the race condition where devm release functions may not complete asynchronous BO freeing before GGTT MMIO region teardown, allowing MMIO access after invalidation."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 417
+        },
+        "commit": "919bb54e989c1edef87e9797be125c94c450fc65",
+        "commit_short": "919bb54e989c",
+        "commit_msg": "drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n\nDefer the ggtt node removal to a thread if runtime_pm",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 292,
+        "code_snippet": "commit 919bb54e989c1edef87e9797be125c94c450fc65\nAuthor: Rodrigo Vivi <rodrigo.vivi@intel.com>\nDate:   Wed Aug 21 15:38:42 2024 -0400\n\n    drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n    \n    Defer the ggtt node removal to a thread if runtime_pm is not active.\n    \n    The ggtt node removal can be called from multiple places, including\n    places where we cannot protect with outer callers and places we are\n    within other locks. So, try to grab the runtime reference if the\n",
+        "exists": false,
+        "reason": "The commit introduces a fix for the GGTT MMIO access protection vulnerability. The old code (removed in the diff) relied solely on `drm_dev_enter()` for protection and used `xe_pm_runtime_get_noresume()`, which does not guarantee runtime_pm is active. The new implementation (lines 281-323) addresses the root cause by: (1) Creating a dedicated workqueue `ggtt->wq` (line 246), (2) Implementing `xe_ggtt_node_remove()` function that properly handles the case when runtime_pm is not active by deferring removal to a worker thread via `queue_work()` (line 320), (3) Using `xe_pm_runtime_get_if_active()` to check if device is already active (line 318), and if not, queuing the work to be executed later when the device can be properly woken up via `xe_pm_runtime_get()` in the worker function (line 313). This ensures MMIO access protection is maintained even during failed driver load scenarios and prevents the race condition where MMIO access occurs after the region is invalidated."
+      }
+    },
+    {
+      "bic_found": "919bb54e989c1edef87e9797be125c94c450fc65",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 421
+        },
+        "commit": "919bb54e989c1edef87e9797be125c94c450fc65",
+        "commit_short": "919bb54e989c",
+        "commit_msg": "drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n\nDefer the ggtt node removal to a thread if runtime_pm",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 296,
+        "code_snippet": "commit 919bb54e989c1edef87e9797be125c94c450fc65\nAuthor: Rodrigo Vivi <rodrigo.vivi@intel.com>\nDate:   Wed Aug 21 15:38:42 2024 -0400\n\n    drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n    \n    Defer the ggtt node removal to a thread if runtime_pm is not active.\n    \n    The ggtt node removal can be called from multiple places, including\n    places where we cannot protect with outer callers and places we are\n    within other locks. So, try to grab the runtime reference if the\n",
+        "exists": false,
+        "reason": "The commit introduces a fix for the GGTT MMIO access protection race condition. The vulnerable construct (the old `xe_ggtt_node_remove` function at lines 488-527 in the original code) relied solely on `drm_dev_enter()` without proper runtime_pm protection when the device is not active. The fix introduces: (1) A new `xe_ggtt_node_remove()` function (lines 328-343) that checks `xe_pm_runtime_get_if_active(xe)` - if runtime_pm is active, it performs immediate removal with proper protection; if not active, it defers removal to a workqueue. (2) A `ggtt_node_remove_work_func()` (lines 345-352) that explicitly calls `xe_pm_runtime_get(xe)` before removal, ensuring the device is powered up during deferred operations. (3) A dedicated workqueue `ggtt->wq` allocated in `xe_ggtt_init_early()` (line 246) and destroyed in `ggtt_fini_early()` (line 164) to manage these deferred removals. (4) The work structure is initialized in `xe_ggtt_node_init()` (line 474). This eliminates the race condition by ensuring MMIO access during node removal only occurs when runtime_pm is active, and defers operations when the device is not active, preventing MMIO access after region invalidation."
+      }
+    },
+    {
+      "bic_found": "919bb54e989c1edef87e9797be125c94c450fc65",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 420
+        },
+        "commit": "919bb54e989c1edef87e9797be125c94c450fc65",
+        "commit_short": "919bb54e989c",
+        "commit_msg": "drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n\nDefer the ggtt node removal to a thread if runtime_pm",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 295,
+        "code_snippet": "commit 919bb54e989c1edef87e9797be125c94c450fc65\nAuthor: Rodrigo Vivi <rodrigo.vivi@intel.com>\nDate:   Wed Aug 21 15:38:42 2024 -0400\n\n    drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n    \n    Defer the ggtt node removal to a thread if runtime_pm is not active.\n    \n    The ggtt node removal can be called from multiple places, including\n    places where we cannot protect with outer callers and places we are\n    within other locks. So, try to grab the runtime reference if the\n",
+        "exists": false,
+        "reason": "The commit introduces a fix for the GGTT MMIO access protection race condition. The old code (lines 488-527 in the diff) relied solely on drm_dev_enter() and xe_pm_runtime_get_noresume(), which doesn't guarantee runtime_pm is active. The new implementation (lines 281-342) addresses this by: (1) Creating a dedicated workqueue 'xe-ggtt-wq' (line 246), (2) Implementing xe_ggtt_node_remove() that checks if runtime_pm is active via xe_pm_runtime_get_if_active() (line 337), (3) If runtime_pm is NOT active, deferring the removal to a work queue (line 340) where xe_pm_runtime_get() is called to ensure the device is awake before GGTT operations (line 318), and (4) Properly initializing the delayed_removal_work in xe_ggtt_node_init() (line 474). This ensures GGTT node removal is protected by runtime_pm even during failed driver load scenarios where drm_dev_enter() may not be invoked, eliminating the race condition window where MMIO access could occur after region invalidation."
+      }
+    },
+    {
+      "bic_found": "919bb54e989c1edef87e9797be125c94c450fc65",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "919bb54e989c1edef87e9797be125c94c450fc65": 3
+      },
+      "bic_candidates": [
+        "919bb54e989c1edef87e9797be125c94c450fc65"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

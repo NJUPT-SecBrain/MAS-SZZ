@@ -1,0 +1,261 @@
+{
+  "cveid": "CVE-2026-53259",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "f723ccaff2fb72b71ae8a9fd283f0dee4d9ae7a3"
+  ],
+  "ground_truth_bic": "eb1ac9ff6c4a5720b1a1476233be374c5dc44bff",
+  "predicted_bic": [
+    "2384d02520ff2a916169b2fd85ea50e923ed56c2",
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 38430,
+  "root_cause": {
+    "text": "The `ipv6_add_acaddr_hash()` function was called outside the `idev->lock` critical section, creating a race condition where concurrent teardown could remove an anycast address from the device list before it was inserted into the global hash, causing the freed address to remain linked in the hash and be dereferenced by readers.",
+    "evidence": "The patch moves `ipv6_add_acaddr_hash(aca)` from after `write_unlock_bh(&idev->lock)` to before it, ensuring atomic insertion into both `idev->ac_list` and `inet6_acaddr_lst[]` hash. The CVE description explicitly shows the race window: CPU1's `ipv6_del_acaddr_hash()` becomes a no-op because the hash insertion hasn't occurred yet, allowing CPU0 to later insert and free the already-removed address, leaving a dangling pointer in the hash. The fix also changes all `acaddr_hash_lock` operations from `spin_lock()` to `spin_lock_bh()` to prevent lock inversion since the lock is now nested under `idev->lock` which is acquired in softirq context.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/ipv6/anycast.c",
+      "lineno": 376,
+      "content": "ipv6_add_acaddr_hash(net, aca);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/ipv6/anycast.c",
+      "lineno": 374,
+      "content": "write_unlock_bh(&idev->lock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `ipv6_add_acaddr_hash()` function was called outside the `idev->lock` critical section, creating a race condition where concurrent teardown could remove an anycast address from the device list before it was inserted into the global hash, causing the freed address to remain linked in the hash and be dereferenced by readers.",
+      "evidence_points": "The patch moves `ipv6_add_acaddr_hash(aca)` from after `write_unlock_bh(&idev->lock)` to before it, ensuring atomic insertion into both `idev->ac_list` and `inet6_acaddr_lst[]` hash. The CVE description explicitly shows the race window: CPU1's `ipv6_del_acaddr_hash()` becomes a no-op because the hash insertion hasn't occurred yet, allowing CPU0 to later insert and free the already-removed address, leaving a dangling pointer in the hash. The fix also changes all `acaddr_hash_lock` operations from `spin_lock()` to `spin_lock_bh()` to prevent lock inversion since the lock is now nested under `idev->lock` which is acquired in softirq context."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/ipv6/anycast.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/ipv6/anycast.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/ipv6/anycast.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace spinlock with bottom-half-safe spinlock variant to prevent deadlocks between process and softirq contexts accessing the IPv6 anycast address hash table.",
+        "what": "Replaced four instances of spin_lock/spin_unlock with spin_lock_bh/spin_unlock_bh in ipv6_add_acaddr_hash() and ipv6_del_acaddr_hash() functions to protect acaddr_hash_lock.",
+        "how": "The _bh variant disables software interrupts (bottom halves) in addition to acquiring the spinlock, preventing softirq handlers from executing while the lock is held. This prevents potential deadlocks if softirq context code attempts to acquire the same acaddr_hash_lock, and ensures mutual exclusion between process context and softirq context access to the hash table."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition by holding idev->lock during ipv6_add_acaddr_hash() to ensure atomic visibility of address in both ac_list and hash table.",
+        "what": "Moved the write_unlock_bh(&idev->lock) call from before ipv6_add_acaddr_hash() to after it, changing the lock release order relative to the hash table operation.",
+        "how": "This change extends the critical section protected by idev->lock to include the ipv6_add_acaddr_hash() operation. Previously, the lock was released before adding the address to the hash table, creating a window where the newly added address could be visible in ac_list but not yet in the hash table. Now the hash table update occurs while still holding the lock, ensuring atomicity of both operations."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace spin_lock/spin_unlock with spin_lock_bh/spin_unlock_bh to prevent potential deadlocks from softirq handlers attempting to acquire acaddr_hash_lock.",
+        "what": "Changed spin_lock/spin_unlock calls to spin_lock_bh/spin_unlock_bh for the acaddr_hash_lock in the ipv6_anycast_cleanup function.",
+        "how": "This change disables bottom-half (softirq) processing during the critical section. spin_lock_bh acquires the spinlock and disables software interrupts, while spin_unlock_bh re-enables them. This prevents softirq handlers from executing while the lock is held, reducing the risk of deadlock if a softirq tries to acquire the same lock."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Replace spin_lock/spin_unlock with spin_lock_bh/spin_unlock_bh to prevent potential deadlocks from softirq handlers attempting to acquire acaddr_hash_lock."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix race condition by holding idev->lock during ipv6_add_acaddr_hash() to ensure atomic visibility of address in both ac_list and hash table."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Replace spin_lock/spin_unlock with spin_lock_bh/spin_unlock_bh to prevent deadlocks between process and softirq contexts accessing the IPv6 anycast address hash table.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses deadlock prevention between process and softirq contexts by using bottom-half-safe spinlock variants (spin_lock_bh/spin_unlock_bh). However, the vulnerability root cause is a race condition where ipv6_add_acaddr_hash() is called outside the idev->lock critical section, allowing concurrent teardown to remove an address before it's inserted into the hash. The group's changes do not extend the critical section to include the ipv6_add_acaddr_hash() call or address the synchronization gap that causes the race condition—they only change the lock type for deadlock prevention, which is a separate concern."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by ensuring ipv6_add_acaddr_hash() is called within the idev->lock critical section, preventing the race condition where concurrent teardown could remove an address before it's inserted into the global hash table."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/ipv6/anycast.c",
+            "lineno": 376,
+            "content": "ipv6_add_acaddr_hash(net, aca);",
+            "rationale": "This function call occurs outside the idev->lock critical section (after write_unlock_bh() on line 374), creating a race condition where the address is visible in ac_list but not yet atomically inserted into the hash table. Concurrent teardown can remove the address from ac_list before this call completes, leaving a dangling reference in the hash table."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/ipv6/anycast.c",
+            "lineno": 374,
+            "content": "write_unlock_bh(&idev->lock);",
+            "rationale": "The lock is released before ipv6_add_acaddr_hash() is called, creating a window where the address is in ac_list but not yet in the hash table. This violates the atomicity requirement for concurrent visibility of the address in both data structures."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/ipv6/anycast.c",
+            "stmt_text": "ipv6_add_acaddr_hash(net, aca);",
+            "location": "hunk",
+            "explanation": "This function call at line 376 occurs outside the idev->lock critical section (after write_unlock_bh() on line 374). This creates a race condition where the anycast address is visible in ac_list but not yet atomically inserted into the hash table. Concurrent teardown can remove the address from ac_list before this call completes, leaving a dangling reference in the hash table that readers may dereference."
+          },
+          {
+            "vuln_file": "net/ipv6/anycast.c",
+            "stmt_text": "write_unlock_bh(&idev->lock);",
+            "location": "hunk",
+            "explanation": "The lock is released at line 374 before ipv6_add_acaddr_hash() is called at line 376. This premature unlock creates a window where the address is in ac_list but not yet in the hash table, violating atomicity and allowing concurrent teardown to remove the address while it remains referenced in the hash table."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5eba3e48d78e",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 376
+        },
+        "commit": "2384d02520ff2a916169b2fd85ea50e923ed56c2",
+        "commit_short": "2384d02520ff",
+        "commit_msg": "net/ipv6: Add anycast addresses to a global hashtable\n\nicmp6_send() function is expensive on systems with a large number",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 326,
+        "code_snippet": "commit 2384d02520ff2a916169b2fd85ea50e923ed56c2\nAuthor: Jeff Barnhill <0xeffeff@gmail.com>\nDate:   Fri Nov 2 20:23:57 2018 +0000\n\n    net/ipv6: Add anycast addresses to a global hashtable\n    \n    icmp6_send() function is expensive on systems with a large number of\n    interfaces. Every time it’s called, it has to verify that the source\n    address does not correspond to an existing anycast address by looping\n    through every device and every anycast address on the device.  This can\n    result ",
+        "exists": true,
+        "reason": "The vulnerability is present in this commit. In the `__ipv6_dev_ac_inc()` function (lines 323-325), `ipv6_add_acaddr_hash(net, aca)` is called AFTER `write_unlock_bh(&idev->lock)` at line 322. This creates a race condition: between the unlock and the hash insertion, another CPU could call `__ipv6_dev_ac_dec()` or `ipv6_ac_destroy_dev()`, which would remove the address from the device list via `write_unlock_bh(&idev->lock)` and then call `ipv6_del_acaddr_hash(aca)`. If the deletion happens before the insertion, the address gets added to the hash after being removed from the device list, leaving a dangling reference in the hash that can be dereferenced by readers in `ipv6_chk_acast_addr()`. The fix would require moving `ipv6_add_acaddr_hash()` to occur while holding `idev->lock`, before the unlock at line 322."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7b900ead6cc6",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 326
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 378,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided code snippet shows a function that appears to be removing an anycast address (likely ipv6_del_acaddr_hash or similar based on the deletion logic). However, the vulnerability root cause specifically mentions that ipv6_add_acaddr_hash() was called OUTSIDE the idev->lock critical section. This snippet shows a deletion/removal function with proper locking (write_lock_bh at line 360, write_unlock_bh at line 379), not the vulnerable addition function. To properly assess whether this commit introduces the vulnerability, we need to see the ipv6_add_acaddr_hash() function body and verify if it calls this function outside of lock protection. The current snippet alone is insufficient to determine if the bug exists in the add path, as it only shows the removal path which appears to have locking in place."
+      }
+    },
+    {
+      "bic_found": "2384d02520ff2a916169b2fd85ea50e923ed56c2",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5eba3e48d78e",
+          "anchor_file": "net/ipv6/anycast.c",
+          "anchor_lineno": 374
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv6/anycast.c",
+        "display_lineno": 337,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable construct is clearly present. The function inserts the anycast address into the device list (lines 335-336: 'aca->aca_next = idev->ac_list; idev->ac_list = aca;') while holding idev->lock. However, the critical call to ipv6_add_acaddr_hash() is missing from this code snippet entirely. The lock is released at line 337 (write_unlock_bh(&idev->lock)), and then subsequent operations occur outside the lock: ip6_ins_rt() at line 340, addrconf_join_solict() at line 343, and aca_put() at line 345. The vulnerability root cause indicates that ipv6_add_acaddr_hash() should be called inside the lock but was being called outside it. Since this function body does not show any hash insertion call at all (neither inside nor outside the lock), and the root cause specifically describes the race condition where the hash insertion happens outside the critical section, this represents the buggy state where the hash insertion is either missing or improperly placed outside the lock protection. The address is added to idev->ac_list while holding the lock (correct), but there is no visible hash table insertion within the lock, which matches the vulnerability description of calling ipv6_add_acaddr_hash() outside the idev->lock critical section."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_votes": {
+        "2384d02520ff2a916169b2fd85ea50e923ed56c2": 1,
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 1
+      },
+      "bic_candidates": [
+        "2384d02520ff2a916169b2fd85ea50e923ed56c2",
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,323 @@
+{
+  "cveid": "CVE-2026-31673",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "39897df386376912d561d4946499379effa1e7ef"
+  ],
+  "ground_truth_bic": "5f7b0569460b7d8d01ca776430a00505a68b7584",
+  "predicted_bic": [
+    "4245375db87767aacaad16f07040b5d89a9056c8",
+    "5f7b0569460b7d8d01ca776430a00505a68b7584"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 19387,
+  "root_cause": {
+    "text": "`sk_diag_dump_vfs()` in `net/unix/diag.c` read `unix_sk(sk)->path.dentry` and its inode/device fields without holding `unix_state_lock`, while `unix_release_sock()` can clear `u->path` and drop the path reference under that lock, creating a race/use-after-free on the VFS data during UNIX diag dumps.",
+    "evidence": "The patch moves the `dentry` access and `d_backing_inode(dentry)->i_ino` / `dentry->d_sb->s_dev` reads inside `unix_state_lock(sk)` and only calls `nla_put()` after unlocking; the commit message explicitly says exact UNIX diag lookups hold a socket reference “but not to `u->path`” and that `unix_release_sock()` clears `u->path` under `unix_state_lock()` and drops the path reference after unlocking.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/diag.c",
+      "lineno": 31,
+      "content": "struct dentry *dentry = unix_sk(sk)->path.dentry;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/diag.c",
+      "lineno": 35,
+      "content": ".udiag_vfs_ino = d_backing_inode(dentry)->i_ino,",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/diag.c",
+      "lineno": 36,
+      "content": ".udiag_vfs_dev = dentry->d_sb->s_dev,",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`sk_diag_dump_vfs()` in `net/unix/diag.c` read `unix_sk(sk)->path.dentry` and its inode/device fields without holding `unix_state_lock`, while `unix_release_sock()` can clear `u->path` and drop the path reference under that lock, creating a race/use-after-free on the VFS data during UNIX diag dumps.",
+      "evidence_points": "The patch moves the `dentry` access and `d_backing_inode(dentry)->i_ino` / `dentry->d_sb->s_dev` reads inside `unix_state_lock(sk)` and only calls `nla_put()` after unlocking; the commit message explicitly says exact UNIX diag lookups hold a socket reference “but not to `u->path`” and that `unix_release_sock()` clears `u->path` under `unix_state_lock()` and drops the path reference after unlocking."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/unix/diag.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect sk_diag_dump_vfs() dentry access with the Unix socket lock to avoid racing while reporting VFS metadata.",
+        "what": "The function sk_diag_dump_vfs() was changed to declare a local unix_diag_vfs struct plus a dentry pointer and a boolean flag, take unix_state_lock(sk) before reading unix_sk(sk)->path.dentry, populate the vfs fields and set have_vfs when a dentry exists, release the lock, and then call nla_put() only if a VFS record was found; the previous inline initialization and immediate return were removed.",
+        "how": "This makes the dentry lookup and VFS data extraction occur under the Unix socket state lock, preventing races while reading the socket path. It also preserves the previous behavior of returning no attribute when no dentry exists, but now safely emits the netlink VFS attribute using data captured while protected from concurrent updates."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Protect sk_diag_dump_vfs() dentry access with the Unix socket lock to avoid racing while reporting VFS metadata."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it adds locking around sk_diag_dump_vfs() access to unix_sk(sk)->path.dentry and related VFS metadata to prevent the race with unix_release_sock() clearing the path under unix_state_lock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/diag.c",
+            "lineno": 31,
+            "content": "struct dentry *dentry = unix_sk(sk)->path.dentry;",
+            "rationale": "This directly reads the socket's path dentry without holding unix_state_lock, so it can race with unix_release_sock() clearing u->path and dropping the reference, leading to use-after-free when later dereferencing VFS metadata."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/diag.c",
+            "lineno": 35,
+            "content": ".udiag_vfs_ino = d_backing_inode(dentry)->i_ino,",
+            "rationale": "This dereferences the dentry to access inode metadata after the unlocked dentry read, and can hit freed VFS state if another thread released the socket path concurrently."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/diag.c",
+            "lineno": 36,
+            "content": ".udiag_vfs_dev = dentry->d_sb->s_dev,",
+            "rationale": "This also dereferences the same potentially stale dentry to read superblock/device data without synchronization, making the race/use-after-free visible during diag dumps."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/diag.c",
+            "stmt_text": "struct dentry *dentry = unix_sk(sk)->path.dentry;",
+            "location": "hunk",
+            "explanation": "This statement reads the Unix socket path dentry without holding unix_state_lock, allowing a race with unix_release_sock() clearing u->path and dropping the reference, which can lead to use-after-free when VFS metadata is later accessed."
+          },
+          {
+            "vuln_file": "net/unix/diag.c",
+            "stmt_text": ".udiag_vfs_ino = d_backing_inode(dentry)->i_ino,",
+            "location": "hunk",
+            "explanation": "This statement dereferences the potentially stale dentry to read inode metadata after the unlocked path read, so it can access freed VFS state if the socket path is released concurrently."
+          },
+          {
+            "vuln_file": "net/unix/diag.c",
+            "stmt_text": ".udiag_vfs_dev = dentry->d_sb->s_dev,",
+            "location": "hunk",
+            "explanation": "This statement also dereferences the same potentially stale dentry to read superblock/device data without synchronization, exposing the same race/use-after-free during UNIX diag dumps."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e2760eaab77",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 31
+        },
+        "commit": "40ffe67d2e89c7a475421d007becc11a2f88ea3d",
+        "commit_short": "40ffe67d2e89",
+        "commit_msg": "switch unix_sock to struct path\n\nSigned-off-by: Al Viro <viro@zeniv.linux.org.uk>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 32,
+        "code_snippet": "commit 40ffe67d2e89c7a475421d007becc11a2f88ea3d\nAuthor: Al Viro <viro@zeniv.linux.org.uk>\nDate:   Wed Mar 14 21:54:32 2012 -0400\n\n    switch unix_sock to struct path\n    \n    Signed-off-by: Al Viro <viro@zeniv.linux.org.uk>\n\ndiff --git a/net/unix/diag.c b/net/unix/diag.c\nindex 6b7697fd911b..ffd86518e646 100644\n--- a/net/unix/diag.c\n+++ b/net/unix/diag.c\n@@ -29,7 +29,7 @@ static int sk_diag_dump_name(struct sock *sk, struct sk_buff *nlskb)\n \n static int sk_diag_dump_vfs(struct sock *sk, struct sk",
+        "exists": true,
+        "reason": "The snippet shows the vulnerable VFS dereference site in `sk_diag_dump_vfs()`: `struct dentry *dentry = unix_sk(sk)->path.dentry;` followed by `if (dentry) { ... }`. This matches the root cause description that `sk_diag_dump_vfs()` reads `unix_sk(sk)->path.dentry` and related VFS data without any visible synchronization. There is no locking or reference protection shown here (for example, no `unix_state_lock` or path pinning), so the fix is not present in this function body. Because the function body directly contains the relevant logic, the snippet is sufficient to determine this."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "38eff2892628",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 32
+        },
+        "commit": "5f7b0569460b7d8d01ca776430a00505a68b7584",
+        "commit_short": "5f7b0569460b",
+        "commit_msg": "unix_diag: Unix inode info NLA\n\nActually, the socket path if it's not anonymous doesn't give\na clue to which file the so",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 31,
+        "code_snippet": "commit 5f7b0569460b7d8d01ca776430a00505a68b7584\nAuthor: Pavel Emelyanov <xemul@parallels.com>\nDate:   Thu Dec 15 02:45:43 2011 +0000\n\n    unix_diag: Unix inode info NLA\n    \n    Actually, the socket path if it's not anonymous doesn't give\n    a clue to which file the socket is bound to. Even if the path\n    is absolute, it can be unlinked and then new socket can be\n    bound to it.\n    \n    With this NLA it's possible to check which file a particular\n    socket is really bound to.\n    \n    Signe",
+        "exists": true,
+        "reason": "The new function `sk_diag_dump_vfs()` directly reads VFS fields from `unix_sk(sk)->dentry` without any locking: `struct dentry *dentry = unix_sk(sk)->dentry;` followed by `uv->udiag_vfs_ino = dentry->d_inode->i_ino;` and `uv->udiag_vfs_dev = dentry->d_sb->s_dev;`. This matches the vulnerable pattern described in the root cause: accessing path/dentry/inode/device data without holding `unix_state_lock`, while `unix_release_sock()` can clear the path and drop the reference under that lock. There is no locking or refcounting added here, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "f5248b48a64c",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 31
+        },
+        "commit": "45a96b9be6ec1b7d248642d17ceee59ff5f64451",
+        "commit_short": "45a96b9be6ec",
+        "commit_msg": "unix_diag: Dumping all sockets core\n\nWalk the unix sockets table and fill the core response structure,\nwhich includes ty",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 15,
+        "code_snippet": "commit 45a96b9be6ec1b7d248642d17ceee59ff5f64451\nAuthor: Pavel Emelyanov <xemul@parallels.com>\nDate:   Thu Dec 15 02:44:52 2011 +0000\n\n    unix_diag: Dumping all sockets core\n    \n    Walk the unix sockets table and fill the core response structure,\n    which includes type, state and inode.\n    \n    Signed-off-by: Pavel Emelyanov <xemul@parallels.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/unix/diag.c b/net/unix/diag.c\nindex 6be16c0ad38f..86d85abf90c6 100644\n--",
+        "exists": false,
+        "reason": "The shown code does not access `unix_sk(sk)->path.dentry` or any VFS path/inode/device fields at all. In this commit, `sk_diag_fill()` only reads `sk->sk_type`, `sk->sk_state`, and `sock_diag_save_cookie()`, and `sk_diag_dump()` only does `unix_state_lock(sk); sk_ino = sock_i_ino(sk); unix_state_unlock(sk);`. The vulnerable construct described in the root cause is absent from this snippet, so this function body is not enough to indicate the race/use-after-free on `u->path`."
+      }
+    },
+    {
+      "bic_found": "5f7b0569460b7d8d01ca776430a00505a68b7584",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e2760eaab77",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 35
+        },
+        "commit": "a25b376bded1ba7fd1d455e140d723b7de2e343c",
+        "commit_short": "a25b376bded1",
+        "commit_msg": "VFS: net/unix: d_backing_inode() annotations\n\nplaces where we are dealing with S_ISSOCK file creation/lookups.\n\nSigned-o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 28,
+        "code_snippet": "commit a25b376bded1ba7fd1d455e140d723b7de2e343c\nAuthor: David Howells <dhowells@redhat.com>\nDate:   Tue Mar 17 22:26:21 2015 +0000\n\n    VFS: net/unix: d_backing_inode() annotations\n    \n    places where we are dealing with S_ISSOCK file creation/lookups.\n    \n    Signed-off-by: David Howells <dhowells@redhat.com>\n    Signed-off-by: Al Viro <viro@zeniv.linux.org.uk>\n\ndiff --git a/net/unix/diag.c b/net/unix/diag.c\nindex ef542fbca9fe..c512f64d5287 100644\n--- a/net/unix/diag.c\n+++ b/net/unix/diag.c\n",
+        "exists": true,
+        "reason": "The snippet shows the exact VFS access in `sk_diag_dump_vfs()`: `if (dentry) { ... .udiag_vfs_ino = d_backing_inode(dentry)->i_ino, .udiag_vfs_dev = dentry->d_sb->s_dev, };`. The root cause is that this code reads `unix_sk(sk)->path.dentry`-related VFS fields without any visible `unix_state_lock` protection, matching the described race with `unix_release_sock()`. This commit only changes `dentry->d_inode->i_ino` to `d_backing_inode(dentry)->i_ino`, which is an annotation/API update, not synchronization or lifetime protection. So the vulnerable construct is still present and the fix is not in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7682c918439d",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 28
+        },
+        "commit": "4245375db87767aacaad16f07040b5d89a9056c8",
+        "commit_short": "4245375db877",
+        "commit_msg": "unix_diag: Do not use RTA_PUT() macros\n\nAlso, no need to trim on nlmsg_put() failure, nothing has been added\nyet.  We al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 28,
+        "code_snippet": "commit 4245375db87767aacaad16f07040b5d89a9056c8\nAuthor: Thomas Graf <tgraf@suug.ch>\nDate:   Tue Jun 26 23:36:10 2012 +0000\n\n    unix_diag: Do not use RTA_PUT() macros\n    \n    Also, no need to trim on nlmsg_put() failure, nothing has been added\n    yet.  We also want to use nlmsg_end(), nlmsg_new() and nlmsg_free().\n    \n    Signed-off-by: Thomas Graf <tgraf@suug.ch>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/unix/diag.c b/net/unix/diag.c\nindex 977ca317550d..a7486",
+        "exists": true,
+        "reason": "The shown function body still reads the VFS path data directly with no locking: `struct dentry *dentry = unix_sk(sk)->path.dentry;` followed by `dentry->d_inode->i_ino` and `dentry->d_sb->s_dev`. This matches the root cause, because `unix_release_sock()` can clear `u->path` and drop the reference under `unix_state_lock`, so accessing `unix_sk(sk)->path.dentry` and its inode/sb fields here without that lock is the vulnerable construct. The commit only changes netlink message construction (`UNIX_DIAG_PUT` -> `nla_put`, `nlmsg_put`/`nlmsg_end`/`nlmsg_cancel`) and does not add any locking or path reference protection, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "c074da2810c1",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 28
+        },
+        "commit": "f5248b48a64c221dd6157ab9cbee5a36ee45e6ed",
+        "commit_short": "f5248b48a64c",
+        "commit_msg": "unix_diag: Unix socket name NLA\n\nReport the sun_path when requested as NLA. With leading '\\0' if\npresent but without the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 27,
+        "code_snippet": "commit f5248b48a64c221dd6157ab9cbee5a36ee45e6ed\nAuthor: Pavel Emelyanov <xemul@parallels.com>\nDate:   Thu Dec 15 02:45:24 2011 +0000\n\n    unix_diag: Unix socket name NLA\n    \n    Report the sun_path when requested as NLA. With leading '\\0' if\n    present but without the leading AF_UNIX bits.\n    \n    Signed-off-by: Pavel Emelyanov <xemul@parallels.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/unix/diag.c b/net/unix/diag.c\nindex d7bd48c49ee5..161ce6c05e31 100644\n",
+        "exists": false,
+        "reason": "The shown function only adds UNIX socket name dumping: `if (addr) { s = UNIX_DIAG_PUT(...); memcpy(s, addr->name->sun_path, ...); }`. It does not read `unix_sk(sk)->path.dentry` or inode/device fields, and it does not show any use of `unix_state_lock`. The root cause described is specifically a race in `sk_diag_dump_vfs()` on `u->path`, which is absent from this snippet. Therefore the vulnerable construct is not present here, and this function cannot be the buggy VFS-dump path."
+      }
+    },
+    {
+      "bic_found": "4245375db87767aacaad16f07040b5d89a9056c8",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e2760eaab77",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 36
+        },
+        "commit": "4245375db87767aacaad16f07040b5d89a9056c8",
+        "commit_short": "4245375db877",
+        "commit_msg": "unix_diag: Do not use RTA_PUT() macros\n\nAlso, no need to trim on nlmsg_put() failure, nothing has been added\nyet.  We al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 29,
+        "code_snippet": "commit 4245375db87767aacaad16f07040b5d89a9056c8\nAuthor: Thomas Graf <tgraf@suug.ch>\nDate:   Tue Jun 26 23:36:10 2012 +0000\n\n    unix_diag: Do not use RTA_PUT() macros\n    \n    Also, no need to trim on nlmsg_put() failure, nothing has been added\n    yet.  We also want to use nlmsg_end(), nlmsg_new() and nlmsg_free().\n    \n    Signed-off-by: Thomas Graf <tgraf@suug.ch>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/unix/diag.c b/net/unix/diag.c\nindex 977ca317550d..a7486",
+        "exists": true,
+        "reason": "The shown function body still contains the vulnerable access pattern. In `sk_diag_dump_vfs()`, it does `struct dentry *dentry = unix_sk(sk)->path.dentry;` and then, if non-NULL, immediately reads VFS fields: `dentry->d_inode->i_ino` and `dentry->d_sb->s_dev`. There is no `unix_state_lock` held anywhere in this function, and no synchronization or refcounting around `unix_sk(sk)->path.dentry`. The diff only converts old RTA_PUT macros to `nla_put()`/`nla_reserve()` and changes netlink message handling (`nlmsg_put`, `nlmsg_end`, `nlmsg_cancel`, `nlmsg_new`), but it does not add any lock or protection for the `path.dentry` access. Therefore the vulnerable construct is present and the fix is not present here."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "c074da2810c1",
+          "anchor_file": "net/unix/diag.c",
+          "anchor_lineno": 29
+        },
+        "commit": "f5248b48a64c221dd6157ab9cbee5a36ee45e6ed",
+        "commit_short": "f5248b48a64c",
+        "commit_msg": "unix_diag: Unix socket name NLA\n\nReport the sun_path when requested as NLA. With leading '\\0' if\npresent but without the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/diag.c",
+        "display_lineno": 28,
+        "code_snippet": "commit f5248b48a64c221dd6157ab9cbee5a36ee45e6ed\nAuthor: Pavel Emelyanov <xemul@parallels.com>\nDate:   Thu Dec 15 02:45:24 2011 +0000\n\n    unix_diag: Unix socket name NLA\n    \n    Report the sun_path when requested as NLA. With leading '\\0' if\n    present but without the leading AF_UNIX bits.\n    \n    Signed-off-by: Pavel Emelyanov <xemul@parallels.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/unix/diag.c b/net/unix/diag.c\nindex d7bd48c49ee5..161ce6c05e31 100644\n",
+        "exists": false,
+        "reason": "The provided snippet does not include the actual body of `sk_diag_fill()` or the `sk_diag_dump_vfs()` logic where the race occurs. We only see the function signature: `static int sk_diag_fill(struct sock *sk, struct sk_buff *skb, struct unix_diag_req *req, u32 pid, u32 seq, u32 flags, int sk_ino)`, but none of the relevant statements that read `unix_sk(sk)->path.dentry` or inode/device fields. Because the vulnerable construct is absent from the shown code, no bug/fix determination can be made from this snippet alone."
+      }
+    },
+    {
+      "bic_found": "4245375db87767aacaad16f07040b5d89a9056c8",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "5f7b0569460b7d8d01ca776430a00505a68b7584": 1,
+        "4245375db87767aacaad16f07040b5d89a9056c8": 2
+      },
+      "bic_candidates": [
+        "4245375db87767aacaad16f07040b5d89a9056c8",
+        "5f7b0569460b7d8d01ca776430a00505a68b7584"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,181 @@
+{
+  "cveid": "CVE-2026-53033",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "64c2f93fc3254d3bf5de4445fb732ee5c451edb6"
+  ],
+  "ground_truth_bic": "2c860a43dd77f969bb959336a2f743d7103a8f63",
+  "predicted_bic": [
+    "4d328dd695383224aa750ddee6b4ad40c0f8d205"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 14542,
+  "root_cause": {
+    "text": "The AF_UNIX BPF iterator in `bpf_iter_unix_seq_show()` accessed and acted on the socket’s `unix_peer(sk)` relationship without taking `unix_state_lock(sk)`, allowing concurrent close/state-transition code in `unix_release_sock()` to clear and free the peer and causing a stale `peer` pointer use-after-free in `unix_stream_bpf_update_proto()`.",
+    "evidence": "The commit message explicitly shows the race where `unix_stream_bpf_update_proto()` reads `sk_pair = unix_peer(sk)` and then `unix_release_sock()` concurrently does `unix_peer(sk) = NULL; sock_put(skpair)` before `sock_hold(sk_pair) // UaF`, and the patch fixes it by adding `unix_state_lock(sk)`/`unix_state_unlock(sk)` around iterator execution in `bpf_iter_unix_seq_show()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3743,
+      "content": "lock_sock(sk);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The AF_UNIX BPF iterator in `bpf_iter_unix_seq_show()` accessed and acted on the socket’s `unix_peer(sk)` relationship without taking `unix_state_lock(sk)`, allowing concurrent close/state-transition code in `unix_release_sock()` to clear and free the peer and causing a stale `peer` pointer use-after-free in `unix_stream_bpf_update_proto()`.",
+      "evidence_points": "The commit message explicitly shows the race where `unix_stream_bpf_update_proto()` reads `sk_pair = unix_peer(sk)` and then `unix_release_sock()` concurrently does `unix_peer(sk) = NULL; sock_put(skpair)` before `sock_hold(sk_pair) // UaF`, and the patch fixes it by adding `unix_state_lock(sk)`/`unix_state_unlock(sk)` around iterator execution in `bpf_iter_unix_seq_show()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add Unix socket state locking in bpf_iter_unix_seq_show() to guard against concurrent state races while inspecting the socket.",
+        "what": "A call to unix_state_lock(sk); was added immediately after lock_sock(sk); in bpf_iter_unix_seq_show() before checking sock_flag(sk, SOCK_DEAD).",
+        "how": "This adds locking of the Unix socket state while the function inspects the socket, preventing concurrent state changes during the dead-socket check and subsequent access, which helps avoid races and inconsistent observation of Unix socket state at runtime."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the Unix socket state lock in bpf_iter_unix_seq_show() before releasing the socket to fix a missing unlock bug.",
+        "what": "A call to unix_state_unlock(sk); was added in the unlock: cleanup path of bpf_iter_unix_seq_show(), immediately before the existing release_sock(sk); and return ret;",
+        "how": "This change ensures the Unix socket state lock held on sk is released when the function exits through the unlock path, preventing the socket from remaining locked and avoiding lock leaks, hangs, or incorrect synchronization behavior at runtime."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add Unix socket state locking in bpf_iter_unix_seq_show() to guard against concurrent state races while inspecting the socket."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Release the Unix socket state lock in bpf_iter_unix_seq_show() before releasing the socket to fix a missing unlock bug."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change adds unix_state_lock(sk) in bpf_iter_unix_seq_show() while inspecting unix_peer(sk), directly addressing the missing synchronization that caused the stale peer pointer/use-after-free race with unix_release_sock()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change is in bpf_iter_unix_seq_show() and specifically manages unix_state_lock(), the same lock whose absence around unix_peer(sk) access caused the race/UAF. Even though this hunk fixes a missing unlock, it is directly tied to the locking added to address the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3743,
+            "content": "lock_sock(sk);",
+            "rationale": "This shows the function only took the generic socket lock before inspecting socket state. The root cause is that it accessed unix_peer(sk) without also taking unix_state_lock(sk), so relying on only lock_sock(sk) permitted concurrent AF_UNIX state changes and stale peer access."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 0
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "lock_sock(sk);",
+            "location": "hunk",
+            "explanation": "This function relied on only the generic socket lock before inspecting AF_UNIX-specific peer/state relationships. Because it did not also take unix_state_lock(sk), concurrent unix_release_sock() could clear and free unix_peer(sk), enabling stale peer access and the resulting use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dca38b7734d2",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3743
+        },
+        "commit": "4d328dd695383224aa750ddee6b4ad40c0f8d205",
+        "commit_short": "4d328dd69538",
+        "commit_msg": "bpf, sockmap: Fix af_unix iter deadlock\n\nbpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\npath",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3743,
+        "code_snippet": "commit 4d328dd695383224aa750ddee6b4ad40c0f8d205\nAuthor: Michal Luczaj <mhal@rbox.co>\nDate:   Tue Apr 14 16:13:16 2026 +0200\n\n    bpf, sockmap: Fix af_unix iter deadlock\n    \n    bpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\n    path and the iter prog attempts to update a sockmap. Which ends up spinning\n    at sock_map_update_elem()'s bh_lock_sock():\n    \n    WARNING: possible recursive locking detected\n    test_progs/1393 is trying to acquire lock:\n    ffff88811ec25f",
+        "exists": false,
+        "reason": "The function body is sufficient because it shows the locking behavior around the iterator callback. The root cause says the bug happens when `bpf_iter_unix_seq_show()` accesses or acts on `unix_peer(sk)` without holding `unix_state_lock(sk)`. In this commit, the function acquires the socket lock before invoking the iterator logic: `lock_sock(sk);` at line 3743, checks `SOCK_DEAD`, then calls `unix_prog_seq_show(prog, &meta, v, uid);` while still under that lock, and finally unlocks with `release_sock(sk);` at line 3755. The commit message explicitly states this change was made to fix the AF_UNIX iterator issue, and the vulnerable unlocked path is absent from this function body. Therefore the vulnerable construct is not present here, and this function already contains the fix."
+      }
+    },
+    {
+      "bic_found": "4d328dd695383224aa750ddee6b4ad40c0f8d205",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "4d328dd695383224aa750ddee6b4ad40c0f8d205": 1
+      },
+      "bic_candidates": [
+        "4d328dd695383224aa750ddee6b4ad40c0f8d205"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

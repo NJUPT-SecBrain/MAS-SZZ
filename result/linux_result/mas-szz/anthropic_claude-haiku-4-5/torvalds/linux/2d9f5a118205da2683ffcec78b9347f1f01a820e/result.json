@@ -1,0 +1,276 @@
+{
+  "cveid": "CVE-2026-52983",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "2d9f5a118205da2683ffcec78b9347f1f01a820e"
+  ],
+  "ground_truth_bic": "c9f947769b77c8e8f318bfc8a0777e5d20c44d8d",
+  "predicted_bic": [
+    "23020f04932701d5c8363e60756f12b43b8ed752",
+    "0c729f53b8c33b9e5eadc2d5e673759e3510501e"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 23785,
+  "root_cause": {
+    "text": "The BQL (Byte Queue Limit) accounting mechanism uses inconsistent queue index calculations between transmission and completion paths—the TX path manually computes a modulo operation on the queue mapping while the completion path was using the raw queue mapping without the same modulo constraint, causing BQL state to be tracked on different netdev TX queues than where packets were actually queued.",
+    "evidence": "The patch replaces manual queue index computation with `skb_get_tx_queue()` in both the TX path (`airoha_dev_xmit()`) and completion path (`airoha_qdma_tx_napi_poll()`). The TX path originally used `qid = skb_get_queue_mapping(skb) % ARRAY_SIZE(qdma->q_tx)` to constrain to AIROHA_NUM_TX_RING queues, but the completion path used the unconstrained `skb_get_queue_mapping(skb)` directly. Additionally, the ndo_stop callback was changed from iterating `ARRAY_SIZE(qdma->q_tx)` to `dev->num_tx_queues`, indicating the netdev was configured with more TX queues than the hardware ring count, creating a mismatch where BQL completions were being applied to queues that never received the initial BQL accounting.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/airoha/airoha_eth.c",
+      "lineno": 2042,
+      "content": "txq = netdev_get_tx_queue(dev, qid);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ethernet/airoha/airoha_eth.c",
+      "lineno": 935,
+      "content": "txq = netdev_get_tx_queue(skb->dev, queue);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The BQL (Byte Queue Limits) accounting was inconsistent because TX packet completion tracking used the raw queue mapping without applying the same modulo operation used during transmission, causing completions to be accounted on different netdev TX queues than where packets were enqueued.",
+      "evidence_points": "The patch shows two key issues:"
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The proposed root cause is incomplete and misleading. While it correctly identifies that there's an inconsistency between transmission and completion accounting, it fails to explain the actual root cause revealed by the patch."
+      }
+    },
+    {
+      "root_cause_candidate": "The BQL (Byte Queue Limit) accounting mechanism uses inconsistent queue index calculations between transmission and completion paths—the TX path manually computes a modulo operation on the queue mapping while the completion path was using the raw queue mapping without the same modulo constraint, causing BQL state to be tracked on different netdev TX queues than where packets were actually queued.",
+      "evidence_points": "The patch replaces manual queue index computation with `skb_get_tx_queue()` in both the TX path (`airoha_dev_xmit()`) and completion path (`airoha_qdma_tx_napi_poll()`). The TX path originally used `qid = skb_get_queue_mapping(skb) % ARRAY_SIZE(qdma->q_tx)` to constrain to AIROHA_NUM_TX_RING queues, but the completion path used the unconstrained `skb_get_queue_mapping(skb)` directly. Additionally, the ndo_stop callback was changed from iterating `ARRAY_SIZE(qdma->q_tx)` to `dev->num_tx_queues`, indicating the netdev was configured with more TX queues than the hardware ring count, creating a mismatch where BQL completions were being applied to queues that never received the initial BQL accounting."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/airoha/airoha_eth.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/airoha/airoha_eth.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/airoha/airoha_eth.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Refactor to use the skb_get_tx_queue() helper function instead of manually extracting queue mapping and looking up the netdev queue separately.",
+        "what": "Removed the intermediate variable `queue` that stored `skb_get_queue_mapping(skb)`, and replaced the two-step call `netdev_get_tx_queue(skb->dev, queue)` with a single direct call to `skb_get_tx_queue(skb->dev, skb)`.",
+        "how": "This change simplifies the code by using a higher-level helper function `skb_get_tx_queue()` that internally performs both the queue mapping extraction and netdev queue lookup, eliminating the need for an intermediate variable and reducing code verbosity while maintaining identical runtime behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Use device's configured transmit queue count instead of fixed array size to safely reset only active queues.",
+        "what": "Changed the loop condition in airoha_dev_stop() from iterating over ARRAY_SIZE(qdma->q_tx) to iterating over dev->num_tx_queues.",
+        "how": "This change makes the netdev_tx_reset_subqueue() calls iterate based on the actual number of transmit queues configured for the network device, rather than the fixed size of the underlying queue array. This ensures only active/configured queues are reset, preventing potential out-of-bounds access or unnecessary operations on unused queue slots."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix transmit queue selection by using skb-based queue lookup instead of explicit queue ID parameter.",
+        "what": "Changed the function call from `netdev_get_tx_queue(dev, qid)` to `skb_get_tx_queue(dev, skb)`, replacing a queue ID parameter with the socket buffer pointer.",
+        "how": "This change alters how the transmit queue is selected for the outgoing packet. Instead of using an explicit queue ID (`qid`), the function now derives the queue selection from the socket buffer metadata itself via `skb_get_tx_queue()`, which likely examines packet properties (priority, flow hash, etc.) to determine the appropriate queue."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor to use the skb_get_tx_queue() helper function instead of manually extracting queue mapping and looking up the netdev queue separately."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use device's configured transmit queue count instead of fixed array size to safely reset only active queues."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix transmit queue selection by using skb-based queue lookup instead of explicit queue ID parameter."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "This refactoring directly addresses the root cause by consolidating queue index calculation into a single helper function (skb_get_tx_queue()). By replacing manual queue mapping extraction and lookup with a consistent helper, it eliminates the inconsistency between TX and completion paths where different modulo operations were being applied. This ensures BQL accounting uses the same queue index calculation in both paths, fixing the core vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "This group addresses queue reset safety by using the device's configured transmit queue count instead of a fixed array size. This is a defensive programming improvement but does not address the core vulnerability: the inconsistent queue index calculations (modulo operations) between the TX and completion paths that cause BQL state to be tracked on different queues than where packets are actually queued."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by changing how transmit queue selection is determined. By switching from explicit queue ID parameters to skb-based queue lookup, this ensures consistent queue index calculations between transmission and completion paths. This aligns with fixing the inconsistent queue index calculations that caused BQL state to be tracked on different netdev TX queues than where packets were actually queued."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/airoha/airoha_eth.c",
+            "lineno": 2042,
+            "content": "txq = netdev_get_tx_queue(dev, qid);",
+            "rationale": "This line uses 'qid' (explicit queue ID parameter) to look up the netdev TX queue for BQL accounting in the transmission path. However, the completion path (Hunk 0) uses skb_get_queue_mapping(skb) to determine the queue. When qid differs from the actual queue mapping stored in the skb, BQL state is tracked on different queues, causing the accounting mismatch described in the root cause."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/airoha/airoha_eth.c",
+            "lineno": 935,
+            "content": "txq = netdev_get_tx_queue(skb->dev, queue);",
+            "rationale": "In the completion path, this line looks up the netdev TX queue using skb_get_queue_mapping(skb). The vulnerability occurs because the transmission path (Hunk 2) uses a different queue selection method (qid parameter), creating inconsistency in which queue's BQL state is updated between TX and completion."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/airoha/airoha_eth.c",
+            "stmt_text": "txq = netdev_get_tx_queue(dev, qid);",
+            "location": "hunk",
+            "explanation": "This statement in the transmission path (Hunk 2, line 2042) uses the explicit 'qid' parameter to look up the netdev TX queue for BQL accounting. However, the completion path uses skb_get_queue_mapping(skb) to determine the queue. When qid differs from the actual queue mapping stored in the skb, BQL state is tracked on different queues between TX and completion paths, causing the accounting mismatch vulnerability described in the root cause."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/airoha/airoha_eth.c",
+            "stmt_text": "txq = netdev_get_tx_queue(skb->dev, queue);",
+            "location": "hunk",
+            "explanation": "This statement in the completion path (Hunk 0, line 935) uses skb_get_queue_mapping(skb) to determine the queue for BQL accounting. The vulnerability manifests because the transmission path uses a different queue selection method (qid parameter instead of skb queue mapping), creating inconsistency in which queue's BQL state is updated between TX and completion, violating the requirement for consistent queue index calculations."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5bd6252b9df1",
+          "anchor_file": "drivers/net/ethernet/airoha/airoha_eth.c",
+          "anchor_lineno": 2042
+        },
+        "commit": "23020f04932701d5c8363e60756f12b43b8ed752",
+        "commit_short": "23020f049327",
+        "commit_msg": "net: airoha: Introduce ethernet support for EN7581 SoC\n\nAdd airoha_eth driver in order to introduce ethernet support for",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/airoha/airoha_eth.c",
+        "display_lineno": 2377,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function uses `qid = skb_get_queue_mapping(skb)` at line 2340 and directly passes this raw queue mapping to `netdev_get_tx_queue(dev, qid)` at line 2377 for BQL accounting via `netif_tx_stop_queue(txq)` at lines 2380 and 2427. However, the actual hardware queue selection uses `q = &eth->q_tx[qid]` at line 2371, and the queue index is managed with modulo arithmetic: `index = (index + 1) % q->ndesc` at line 2398. The vulnerability is that if the completion path (not shown here) uses a different queue index calculation without applying the same modulo constraint, BQL state will be tracked on a different netdev TX queue than where packets are actually queued. The TX path does not apply any modulo operation to `qid` before using it for BQL accounting, creating an inconsistency with how the actual queue indices are managed internally with modulo arithmetic."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "23020f04932701d5c8363e60756f12b43b8ed752",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5bd6252b9df1",
+          "anchor_file": "drivers/net/ethernet/airoha/airoha_eth.c",
+          "anchor_lineno": 935
+        },
+        "commit": "0c729f53b8c33b9e5eadc2d5e673759e3510501e",
+        "commit_short": "0c729f53b8c3",
+        "commit_msg": "net: airoha: Simplify Tx napi logic\n\nSimplify Tx napi logic relying just on the packet index provided by\ncompletion queu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/airoha/airoha_eth.c",
+        "display_lineno": 1734,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The vulnerability is present in the BQL accounting path at lines 1731-1735. The code retrieves the queue mapping directly from the skb (line 1731: `u16 queue = skb_get_queue_mapping(skb)`) and uses it without any modulo operation to get the netdev TX queue (line 1734: `txq = netdev_get_tx_queue(skb->dev, queue)`). However, based on the vulnerability root cause description, the TX path should be performing a modulo operation on the queue mapping (similar to how `head = head % irq_q->size` is done at line 1669), but this is not present here. The BQL completion accounting at line 1735 (`netdev_tx_completed_queue(txq, 1, skb->len)`) is thus operating on a potentially different netdev TX queue than where the packet was originally queued in the TX path, causing inconsistent BQL state tracking. The fix would require applying a modulo constraint to the queue mapping before using it for BQL accounting, which is not present in this code."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "0c729f53b8c33b9e5eadc2d5e673759e3510501e",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "23020f04932701d5c8363e60756f12b43b8ed752": 1,
+        "0c729f53b8c33b9e5eadc2d5e673759e3510501e": 1
+      },
+      "bic_candidates": [
+        "23020f04932701d5c8363e60756f12b43b8ed752",
+        "0c729f53b8c33b9e5eadc2d5e673759e3510501e"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

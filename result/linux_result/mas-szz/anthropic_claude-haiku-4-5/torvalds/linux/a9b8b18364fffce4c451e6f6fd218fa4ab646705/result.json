@@ -1,0 +1,266 @@
+{
+  "cveid": "CVE-2026-31533",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a9b8b18364fffce4c451e6f6fd218fa4ab646705"
+  ],
+  "ground_truth_bic": "8590541473188741055d27b955db0777569438e3",
+  "predicted_bic": [
+    "a42055e8d2c30d4decfc13ce943d09c7b9dad221",
+    "8590541473188741055d27b955db0777569438e3"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 63493,
+  "root_cause": {
+    "text": "Double cleanup of `encrypt_pending` counter and scatterlist entry occurs when `tls_encrypt_async_wait()` returns an error after `-EBUSY` handling, because the async callback `tls_encrypt_done()` has already performed this cleanup unconditionally, but the synchronous error path in `tls_do_encryption()` repeats it.",
+    "evidence": "The patch shows that when `crypto_aead_encrypt()` returns `-EBUSY`, the request is enqueued to cryptd backlog and `tls_encrypt_done()` callback will eventually execute, unconditionally decrementing `ctx->encrypt_pending` and restoring the scatterlist. However, if `tls_encrypt_async_wait()` returns an error, the code previously continued to the synchronous cleanup block that decrements `encrypt_pending` again. The fix adds a check `if (rc != -EINPROGRESS)` to skip the synchronous cleanup when async wait fails, preventing the double-decrement that corrupts the `encrypt_pending` sentinel and leads to use-after-free when a pending cryptd callback fires on a freed `tls_rec`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/tls/tls_sw.c",
+      "lineno": 589,
+      "content": "atomic_dec(&ctx->encrypt_pending);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/tls/tls_sw.c",
+      "lineno": 588,
+      "content": "if (!rc || rc != -EINPROGRESS) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/tls/tls_sw.c",
+      "lineno": 585,
+      "content": "rc = tls_encrypt_async_wait(ctx);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Double cleanup of `encrypt_pending` counter and scatterlist entry occurs when `tls_encrypt_async_wait()` returns an error after `-EBUSY` handling, because the async callback `tls_encrypt_done()` has already performed this cleanup unconditionally, but the synchronous error path in `tls_do_encryption()` repeats it.",
+      "evidence_points": "The patch shows that when `crypto_aead_encrypt()` returns `-EBUSY`, the request is enqueued to cryptd backlog and `tls_encrypt_done()` callback will eventually execute, unconditionally decrementing `ctx->encrypt_pending` and restoring the scatterlist. However, if `tls_encrypt_async_wait()` returns an error, the code previously continued to the synchronous cleanup block that decrements `encrypt_pending` again. The fix adds a check `if (rc != -EINPROGRESS)` to skip the synchronous cleanup when async wait fails, preventing the double-decrement that corrupts the `encrypt_pending` sentinel and leads to use-after-free when a pending cryptd callback fires on a freed `tls_rec`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/tls/tls_sw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix double-cleanup bug in async TLS encryption error path by returning early when async callback has already handled state management.",
+        "what": "Added a conditional block that checks if rc is not -EINPROGRESS after async encryption wait, and if so, removes the record from the list and returns early, skipping the subsequent synchronous cleanup code. Accompanied by a multi-line comment explaining that the async callback has already handled decrementing encrypt_pending and restoring the sge.",
+        "how": "This change prevents double-cleanup of encryption state when async encryption fails. Previously, after tls_encrypt_async_wait() returned an error (non -EINPROGRESS), the code would continue to the synchronous cleanup block below, which would attempt to decrement encrypt_pending again and perform other cleanup that was already done by the async callback tls_encrypt_done(). Now, on async error, the function returns early after removing the record, avoiding the duplicate cleanup that would cause incorrect state management."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix double-cleanup bug in async TLS encryption error path by returning early when async callback has already handled state management."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by implementing an early return mechanism to prevent duplicate cleanup of `encrypt_pending` counter and scatterlist entry. This prevents the synchronous error path from repeating cleanup that the async callback `tls_encrypt_done()` has already performed, which is exactly the double-cleanup issue described in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/tls/tls_sw.c",
+            "lineno": 588,
+            "content": "if (!rc || rc != -EINPROGRESS) {",
+            "rationale": "This condition checks if rc is 0 or not -EINPROGRESS, and then unconditionally decrements encrypt_pending. However, when tls_encrypt_async_wait() returns an error after -EBUSY handling, the async callback tls_encrypt_done() has already decremented encrypt_pending. This condition fails to account for the case where the async callback already performed cleanup, leading to double-decrement of the counter."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/tls/tls_sw.c",
+            "lineno": 589,
+            "content": "atomic_dec(&ctx->encrypt_pending);",
+            "rationale": "This line unconditionally decrements the encrypt_pending counter in the synchronous error path. When tls_encrypt_async_wait() returns an error, the async callback tls_encrypt_done() has already performed this decrement. The lack of a guard condition or early return after async callback execution causes this cleanup to execute twice for the same counter."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/tls/tls_sw.c",
+            "lineno": 585,
+            "content": "rc = tls_encrypt_async_wait(ctx);",
+            "rationale": "When this function returns an error, control flow continues to the subsequent cleanup code that unconditionally decrements encrypt_pending. However, the async callback tls_encrypt_done() has already performed this cleanup. The missing early return or error handling after this call allows the double-cleanup to occur."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/tls/tls_sw.c",
+            "stmt_text": "atomic_dec(&ctx->encrypt_pending);",
+            "location": "hunk",
+            "explanation": "This statement unconditionally decrements the encrypt_pending counter in the synchronous error path at line 589. When tls_encrypt_async_wait() returns an error after -EBUSY handling, the async callback tls_encrypt_done() has already decremented this counter. The lack of a guard condition to check whether the async callback already performed cleanup causes this decrement to execute twice for the same counter, resulting in double-cleanup of the encrypt_pending counter."
+          },
+          {
+            "vuln_file": "net/tls/tls_sw.c",
+            "stmt_text": "if (!rc || rc != -EINPROGRESS) {",
+            "location": "hunk",
+            "explanation": "This condition at line 588 checks if rc is 0 or not -EINPROGRESS, and then proceeds to unconditionally decrement encrypt_pending within the block. The condition fails to account for the case where tls_encrypt_async_wait() returns an error after -EBUSY handling and the async callback tls_encrypt_done() has already performed the cleanup. The condition should include additional logic to prevent cleanup when the async callback has already handled state management."
+          },
+          {
+            "vuln_file": "net/tls/tls_sw.c",
+            "stmt_text": "rc = tls_encrypt_async_wait(ctx);",
+            "location": "hunk",
+            "explanation": "When this function at line 585 returns an error, control flow continues to the subsequent cleanup code that unconditionally decrements encrypt_pending. However, the async callback tls_encrypt_done() has already performed this cleanup. The missing early return or error handling after this call allows the double-cleanup to occur, as the synchronous error path does not distinguish between cases where the async callback has already handled cleanup versus cases where it has not."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a9d4f4f6e65e",
+          "anchor_file": "net/tls/tls_sw.c",
+          "anchor_lineno": 589
+        },
+        "commit": "a42055e8d2c30d4decfc13ce943d09c7b9dad221",
+        "commit_short": "a42055e8d2c3",
+        "commit_msg": "net/tls: Add support for async encryption of records for performance\n\nIn current implementation, tls records are encrypt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/tls/tls_sw.c",
+        "display_lineno": 491,
+        "code_snippet": "commit a42055e8d2c30d4decfc13ce943d09c7b9dad221\nAuthor: Vakul Garg <vakul.garg@nxp.com>\nDate:   Fri Sep 21 09:46:13 2018 +0530\n\n    net/tls: Add support for async encryption of records for performance\n    \n    In current implementation, tls records are encrypted & transmitted\n    serially. Till the time the previously submitted user data is encrypted,\n    the implementation waits and on finish starts transmitting the record.\n    This approach of encrypt-one record at a time is inefficient when\n ",
+        "exists": true,
+        "reason": "The function shows the vulnerable construct at lines 487-494. The code increments `encrypt_pending` at line 487, then at lines 490-494 it decrements the counter and reverts scatterlist modifications when `rc` is 0 (success) or not -EINPROGRESS. However, the vulnerability occurs because: (1) when `rc == 0` (synchronous completion), the async callback `tls_encrypt_done()` is still invoked and will also decrement `encrypt_pending` and revert the scatterlist, causing double cleanup; (2) the condition at line 490 `if (!rc || rc != -EINPROGRESS)` is logically flawed - it should only handle the synchronous success case, but the callback is set unconditionally at line 484-485 regardless of whether encryption completes synchronously or asynchronously. The fix would require checking if the callback will actually be invoked before performing cleanup in the synchronous path, or ensuring cleanup only happens once."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "06983aa526c7",
+          "anchor_file": "net/tls/tls_sw.c",
+          "anchor_lineno": 491
+        },
+        "commit": "3c4d7559159bfe1e3b94df3a657b2cda3a34e218",
+        "commit_short": "3c4d7559159b",
+        "commit_msg": "tls: kernel TLS support\n\nSoftware implementation of transport layer security, implemented using ULP\ninfrastructure.  tcp",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/tls/tls_sw.c",
+        "display_lineno": 371,
+        "code_snippet": "commit 3c4d7559159bfe1e3b94df3a657b2cda3a34e218\nAuthor: Dave Watson <davejwatson@fb.com>\nDate:   Wed Jun 14 11:37:39 2017 -0700\n\n    tls: kernel TLS support\n    \n    Software implementation of transport layer security, implemented using ULP\n    infrastructure.  tcp proto_ops are replaced with tls equivalents of sendmsg and\n    sendpage.\n    \n    Only symmetric crypto is done in the kernel, keys are passed by setsockopt\n    after the handshake is complete.  All control messages are supported via ",
+        "exists": false,
+        "reason": "The provided function body (lines 353-378) appears to be a data copying function that populates scatterlist entries from user input. It does not contain the vulnerable construct described in the root cause. The vulnerability involves double cleanup of 'encrypt_pending' counter and scatterlist in 'tls_do_encryption()' and 'tls_encrypt_done()' functions, specifically related to async encryption error handling with '-EBUSY' and 'tls_encrypt_async_wait()'. The shown function does not contain any encryption, async callback logic, error handling for '-EBUSY', or calls to 'tls_encrypt_async_wait()'. To properly assess whether this commit introduces the vulnerability, the complete 'tls_do_encryption()' and 'tls_encrypt_done()' function implementations would be needed to verify if double cleanup occurs in the async error path."
+      }
+    },
+    {
+      "bic_found": "a42055e8d2c30d4decfc13ce943d09c7b9dad221",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a9d4f4f6e65e",
+          "anchor_file": "net/tls/tls_sw.c",
+          "anchor_lineno": 588
+        },
+        "commit": "a42055e8d2c30d4decfc13ce943d09c7b9dad221",
+        "commit_short": "a42055e8d2c3",
+        "commit_msg": "net/tls: Add support for async encryption of records for performance\n\nIn current implementation, tls records are encrypt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/tls/tls_sw.c",
+        "display_lineno": 490,
+        "code_snippet": "commit a42055e8d2c30d4decfc13ce943d09c7b9dad221\nAuthor: Vakul Garg <vakul.garg@nxp.com>\nDate:   Fri Sep 21 09:46:13 2018 +0530\n\n    net/tls: Add support for async encryption of records for performance\n    \n    In current implementation, tls records are encrypted & transmitted\n    serially. Till the time the previously submitted user data is encrypted,\n    the implementation waits and on finish starts transmitting the record.\n    This approach of encrypt-one record at a time is inefficient when\n ",
+        "exists": true,
+        "reason": "The function shows the vulnerable double-cleanup pattern. At line 487, `atomic_inc(&ctx->encrypt_pending)` increments the counter. At line 489, `crypto_aead_encrypt(aead_req)` is called with a callback `tls_encrypt_done` (line 485) that will decrement this counter when the async operation completes. However, lines 490-494 show the synchronous error path: when `rc` is 0 (success, synchronous completion) or any error except `-EINPROGRESS`, the code decrements the counter at line 491 and reverses the scatterlist modifications at lines 492-493. The vulnerability occurs when `rc == -EBUSY` (a transient error that can occur with `-CRYPTO_TFM_REQ_MAY_BACKLOG`): the async callback `tls_encrypt_done()` will still execute and perform cleanup (decrement counter and reverse scatterlist), but this code path also performs the same cleanup, causing double-decrement of `encrypt_pending` and double reversal of scatterlist offsets/lengths. The condition at line 490 `if (!rc || rc != -EINPROGRESS)` treats `-EBUSY` as a synchronous error requiring cleanup, but `-EBUSY` with `MAY_BACKLOG` flag means the request is queued and the callback will still fire, making this cleanup premature and duplicative."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "06983aa526c7",
+          "anchor_file": "net/tls/tls_sw.c",
+          "anchor_lineno": 490
+        },
+        "commit": "3c4d7559159bfe1e3b94df3a657b2cda3a34e218",
+        "commit_short": "3c4d7559159b",
+        "commit_msg": "tls: kernel TLS support\n\nSoftware implementation of transport layer security, implemented using ULP\ninfrastructure.  tcp",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/tls/tls_sw.c",
+        "display_lineno": 370,
+        "code_snippet": "commit 3c4d7559159bfe1e3b94df3a657b2cda3a34e218\nAuthor: Dave Watson <davejwatson@fb.com>\nDate:   Wed Jun 14 11:37:39 2017 -0700\n\n    tls: kernel TLS support\n    \n    Software implementation of transport layer security, implemented using ULP\n    infrastructure.  tcp proto_ops are replaced with tls equivalents of sendmsg and\n    sendpage.\n    \n    Only symmetric crypto is done in the kernel, keys are passed by setsockopt\n    after the handshake is complete.  All control messages are supported via ",
+        "exists": false,
+        "reason": "The provided function body (lines 353-378) shows a data copying loop that increments `tls_ctx->pending_open_record_frags` counter. However, this snippet alone is insufficient to determine if it contains the double cleanup vulnerability described in the root cause. The vulnerability involves: (1) async callback `tls_encrypt_done()` performing cleanup, (2) `tls_encrypt_async_wait()` returning an error after `-EBUSY` handling, and (3) synchronous error path in `tls_do_encryption()` repeating cleanup. The current function appears to be a data copy helper function, not the encryption or cleanup logic where the double-cleanup would occur. To properly assess the vulnerability, we would need to see: the `tls_encrypt_done()` callback implementation, the `tls_encrypt_async_wait()` function, the `tls_do_encryption()` function, and how they interact with the `encrypt_pending` counter and scatterlist cleanup. The shown code does not contain the vulnerable construct related to async callback cleanup or error handling in encryption paths."
+      }
+    },
+    {
+      "bic_found": "a42055e8d2c30d4decfc13ce943d09c7b9dad221",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a9d4f4f6e65e",
+          "anchor_file": "net/tls/tls_sw.c",
+          "anchor_lineno": 585
+        },
+        "commit": "8590541473188741055d27b955db0777569438e3",
+        "commit_short": "859054147318",
+        "commit_msg": "net: tls: handle backlogging of crypto requests\n\nSince we're setting the CRYPTO_TFM_REQ_MAY_BACKLOG flag on our\nrequests",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/tls/tls_sw.c",
+        "display_lineno": 575,
+        "code_snippet": "commit 8590541473188741055d27b955db0777569438e3\nAuthor: Jakub Kicinski <kuba@kernel.org>\nDate:   Tue Feb 6 17:18:21 2024 -0800\n\n    net: tls: handle backlogging of crypto requests\n    \n    Since we're setting the CRYPTO_TFM_REQ_MAY_BACKLOG flag on our\n    requests to the crypto API, crypto_aead_{encrypt,decrypt} can return\n     -EBUSY instead of -EINPROGRESS in valid situations. For example, when\n    the cryptd queue for AESNI is full (easy to trigger with an\n    artificially low cryptd.cryptd_m",
+        "exists": false,
+        "reason": "This commit INTRODUCES the fix for the double cleanup vulnerability. The vulnerable construct (double cleanup) does not exist in this code because: (1) The async callback `tls_encrypt_done()` now has an early return guard at lines 467-468: `if (err == -EINPROGRESS) return;` which prevents it from performing cleanup when called with -EINPROGRESS. (2) In `tls_do_encryption()`, when `crypto_aead_encrypt()` returns -EBUSY, the code at lines 574-577 converts it to -EINPROGRESS via `tls_encrypt_async_wait()`, ensuring the synchronous error path only executes cleanup once. (3) The condition at line 578 `if (!rc || rc != -EINPROGRESS)` ensures cleanup (atomic_dec) only happens in the synchronous path when the operation completes synchronously, not when it's truly asynchronous. The same pattern is applied to decryption at lines 283-286 and 196-208. This commit prevents the double cleanup by ensuring the async callback ignores -EINPROGRESS calls and properly distinguishing between synchronous and asynchronous completion paths."
+      }
+    },
+    {
+      "bic_found": "8590541473188741055d27b955db0777569438e3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "a42055e8d2c30d4decfc13ce943d09c7b9dad221": 2,
+        "8590541473188741055d27b955db0777569438e3": 1
+      },
+      "bic_candidates": [
+        "a42055e8d2c30d4decfc13ce943d09c7b9dad221",
+        "8590541473188741055d27b955db0777569438e3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,250 @@
+{
+  "cveid": "CVE-2026-45944",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "c1e4f1dccbe9d7656d1c6872ebeadb5992d0aaa2"
+  ],
+  "ground_truth_bic": "ba39592764ed20cee09aae5352e603a27bf56b0d",
+  "predicted_bic": [
+    "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 14617,
+  "root_cause": {
+    "text": "The Intel VT-d IOMMU code tore down a 128-bit context_entry by zeroing it with non-atomic multiple 64-bit writes while the Present bit could remain visible, lacking the required ordering/ownership handshake so hardware could observe a torn still-present entry.",
+    "evidence": "The CVE/commit explicitly says teardown “zeros the entire 128-bit entry using multiple 64-bit writes,” creating a window where hardware may fetch a “torn” entry “while the 'Present' bit is still set,” and the patch changes domain_context_clear_one() and device_pasid_table_setup() from context_clear_entry() first to context_clear_present(), dma_wmb()/flush/invalidation, and only then full entry clearing.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/iommu/intel/iommu.c",
+      "lineno": 1243,
+      "content": "context_clear_entry(context);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/iommu/intel/pasid.c",
+      "lineno": 1243,
+      "content": "context_clear_entry(context);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The Intel VT-d IOMMU code tore down a 128-bit context_entry by zeroing it with non-atomic multiple 64-bit writes while the Present bit could remain visible, lacking the required ordering/ownership handshake so hardware could observe a torn still-present entry.",
+      "evidence_points": "The CVE/commit explicitly says teardown “zeros the entire 128-bit entry using multiple 64-bit writes,” creating a window where hardware may fetch a “torn” entry “while the 'Present' bit is still set,” and the patch changes domain_context_clear_one() and device_pasid_table_setup() from context_clear_entry() first to context_clear_present(), dma_wmb()/flush/invalidation, and only then full entry clearing."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/iommu/intel/iommu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/iommu/intel/iommu.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Mark the context entry not-present before flushing and fully clear it afterward to fix context invalidation ordering during domain context teardown.",
+        "what": "The code changes the order and granularity of clearing a context entry in domain_context_clear_one(): instead of immediately calling context_clear_entry(context) before cache flush and context invalidation, it now first calls context_clear_present(context), flushes that partial change, unlocks and performs intel_context_flush_no_pasid(info, context, did), and only afterward calls context_clear_entry(context) followed by another cache flush.",
+        "how": "At runtime, the context entry is first marked not-present and that state is made visible before issuing the context flush, then the full entry is cleared only after invalidation completes. This prevents the invalidation path from losing access to needed context information too early while ensuring hardware stops treating the entry as valid before it is fully erased."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add ordered, atomic-style present-bit set/clear helpers for VT-d context entries to ensure correct hardware-visible ownership transitions.",
+        "what": "The change replaces the direct assignment `context->lo |= 1` in `context_set_present()` with a sequence that declares a local `u64 val`, issues `dma_wmb()`, reads `context->lo` via `READ_ONCE()`, sets bit 0, and writes it back via `WRITE_ONCE()`. It also adds a new inline helper `context_clear_present()` with a comment explaining its purpose, which reads `context->lo` with `READ_ONCE()`, clears bit 0 using `GENMASK_ULL(63, 1)`, writes the result with `WRITE_ONCE()`, and then issues `dma_wmb()`.",
+        "how": "At runtime, setting the context entry present bit now enforces DMA-visible memory ordering before publishing the entry to hardware, and uses explicit single-copy read/write primitives to avoid unsafe compiler optimizations or torn accesses. The new clear helper provides a defined way to remove the present bit and place a barrier after doing so, supporting the hardware/software ownership transition and invalidation flow required for VT-d context entries."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix copied-context handling by clearing only the context entry's present bit rather than erasing the entire entry before cache flush.",
+        "what": "Within device_pasid_table_setup(), the call inside the context_copied(iommu, bus, devfn) branch was changed from context_clear_entry(context) to context_clear_present(context), while leaving the subsequent cache flush unchanged.",
+        "how": "At runtime, this change clears only the context entry's present/valid bit instead of wiping the entire context entry structure, preserving the rest of the entry contents while marking it inactive before flushing the cache."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear and flush the IOMMU context entry during PASID table setup to avoid stale context state remaining visible to hardware.",
+        "what": "Two statements were added in device_pasid_table_setup() after the IOTLB and device TLB invalidation calls: context_clear_entry(context); and __iommu_flush_cache(iommu, context, sizeof(*context));.",
+        "how": "At runtime, the change explicitly clears the IOMMU context entry and flushes that updated context entry from cache so the hardware sees the cleared state. This prevents a stale or previously populated context entry from remaining active after TLB invalidation during PASID table setup."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix copied-context handling by clearing only the context entry's present bit rather than erasing the entire entry before cache flush."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear and flush the IOMMU context entry during PASID table setup to avoid stale context state remaining visible to hardware."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix VT-d context entry invalidation and ownership transition ordering by manipulating the present bit correctly during teardown and copied-context handling.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: they fix VT-d context entry teardown/ownership ordering by explicitly clearing the Present bit before teardown/flush, using ordered helpers for present-bit transitions, and avoiding non-atomic full-entry clearing while hardware could still observe the entry."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly deals with clearing and flushing an IOMMU context entry so stale/present context state is not visible to hardware, which aligns with the root cause of unsafe context_entry teardown visibility and ordering."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/iommu/intel/iommu.c",
+            "lineno": 1243,
+            "content": "context_clear_entry(context);",
+            "rationale": "This fully zeroes the 128-bit context entry before first clearing the Present bit with the required ownership/ordering protocol. Because the clear is done via multiple non-atomic writes, hardware can observe a torn entry that may still appear present."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/iommu/intel/pasid.c",
+            "lineno": 1027,
+            "content": "context_clear_entry(context);",
+            "rationale": "This teardown path for copied contexts erases the whole context entry directly, creating the same torn-write risk: the Present bit may remain visible while other fields are already zeroed or partially updated."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/iommu/intel/iommu.h",
+            "lineno": 903,
+            "content": "context->lo |= 1;",
+            "rationale": "Manipulating the Present bit with a plain non-atomic store to one 64-bit half of a 128-bit entry reflects the lack of ordered ownership-transition helpers that underlies the bug. The fix introduces special present-bit helpers specifically to avoid unsafe visibility transitions."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/iommu/intel/iommu.c",
+            "stmt_text": "context_clear_entry(context);",
+            "location": "hunk",
+            "explanation": "This teardown path clears the entire 128-bit context entry with multiple non-atomic writes before performing the required present-bit ownership transition and invalidation ordering. As a result, hardware may observe a torn entry while the Present bit is still visible."
+          },
+          {
+            "vuln_file": "drivers/iommu/intel/pasid.c",
+            "stmt_text": "context_clear_entry(context);",
+            "location": "hunk",
+            "explanation": "This copied-context teardown uses the same unsafe full-entry clear, zeroing a 128-bit context entry via non-atomic writes instead of first clearing only the Present bit with the required ordering. That can expose hardware to a torn still-present entry."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75ed00055c05",
+          "anchor_file": "drivers/iommu/intel/iommu.c",
+          "anchor_lineno": 1243
+        },
+        "commit": "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+        "commit_short": "5082219b6a61",
+        "commit_msg": "iommu/vt-d: Don't be too aggressive when clearing one context entry\n\nPreviously, we were invalidating context cache and ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/intel/iommu.c",
+        "display_lineno": 2364,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact teardown sequence for a single VT-d context entry. The vulnerable construct is present at line 2364: `context_clear_entry(context);`. Per the root cause, clearing a 128-bit `context_entry` via non-atomic multiple 64-bit stores is unsafe because hardware may still observe the Present bit while seeing a torn entry. This function performs that clear directly on the live entry and only afterwards does `__iommu_flush_cache(iommu, context, sizeof(*context));` at line 2365 and then context/IOTLB invalidations at lines 2367-2376. There is no visible ordering/ownership handshake before tearing down the entry, no step that first makes the entry safely non-present in an atomic/ordered way, and no mechanism shown to prevent hardware from observing a partially cleared still-present entry. Therefore the vulnerable logic is present, and the fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace": "blame failed at depth 0"
+    },
+    {
+      "bic_found": null,
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc": 1
+      },
+      "bic_candidates": [
+        "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

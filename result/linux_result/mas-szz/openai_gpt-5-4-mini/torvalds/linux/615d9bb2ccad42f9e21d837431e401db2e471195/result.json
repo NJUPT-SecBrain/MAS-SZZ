@@ -1,0 +1,324 @@
+{
+  "cveid": "CVE-2026-31589",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "615d9bb2ccad42f9e21d837431e401db2e471195"
+  ],
+  "ground_truth_bic": "fb7d3bc4149395c1ae99029c852eab6c28fc3c88",
+  "predicted_bic": [
+    "3047250972ff935b1d7a0629fa3acb04c12dcc07",
+    "51b8c1fe250d1bd70c1722dc3c414f5cff2d7cca",
+    "78f426608f21c997975adb96641b7ac82d4d15b1"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 15882,
+  "root_cause": {
+    "text": "`folio_unmap_invalidate()` dropped the last safe reference/lock on the folio’s `address_space` mapping before invoking the filesystem `->free_folio()` callback, allowing `mapping` to be freed and then dereferenced via `mapping->a_ops`, causing a use-after-free.",
+    "evidence": "The commit message says “We can only call filemap_free_folio() if we have a reference to (or hold a lock on) the mapping… the mapping can be removed, causing a use-after-free when accessing mapping->a_ops,” and the patch fixes this by loading `free_folio = mapping->a_ops->free_folio` before `spin_unlock(&mapping->host->i_lock)` and then calling `free_folio(folio)` directly instead of `filemap_free_folio(mapping, folio)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/truncate.c",
+      "lineno": 648,
+      "content": "xa_unlock_irq(&mapping->i_pages);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/truncate.c",
+      "lineno": 651,
+      "content": "spin_unlock(&mapping->host->i_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/truncate.c",
+      "lineno": 653,
+      "content": "filemap_free_folio(mapping, folio);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`folio_unmap_invalidate()` dropped the last safe reference/lock on the folio’s `address_space` mapping before invoking the filesystem `->free_folio()` callback, allowing `mapping` to be freed and then dereferenced via `mapping->a_ops`, causing a use-after-free.",
+      "evidence_points": "The commit message says “We can only call filemap_free_folio() if we have a reference to (or hold a lock on) the mapping… the mapping can be removed, causing a use-after-free when accessing mapping->a_ops,” and the patch fixes this by loading `free_folio = mapping->a_ops->free_folio` before `spin_unlock(&mapping->host->i_lock)` and then calling `free_folio(folio)` directly instead of `filemap_free_folio(mapping, folio)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/filemap.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "mm/internal.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "mm/truncate.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "mm/truncate.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Make `filemap_free_folio()` file-local and const-correct without changing its behavior.",
+        "what": "The function `filemap_free_folio()` was changed from a non-static, externally visible function taking `struct address_space *mapping` to a `static` function taking `const struct address_space *mapping`; the body shown in the hunk is unchanged.",
+        "how": "At runtime, this does not change the function’s logic, but it restricts its linkage to the current translation unit and marks the `mapping` parameter as read-only within the function, preventing accidental modification through that pointer."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Remove the `filemap_free_folio` prototype from the header to adjust the exposed interface.",
+        "what": "The declaration of `filemap_free_folio(struct address_space *mapping, struct folio *folio)` was removed from the header, while the surrounding function prototypes were left unchanged.",
+        "how": "This changes the public visibility of `filemap_free_folio` at the declaration site, meaning code including this header will no longer see that function prototype and cannot rely on it as an exposed interface from this header."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Add a local folio free callback variable in `folio_unmap_invalidate()` to support subsequent cleanup handling.",
+        "what": "A local function pointer declaration `void (*free_folio)(struct folio *);` was added at the start of `folio_unmap_invalidate()`, before the existing `int ret;` declaration. No other lines in the shown hunk were changed.",
+        "how": "As shown in this hunk alone, the change only introduces a new local variable that can be used later in the function to hold a folio-freeing callback. By itself, it does not alter execution flow yet, but it likely supports selecting the correct cleanup path at runtime."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix folio invalidation to call the mapping-specific free callback and release folio references correctly.",
+        "what": "In `folio_unmap_invalidate()`, the code now saves `mapping->a_ops->free_folio` into a local `free_folio` variable before releasing `mapping->host->i_lock`, then conditionally calls `free_folio(folio)` if it is non-NULL, and finally replaces `filemap_free_folio(mapping, folio)` with `folio_put_refs(folio, folio_nr_pages(folio))`.",
+        "how": "At runtime, folio invalidation now invokes the address-space specific folio release callback directly when present, rather than using the generic `filemap_free_folio()` helper. After that, it drops the folio's references explicitly based on the number of pages in the folio, which changes the cleanup path to match the folio-based API and ensures the callback is preserved across the lock release."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 2,
+          "intent": "Remove the `filemap_free_folio` prototype from the header to adjust the exposed interface."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Add a local folio free callback variable in `folio_unmap_invalidate()` to support subsequent cleanup handling."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix folio invalidation to call the mapping-specific free callback and release folio references correctly."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Tighten the `filemap_free_folio()` interface by making the helper file-local/const-correct and removing its public prototype.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The changes only adjust the visibility and const-correctness of `filemap_free_folio()` by making it file-local and removing its prototype. They do not change the `folio_unmap_invalidate()` lifetime/locking sequence or address the use-after-free in `mapping->a_ops`."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The root cause is a use-after-free in folio_unmap_invalidate() around calling ->free_folio() after losing the safe mapping reference. Adding a local folio free callback variable in that function is directly related to restructuring the cleanup/callback handling to avoid using freed mapping state."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group’s intent matches the root cause: it fixes folio invalidation and the ordering of the free callback/reference release on the folio’s mapping, which is exactly what led to the use-after-free in `folio_unmap_invalidate()`."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "mm/truncate.c",
+            "lineno": 653,
+            "content": "filemap_free_folio(mapping, folio);",
+            "rationale": "This is the pre-fix callback invocation site that occurs after the mapping has been unlocked/released. Because it dereferences the folio's mapping via the filesystem free-folio path, it directly matches the described use-after-free hazard when `mapping` can already be freed."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/truncate.c",
+            "lineno": 648,
+            "content": "xa_unlock_irq(&mapping->i_pages);",
+            "rationale": "This line releases the mapping's page-tree lock before the free-folio callback runs. Dropping the last safe reference/lock too early is part of the root cause that allows `mapping` to become invalid before later dereference."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/truncate.c",
+            "lineno": 651,
+            "content": "spin_unlock(&mapping->host->i_lock);",
+            "rationale": "This unlock further drops protection around the mapping/inode state before the free-folio operation. In the vulnerable flow, this contributes to the window where the mapping can be freed and then accessed afterward."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/truncate.c",
+            "stmt_text": "xa_unlock_irq(&mapping->i_pages);",
+            "location": "hunk",
+            "explanation": "This releases the mapping's page-tree lock before the free-folio callback runs, dropping protection too early and enabling the mapping to be freed before later use."
+          },
+          {
+            "vuln_file": "mm/truncate.c",
+            "stmt_text": "spin_unlock(&mapping->host->i_lock);",
+            "location": "hunk",
+            "explanation": "This unlock further removes protection around the mapping/inode state before the filesystem free-folio path is invoked, contributing to the use-after-free window."
+          },
+          {
+            "vuln_file": "mm/truncate.c",
+            "stmt_text": "filemap_free_folio(mapping, folio);",
+            "location": "hunk",
+            "explanation": "This is the callback invocation that dereferences the folio's mapping after the safe references/locks have already been dropped, directly matching the use-after-free condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f5857be99f1",
+          "anchor_file": "mm/truncate.c",
+          "anchor_lineno": 648
+        },
+        "commit": "3047250972ff935b1d7a0629fa3acb04c12dcc07",
+        "commit_short": "3047250972ff",
+        "commit_msg": "mm: remove irqsave/restore locking from contexts with irqs enabled\n\nThe page cache deletion paths all have interrupts en",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/truncate.c",
+        "display_lineno": 575,
+        "code_snippet": "commit 3047250972ff935b1d7a0629fa3acb04c12dcc07\nAuthor: Johannes Weiner <hannes@cmpxchg.org>\nDate:   Thu Sep 2 14:53:18 2021 -0700\n\n    mm: remove irqsave/restore locking from contexts with irqs enabled\n    \n    The page cache deletion paths all have interrupts enabled, so no need to\n    use irqsafe/irqrestore locking variants.\n    \n    They used to have irqs disabled by the memcg lock added in commit\n    c4843a7593a9 (\"memcg: add per cgroup dirty page accounting\"), but that has\n    since been r",
+        "exists": false,
+        "reason": "The shown function `invalidate_complete_page2()` only changes locking from `xa_lock_irqsave(&mapping->i_pages, flags)` / `xa_unlock_irqrestore(...)` to `xa_lock_irq(&mapping->i_pages)` / `xa_unlock_irq(&mapping->i_pages)`. The vulnerable construct described in the root cause is `folio_unmap_invalidate()` dropping the last safe reference/lock on the folio’s `address_space` mapping before calling the filesystem callback and then dereferencing `mapping->a_ops`. This snippet does not show `folio_unmap_invalidate()`, does not drop a mapping reference, and does not access `mapping->a_ops` after releasing the last safe ref. The code still calls `mapping->a_ops->freepage(page)` while the xarray lock has already been released, but that is the pre-existing freepage path, not the specific UAF root cause described here. Therefore the vulnerable construct is absent from this function, and the fix for that root cause is not shown here."
+      }
+    },
+    {
+      "bic_found": "3047250972ff935b1d7a0629fa3acb04c12dcc07",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f5857be99f1",
+          "anchor_file": "mm/truncate.c",
+          "anchor_lineno": 651
+        },
+        "commit": "51b8c1fe250d1bd70c1722dc3c414f5cff2d7cca",
+        "commit_short": "51b8c1fe250d",
+        "commit_msg": "vfs: keep inodes with page cache off the inode shrinker LRU\n\nHistorically (pre-2.5), the inode shrinker used to reclaim ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/truncate.c",
+        "display_lineno": 590,
+        "code_snippet": "commit 51b8c1fe250d1bd70c1722dc3c414f5cff2d7cca\nAuthor: Johannes Weiner <hannes@cmpxchg.org>\nDate:   Mon Nov 8 18:31:24 2021 -0800\n\n    vfs: keep inodes with page cache off the inode shrinker LRU\n    \n    Historically (pre-2.5), the inode shrinker used to reclaim only empty\n    inodes and skip over those that still contained page cache.  This caused\n    problems on highmem hosts: struct inode could put fill lowmem zones\n    before the cache was getting reclaimed in the highmem zones.\n    \n    To",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present here. In this diff, the code explicitly keeps `mapping->host` protected by `i_lock` around page-cache deletion and LRU handling: e.g. `spin_lock(&mapping->host->i_lock);` before `xa_lock_irq(&mapping->i_pages);` and `spin_unlock(&mapping->host->i_lock);` after. In `invalidate_complete_page2()`, the page is deleted from cache under both locks, then the inode is re-added to the LRU if shrinkable (`if (mapping_shrinkable(mapping)) inode_add_lru(mapping->host);`) before releasing `i_lock`. This is consistent with the fix to avoid dropping the mapping/inode protection too early. There is no `folio_unmap_invalidate()` logic here and no direct dereference of `mapping->a_ops` after releasing the last safe reference/lock, so the use-after-free root cause is absent in this snippet."
+      }
+    },
+    {
+      "bic_found": "51b8c1fe250d1bd70c1722dc3c414f5cff2d7cca",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f5857be99f1",
+          "anchor_file": "mm/truncate.c",
+          "anchor_lineno": 653
+        },
+        "commit": "78f426608f21c997975adb96641b7ac82d4d15b1",
+        "commit_short": "78f426608f21",
+        "commit_msg": "truncate: Add invalidate_complete_folio2()\n\nConvert invalidate_complete_page2() to invalidate_complete_folio2().\nUse fil",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/truncate.c",
+        "display_lineno": 596,
+        "code_snippet": "commit 78f426608f21c997975adb96641b7ac82d4d15b1\nAuthor: Matthew Wilcox (Oracle) <willy@infradead.org>\nDate:   Wed Jul 28 15:52:34 2021 -0400\n\n    truncate: Add invalidate_complete_folio2()\n    \n    Convert invalidate_complete_page2() to invalidate_complete_folio2().\n    Use filemap_free_folio() to free the page instead of calling ->freepage\n    manually.\n    \n    Signed-off-by: Matthew Wilcox (Oracle) <willy@infradead.org>\n    Reviewed-by: Christoph Hellwig <hch@lst.de>\n    Reviewed-by: William ",
+        "exists": false,
+        "reason": "The shown function is the new `invalidate_complete_folio2()` implementation, and it already uses the safer callback path: instead of manually invoking `mapping->a_ops->freepage(page)` after dropping cache references, it calls `filemap_free_folio(mapping, folio);` at the end. The vulnerable construct described in the root cause—freeing or invalidating the mapping before a filesystem `->free_folio()` callback then dereferencing `mapping->a_ops`—is not present here. Relevant lines are `filemap_free_folio(mapping, folio);` and the absence of any direct `mapping->a_ops->freepage(...)` call in this function. Therefore this commit version already contains the fix and does not show the bug."
+      }
+    },
+    {
+      "bic_found": "78f426608f21c997975adb96641b7ac82d4d15b1",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "3047250972ff935b1d7a0629fa3acb04c12dcc07": 1,
+        "51b8c1fe250d1bd70c1722dc3c414f5cff2d7cca": 1,
+        "78f426608f21c997975adb96641b7ac82d4d15b1": 1
+      },
+      "bic_candidates": [
+        "3047250972ff935b1d7a0629fa3acb04c12dcc07",
+        "51b8c1fe250d1bd70c1722dc3c414f5cff2d7cca",
+        "78f426608f21c997975adb96641b7ac82d4d15b1"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

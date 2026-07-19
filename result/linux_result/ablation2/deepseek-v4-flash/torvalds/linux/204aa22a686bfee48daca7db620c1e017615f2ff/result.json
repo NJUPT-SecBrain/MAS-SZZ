@@ -1,0 +1,571 @@
+{
+  "cveid": "CVE-2026-31713",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "204aa22a686bfee48daca7db620c1e017615f2ff"
+  ],
+  "ground_truth_bic": "dfb84c33079497bf27058b15780e1c7bba4c371b",
+  "predicted_bic": [
+    "d8a5ba45457e4a22aa39c939121efd7bb6c76672",
+    "334f485df85ac7736ebe14940bf0a059c5f26d7d",
+    "83cfd4935124b165e942c317dc3e9ebb0a3e6a63"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 18,
+  "llm_tokens": 20381,
+  "root_cause": {
+    "text": "In the synchronous FUSE_INIT path, the mounting thread holds the device fd open while blocked on the FUSE_INIT request; if the server crashes or fails to respond, the thread cannot be interrupted (because the request has FR_FORCE set) and no mechanism exists to abort the connection upon a fatal signal, resulting in an indefinite hang.",
+    "evidence": "The CVE description explains that \"the mounting thread (or process) will keep the device fd open, which will prevent an abort from happening\". The patch introduces `abort_on_kill` flag, sets it for the sync init request, and modifies `request_wait_answer` to call `fuse_abort_conn` when this flag is set, while also removing `FR_FORCE` from such requests to allow interruption.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/fuse/dev.c",
+      "lineno": 679,
+      "content": "__set_bit(FR_FORCE, &req->flags);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fuse/dev.c",
+      "lineno": 571,
+      "content": "return;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fuse/inode.c",
+      "lineno": 1553,
+      "content": "if (fm->fc->sync_init) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fuse/inode.c",
+      "lineno": 1554,
+      "content": "err = fuse_simple_request(fm, &ia->args);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the synchronous FUSE_INIT path, the mounting thread holds the device fd open while blocked on the FUSE_INIT request; if the server crashes or fails to respond, the thread cannot be interrupted (because the request has FR_FORCE set) and no mechanism exists to abort the connection upon a fatal signal, resulting in an indefinite hang.",
+      "evidence_points": "The CVE description explains that \"the mounting thread (or process) will keep the device fd open, which will prevent an abort from happening\". The patch introduces `abort_on_kill` flag, sets it for the sync init request, and modifies `request_wait_answer` to call `fuse_abort_conn` when this flag is set, while also removing `FR_FORCE` from such requests to allow interruption."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/fuse/dev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/fuse/dev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/fuse/fuse_i.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/fuse/inode.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Abort the FUSE connection when a request marked with abort_on_kill is interrupted, preventing potential corruption or deadlock.",
+        "what": "Added a conditional block inside request_wait_answer() that checks if req->args->abort_on_kill is true. If so, it calls fuse_abort_conn(fc) and returns early, bypassing the existing code for handling uring and removing pending requests.",
+        "how": "When a request waiting for a reply from userspace is interrupted (e.g., by a signal), the function previously would continue to handle the interruption. Now, if the request has the abort_on_kill flag set, the FUSE connection is aborted immediately and the function returns, terminating the connection rather than attempting to continue."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Only set FR_FORCE flag on fuse request if abort_on_kill is not set, to allow aborting forced requests on process kill.",
+        "what": "Changed the setting of FR_FORCE flag in __fuse_simple_request from unconditional to conditional on !args->abort_on_kill.",
+        "how": "When processing a forced fuse request (if-block), the FR_FORCE bit is now only set if the abort_on_kill flag is false. This prevents marking requests as forced when they should be abortable on process kill."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "other",
+        "intent_summary": "Add an `abort_on_kill` flag to `struct fuse_args` to enable aborting requests when the FUSE daemon is killed.",
+        "what": "Added a new bit-field member `abort_on_kill` of type `bool:1` to the `struct fuse_args` structure, placed after `bool invalidate_vmap:1`.",
+        "how": "The new flag can be set on a FUSE request to indicate that the request should be aborted if the FUSE connection or daemon process is killed, altering request lifecycle behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Set abort_on_kill flag in FUSE init request when sync_init is true to allow the request to be aborted during kill, preventing hangs.",
+        "what": "Added `ia->args.abort_on_kill = true;` inside the `if (fm->fc->sync_init)` block, just before the call to `fuse_simple_request`.",
+        "how": "This change ensures that when the FUSE init request is sent synchronously (sync_init is true), the request will be aborted if the process or mount is killed, preventing potential hangs during forced teardown."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Set abort_on_kill flag in FUSE init request when sync_init is true to allow the request to be aborted during kill, preventing hangs."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Only set FR_FORCE flag on fuse request if abort_on_kill is not set, to allow aborting forced requests on process kill."
+        },
+        {
+          "group_id": 2,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add an `abort_on_kill` flag to `struct fuse_args` to enable aborting requests when the FUSE daemon is killed."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Implement abort_on_kill mechanism for FUSE requests to prevent hangs during kill by setting the flag in init request and aborting connection on interrupt.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability by introducing an abort_on_kill mechanism that allows the FUSE_INIT request to be aborted on interrupt, providing a way to break the indefinite hang described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by modifying when FR_FORCE is set, allowing forced requests to be aborted on process kill, which prevents the indefinite hang described in the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group introduces an `abort_on_kill` flag to abort requests when the FUSE daemon is killed, directly addressing the root cause's lack of abort mechanism on fatal signal in the FUSE_INIT path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/fuse/dev.c",
+            "lineno": 679,
+            "content": "__set_bit(FR_FORCE, &req->flags);",
+            "rationale": "This line unconditionally sets the FR_FORCE flag on the request, making it uninterruptible and preventing the mounting thread from being killed while waiting on the FUSE_INIT response."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fuse/dev.c",
+            "lineno": 571,
+            "content": "return;",
+            "rationale": "This early return in the request interrupt handling path does not abort the connection, so even if an interrupt occurs, the blocked thread cannot escape the hang."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/fuse/inode.c",
+            "lineno": 1553,
+            "content": "if (fm->fc->sync_init) {",
+            "rationale": "This condition guards the synchronous FUSE_INIT path, which is the vulnerable code path where the mounting thread holds the device fd and blocks indefinitely."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/fuse/inode.c",
+            "lineno": 1554,
+            "content": "err = fuse_simple_request(fm, &ia->args);",
+            "rationale": "This is the actual blocking call that issues the FUSE_INIT request; without the ability to abort on kill, the thread hangs forever if the server does not respond."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/fuse/dev.c",
+            "stmt_text": "__set_bit(FR_FORCE, &req->flags);",
+            "location": "hunk",
+            "explanation": "Unconditionally sets FR_FORCE flag on the request, making it uninterruptible and preventing the mounting thread from being killed while blocked on FUSE_INIT response."
+          },
+          {
+            "vuln_file": "fs/fuse/dev.c",
+            "stmt_text": "return;",
+            "location": "hunk",
+            "explanation": "Early return in the request interrupt handling path without aborting the connection, so even if an interrupt occurs, the blocked thread cannot escape the hang."
+          },
+          {
+            "vuln_file": "fs/fuse/inode.c",
+            "stmt_text": "if (fm->fc->sync_init) {",
+            "location": "hunk",
+            "explanation": "Conditions the synchronous FUSE_INIT path, which is the vulnerable code path where the mounting thread holds the device fd and blocks indefinitely."
+          },
+          {
+            "vuln_file": "fs/fuse/inode.c",
+            "stmt_text": "err = fuse_simple_request(fm, &ia->args);",
+            "location": "hunk",
+            "explanation": "Actual blocking call that issues the FUSE_INIT request; without abort-on-kill capability, the thread hangs forever if the server does not respond."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5a6baf204610",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 679
+        },
+        "commit": "c500ebaa908dbf6b3c562778a25d7e945b04f40f",
+        "commit_short": "c500ebaa908d",
+        "commit_msg": "fuse: convert flush to simple api\n\nAdd 'force' to fuse_args and use fuse_get_req_nofail_nopages() to allocate\nthe reques",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 575
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "40ac7ab2d021",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 575
+        },
+        "commit": "7078187a795f862465325bcadf3070867c0cb5f8",
+        "commit_short": "7078187a795f",
+        "commit_msg": "fuse: introduce fuse_simple_request() helper\n\nThe following pattern is repeated many times:\n\n\treq = fuse_get_req_nopages",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 521
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "f704dcb538eb",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 521
+        },
+        "commit": "7a6d3c8b3049d07123628f2bf57127bba2cc878f",
+        "commit_short": "7a6d3c8b3049",
+        "commit_msg": "fuse: make the number of max background requests and congestion threshold tunable\n\nThe practical values for these limits",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 415
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "8e4a718ff38d",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 415
+        },
+        "commit": "a325f9b92273d6c64ec56167905b951b9827ec33",
+        "commit_short": "a325f9b92273",
+        "commit_msg": "fuse: update fuse_conn_init() and separate out fuse_conn_kill()\n\nUpdate fuse_conn_init() such that it doesn't take @sb a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 411
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 4,
+        "blame_input": {
+          "anchor_commit": "797759aaf313",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 411
+        },
+        "commit": "d12def1bcb809b6172ee207a24e00a0a4398df1d",
+        "commit_short": "d12def1bcb80",
+        "commit_msg": "fuse: limit queued background requests\n\nLibfuse basically creates a new thread for each new request.  This is fine for\ns",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 400
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 5,
+        "blame_input": {
+          "anchor_commit": "b57d426445c9",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 400
+        },
+        "commit": "334f485df85ac7736ebe14940bf0a059c5f26d7d",
+        "commit_short": "334f485df85a",
+        "commit_msg": "[PATCH] FUSE - device functions\n\nThis adds the FUSE device handling functions.\n\nThis contains the following files:\n\n o d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 343
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 6"
+    },
+    {
+      "bic_found": "334f485df85ac7736ebe14940bf0a059c5f26d7d",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5a6baf204610",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 571
+        },
+        "commit": "a131de0a482ac95e6469f56981c7b063593fdc5d",
+        "commit_short": "a131de0a482a",
+        "commit_msg": "fuse: no abort on interrupt\n\nDon't set 'aborted' flag on a request if it's interrupted.  We have to wait\nfor the answer ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 287
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "819c4b3b4009",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 287
+        },
+        "commit": "51eb01e73599efb88c6c20b1c226d20309a75450",
+        "commit_short": "51eb01e73599",
+        "commit_msg": "[PATCH] fuse: no backgrounding on interrupt\n\nDon't put requests into the background when a fatal interrupt occurs while ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 171
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "3e8c54fad891",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 171
+        },
+        "commit": "d77a1d5b611742c538364f041ff4610d27b14fe7",
+        "commit_short": "d77a1d5b6117",
+        "commit_msg": "[PATCH] fuse: introduce list for requests under I/O\n\nCreate a new list for requests in the process of being transfered t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 184
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "83cfd4935124",
+          "anchor_file": "fs/fuse/dev.c",
+          "anchor_lineno": 184
+        },
+        "commit": "83cfd4935124b165e942c317dc3e9ebb0a3e6a63",
+        "commit_short": "83cfd4935124",
+        "commit_msg": "[PATCH] fuse: introduce unified request state\n\nThe state of request was made up of 2 bitfields (->sent and ->finished) a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/dev.c",
+        "display_lineno": 184
+      }
+    },
+    {
+      "bic_found": "83cfd4935124b165e942c317dc3e9ebb0a3e6a63",
+      "note": "blame stable (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5a6baf204610",
+          "anchor_file": "fs/fuse/inode.c",
+          "anchor_lineno": 1553
+        },
+        "commit": "dfb84c33079497bf27058b15780e1c7bba4c371b",
+        "commit_short": "dfb84c330794",
+        "commit_msg": "fuse: allow synchronous FUSE_INIT\n\nFUSE_INIT has always been asynchronous with mount.  That means that the\nserver proces",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/inode.c",
+        "display_lineno": 1539
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3ca1b3111810",
+          "anchor_file": "fs/fuse/inode.c",
+          "anchor_lineno": 1539
+        },
+        "commit": "43901aabd7a043e62e24e9459dc4949b4cd69f07",
+        "commit_short": "43901aabd7a0",
+        "commit_msg": "fuse: add fuse_conn->release()\n\nAdd fuse_conn->release() so that fuse_conn can be embedded in other\nstructures.\n\nSigned-",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/inode.c",
+        "display_lineno": 795
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "0d179aa59285",
+          "anchor_file": "fs/fuse/inode.c",
+          "anchor_lineno": 795
+        },
+        "commit": "d8a5ba45457e4a22aa39c939121efd7bb6c76672",
+        "commit_short": "d8a5ba45457e",
+        "commit_msg": "[PATCH] FUSE - core\n\nThis patch adds FUSE core.\n\nThis contains the following files:\n\n o inode.c\n    - superblock operati",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/inode.c",
+        "display_lineno": 298
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 3"
+    },
+    {
+      "bic_found": "d8a5ba45457e4a22aa39c939121efd7bb6c76672",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5a6baf204610",
+          "anchor_file": "fs/fuse/inode.c",
+          "anchor_lineno": 1554
+        },
+        "commit": "dfb84c33079497bf27058b15780e1c7bba4c371b",
+        "commit_short": "dfb84c330794",
+        "commit_msg": "fuse: allow synchronous FUSE_INIT\n\nFUSE_INIT has always been asynchronous with mount.  That means that the\nserver proces",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/inode.c",
+        "display_lineno": 1540
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3ca1b3111810",
+          "anchor_file": "fs/fuse/inode.c",
+          "anchor_lineno": 1540
+        },
+        "commit": "783863d6476ce9f27fa87227f76ae9134caf43fa",
+        "commit_short": "783863d6476c",
+        "commit_msg": "fuse: dissociate DESTROY from fuseblk\n\nAllow virtio-fs to also send DESTROY request.\n\nSigned-off-by: Miklos Szeredi <msz",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/inode.c",
+        "display_lineno": 1007
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "8fab01064436",
+          "anchor_file": "fs/fuse/inode.c",
+          "anchor_lineno": 1007
+        },
+        "commit": "43901aabd7a043e62e24e9459dc4949b4cd69f07",
+        "commit_short": "43901aabd7a0",
+        "commit_msg": "fuse: add fuse_conn->release()\n\nAdd fuse_conn->release() so that fuse_conn can be embedded in other\nstructures.\n\nSigned-",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/inode.c",
+        "display_lineno": 796
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "0d179aa59285",
+          "anchor_file": "fs/fuse/inode.c",
+          "anchor_lineno": 796
+        },
+        "commit": "d8a5ba45457e4a22aa39c939121efd7bb6c76672",
+        "commit_short": "d8a5ba45457e",
+        "commit_msg": "[PATCH] FUSE - core\n\nThis patch adds FUSE core.\n\nThis contains the following files:\n\n o inode.c\n    - superblock operati",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/inode.c",
+        "display_lineno": 299
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "d8a5ba45457e4a22aa39c939121efd7bb6c76672",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "334f485df85ac7736ebe14940bf0a059c5f26d7d": 1,
+        "83cfd4935124b165e942c317dc3e9ebb0a3e6a63": 1,
+        "d8a5ba45457e4a22aa39c939121efd7bb6c76672": 2
+      },
+      "bic_candidates": [
+        "d8a5ba45457e4a22aa39c939121efd7bb6c76672",
+        "334f485df85ac7736ebe14940bf0a059c5f26d7d",
+        "83cfd4935124b165e942c317dc3e9ebb0a3e6a63"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

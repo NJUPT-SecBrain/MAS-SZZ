@@ -1,0 +1,205 @@
+{
+  "cveid": "CVE-2026-46242",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a6dc643c69311677c574a0f17a3f4d66a5f3744b"
+  ],
+  "ground_truth_bic": "58c9b016e12855286370dfb704c08498edbc857a",
+  "predicted_bic": [
+    "0feaf644f7180c4a91b6b405a881afbfd958f1cf"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 33237,
+  "root_cause": {
+    "text": "In ep_remove(), file->f_ep is cleared under spin_lock but the file and its associated struct eventpoll are still accessed (via hlist_del_rcu) after the lock, allowing a concurrent __fput() to skip eventpoll_release_file() and free the eventpoll while ep_remove() is still using it.",
+    "evidence": "\"ep_remove() (via ep_remove_file()) cleared file->f_ep under file->f_lock but then kept using @file inside the critical section ... A concurrent __fput() taking the eventpoll_release() fastpath in that window observed the transient NULL, skipped eventpoll_release_file() and ran to f_op->release / file_free(). For the epoll-watches-epoll case, f_op->release is ep_eventpoll_release() -> ep_clear_and_put() -> ep_free(), which kfree()s the watched struct eventpoll. Its embedded ->refs hlist_head is exactly where epi->fllink.pprev points, so the subsequent hlist_del_rcu()'s \"*pprev = next\" scribbles into freed kmalloc-192 memory.\"",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/eventpoll.c",
+      "lineno": 931,
+      "content": "ep_remove_file(ep, epi, file);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/eventpoll.c",
+      "lineno": 933,
+      "content": "if (ep_remove_epi(ep, epi))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In ep_remove(), file->f_ep is cleared under spin_lock but the file and its associated struct eventpoll are still accessed (via hlist_del_rcu) after the lock, allowing a concurrent __fput() to skip eventpoll_release_file() and free the eventpoll while ep_remove() is still using it.",
+      "evidence_points": "\"ep_remove() (via ep_remove_file()) cleared file->f_ep under file->f_lock but then kept using @file inside the critical section ... A concurrent __fput() taking the eventpoll_release() fastpath in that window observed the transient NULL, skipped eventpoll_release_file() and ran to f_op->release / file_free(). For the epoll-watches-epoll case, f_op->release is ep_eventpoll_release() -> ep_clear_and_put() -> ep_free(), which kfree()s the watched struct eventpoll. Its embedded ->refs hlist_head is exactly where epi->fllink.pprev points, so the subsequent hlist_del_rcu()'s \"*pprev = next\" scribbles into freed kmalloc-192 memory.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/eventpoll.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Refactor `ep_remove` to use file reference counting for synchronization with `eventpoll_release_file` instead of the previous spinlock-based approach.",
+        "what": "Changed `ep_remove` to use `epi_fget` to obtain a file reference with automatic cleanup (`__free(fput)`) instead of directly accessing `epi->ffd.file`, and removed the inner `epi->dying` check inside the spinlock; instead it returns early if `epi_fget` fails.",
+        "how": "The function now attempts to get a reference to the file via `epi_fget`. If it returns NULL (indicating the file is being released), it returns early without acquiring `f_lock`. If it succeeds, it proceeds with `spin_lock(&file->f_lock)` and subsequent operations, with the reference automatically released on function exit via `__free(fput)`. This changes synchronization from a spinlock-based check to a reference-count-based mechanism."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor `ep_remove` to use file reference counting for synchronization with `eventpoll_release_file` instead of the previous spinlock-based approach."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The refactoring to use file reference counting directly addresses the race condition described in the root cause, where file->f_ep is cleared under spinlock but subsequent accesses after the lock could race with __fput() and eventpoll_release_file()."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/eventpoll.c",
+            "lineno": 931,
+            "content": "ep_remove_file(ep, epi, file);",
+            "rationale": "This line clears file->f_ep (under spin_lock), but after the lock is released the epitem is still in the eventpoll's list, allowing a concurrent __fput() to free the eventpoll."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/eventpoll.c",
+            "lineno": 933,
+            "content": "if (ep_remove_epi(ep, epi))",
+            "rationale": "This likely contains hlist_del_rcu which accesses the eventpoll after the spin_lock protecting file->f_ep has been released, creating a race with eventpoll_release_file()."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 1
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/eventpoll.c",
+            "stmt_text": "ep_remove_file(ep, epi, file);",
+            "location": "hunk",
+            "explanation": "This line clears file->f_ep under spin_lock, but after the lock is released the eventpoll's list is still accessed, allowing a concurrent __fput() to free the eventpoll while ep_remove() is still using it."
+          },
+          {
+            "vuln_file": "fs/eventpoll.c",
+            "stmt_text": "if (ep_remove_epi(ep, epi))",
+            "location": "hunk",
+            "explanation": "This line (which contains hlist_del_rcu) accesses the eventpoll structure after the spin_lock protecting file->f_ep has been released, creating a race with eventpoll_release_file() that may free the eventpoll."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "86e87059e6d1",
+          "anchor_file": "fs/eventpoll.c",
+          "anchor_lineno": 931
+        },
+        "commit": "0feaf644f7180c4a91b6b405a881afbfd958f1cf",
+        "commit_short": "0feaf644f718",
+        "commit_msg": "eventpoll: drop vestigial __ prefix from ep_remove_{file,epi}()\n\nWith __ep_remove() gone, the double-underscore on __ep_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/eventpoll.c",
+        "display_lineno": 903,
+        "code_snippet": "commit 0feaf644f7180c4a91b6b405a881afbfd958f1cf\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Fri Apr 24 00:23:18 2026 +0200\n\n    eventpoll: drop vestigial __ prefix from ep_remove_{file,epi}()\n    \n    With __ep_remove() gone, the double-underscore on __ep_remove_file()\n    and __ep_remove_epi() no longer contrasts with a __-less parent and\n    just reads as noise. Rename both to ep_remove_file() and\n    ep_remove_epi(). No functional change.\n    \n    Signed-off-by: Christian Brauner (",
+        "exists": false,
+        "reason": "The provided function body does not contain the vulnerable pattern described in the root cause. The vulnerability involves clearing file->f_ep under spin_lock and then accessing the eventpoll via hlist_del_rcu after releasing the lock. This function only calls ep_remove_file and ep_remove_epi; the critical clearing and post-lock access are not present in this snippet. Therefore, the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "0feaf644f7180c4a91b6b405a881afbfd958f1cf",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "86e87059e6d1",
+          "anchor_file": "fs/eventpoll.c",
+          "anchor_lineno": 933
+        },
+        "commit": "0feaf644f7180c4a91b6b405a881afbfd958f1cf",
+        "commit_short": "0feaf644f718",
+        "commit_msg": "eventpoll: drop vestigial __ prefix from ep_remove_{file,epi}()\n\nWith __ep_remove() gone, the double-underscore on __ep_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/eventpoll.c",
+        "display_lineno": 905,
+        "code_snippet": "commit 0feaf644f7180c4a91b6b405a881afbfd958f1cf\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Fri Apr 24 00:23:18 2026 +0200\n\n    eventpoll: drop vestigial __ prefix from ep_remove_{file,epi}()\n    \n    With __ep_remove() gone, the double-underscore on __ep_remove_file()\n    and __ep_remove_epi() no longer contrasts with a __-less parent and\n    just reads as noise. Rename both to ep_remove_file() and\n    ep_remove_epi(). No functional change.\n    \n    Signed-off-by: Christian Brauner (",
+        "exists": true,
+        "reason": "The function contains the vulnerable pattern: after acquiring file->f_lock and calling ep_remove_file() (which likely clears file->f_ep under the lock), the code calls ep_remove_epi() outside that lock. The root cause states that this outside-lock access (hlist_del_rcu in ep_remove_epi) races with concurrent __fput() which may free the eventpoll. No fix (e.g., moving the removed operation inside the lock) is present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e9e5cd40d7c4",
+          "anchor_file": "fs/eventpoll.c",
+          "anchor_lineno": 905
+        },
+        "commit": "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+        "commit_short": "e9e5cd40d7c4",
+        "commit_msg": "eventpoll: kill __ep_remove()\n\nRemove the boolean conditional in __ep_remove() and restructure the code\nso the check for",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/eventpoll.c",
+        "display_lineno": 905,
+        "code_snippet": "commit e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Thu Apr 23 11:56:06 2026 +0200\n\n    eventpoll: kill __ep_remove()\n    \n    Remove the boolean conditional in __ep_remove() and restructure the code\n    so the check for racing with eventpoll_release_file() are only done in\n    the ep_remove_safe() path where they belong.\n    \n    Link: https://patch.msgid.link/20260423-work-epoll-uaf-v1-3-2470f9eec0f5@kernel.org\n    Signed-off-by: Christian Bra",
+        "exists": false,
+        "reason": "The diff removes the vulnerable __ep_remove() function and restructures ep_remove_safe() and eventpoll_release_file() so that all accesses to file->f_ep and the removal operations (e.g., hlist_del_rcu) are performed while holding file->f_lock. In ep_remove_safe(), the dying flag is checked both before and after acquiring the lock, preventing a race with eventpoll_release_file(). The critical section (spin_lock; __ep_remove_file; spin_unlock) is atomic, eliminating the previous pattern where file->f_ep was cleared under lock and then the eventpoll was accessed after lock release. Thus, the use-after-free root cause is fixed."
+      }
+    },
+    {
+      "bic_found": "0feaf644f7180c4a91b6b405a881afbfd958f1cf",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "0feaf644f7180c4a91b6b405a881afbfd958f1cf": 2
+      },
+      "bic_candidates": [
+        "0feaf644f7180c4a91b6b405a881afbfd958f1cf"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

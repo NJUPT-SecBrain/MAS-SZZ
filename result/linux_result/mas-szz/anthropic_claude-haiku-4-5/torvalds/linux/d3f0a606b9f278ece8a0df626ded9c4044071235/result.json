@@ -1,0 +1,221 @@
+{
+  "cveid": "CVE-2026-53265",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "d3f0a606b9f278ece8a0df626ded9c4044071235"
+  ],
+  "ground_truth_bic": "2d1f7b65f5deedd2e6b09fdc6ea27f8375f24b45",
+  "predicted_bic": [
+    "b29d4986d0da1a27cd35917cdb433672f5c95d7f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 15,
+  "llm_tokens": 51342,
+  "root_cause": {
+    "text": "The `e->allocated` check in `smq_invalidate_mapping()` was performed outside the `mq->lock` critical section, creating a check-then-act race condition where concurrent invalidators could observe stale state before acquiring the lock.",
+    "evidence": "The patch moves the `if (!e->allocated)` check from before `spin_lock_irqsave(&mq->lock, flags)` to inside the critical section after acquiring the lock. The CVE description explicitly states: \"Two concurrent invalidators can both observe e->allocated as true before either of them takes mq->lock. The first invalidator that acquires the lock removes the entry from the queues and hash table and then calls free_entry(), which clears e->allocated and puts the entry back on the free list. The second invalidator can then acquire mq->lock and continue with the stale result of the unlocked check.\" This demonstrates that the predicate (`e->allocated`) and the destructive operations (`del_queue()`, `h_remove()`, `free_entry()`) were not serialized by the same lock, allowing the second thread to act on invalidated assumptions.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/md/dm-cache-policy-smq.c",
+      "lineno": 1594,
+      "content": "if (!e->allocated)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/md/dm-cache-policy-smq.c",
+      "lineno": 1595,
+      "content": "return -ENODATA;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `e->allocated` check in `smq_invalidate_mapping()` was performed outside the `mq->lock` critical section, creating a check-then-act race condition where concurrent invalidators could observe stale state before acquiring the lock.",
+      "evidence_points": "The patch moves the `if (!e->allocated)` check from before `spin_lock_irqsave(&mq->lock, flags)` to inside the critical section after acquiring the lock. The CVE description explicitly states: \"Two concurrent invalidators can both observe e->allocated as true before either of them takes mq->lock. The first invalidator that acquires the lock removes the entry from the queues and hash table and then calls free_entry(), which clears e->allocated and puts the entry back on the free list. The second invalidator can then acquire mq->lock and continue with the stale result of the unlocked check.\" This demonstrates that the predicate (`e->allocated`) and the destructive operations (`del_queue()`, `h_remove()`, `free_entry()`) were not serialized by the same lock, allowing the second thread to act on invalidated assumptions."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/md/dm-cache-policy-smq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition by moving allocation check inside spinlock-protected critical section and ensuring lock is always released via goto-based exit path.",
+        "what": "Moved the allocation check inside the spinlock-protected critical section, introduced a local variable `r` to store the return value, replaced early return with a goto-based exit path that ensures spinlock is always released, and changed the final return from hardcoded 0 to the variable `r`.",
+        "how": "This change ensures that the spinlock is held during the allocation validity check and is always properly released via the `out:` label before returning. Previously, the function could return -ENODATA without holding the lock, creating a race condition where the entry state could be modified concurrently. Now all code paths acquire the lock first, perform checks and modifications under lock protection, and release it before returning."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix race condition by moving allocation check inside spinlock-protected critical section and ensuring lock is always released via goto-based exit path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by moving the `e->allocated` check inside the `mq->lock` critical section, eliminating the check-then-act race condition where concurrent invalidators could observe stale state before acquiring the lock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/dm-cache-policy-smq.c",
+            "lineno": 1594,
+            "content": "if (!e->allocated)",
+            "rationale": "This check on `e->allocated` is performed outside the `mq->lock` critical section (before line 1597 where the lock is acquired). This creates a classic check-then-act race condition where another thread could modify `e->allocated` between this check and the subsequent lock acquisition, allowing concurrent invalidators to observe stale state and proceed with invalid operations."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/dm-cache-policy-smq.c",
+            "lineno": 1595,
+            "content": "return -ENODATA;",
+            "rationale": "This early return based on the unsynchronized `e->allocated` check allows the function to exit without holding the lock, bypassing the critical section entirely. This enables the race condition by allowing the function to make decisions based on potentially stale data read outside the lock."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/md/dm-cache-policy-smq.c",
+            "stmt_text": "if (!e->allocated)",
+            "location": "hunk",
+            "explanation": "This check on `e->allocated` is performed outside the `mq->lock` critical section, creating a check-then-act race condition. The allocation state can be modified by concurrent threads between this unsynchronized check and the subsequent lock acquisition at line 1597, allowing stale state to be observed and leading to invalid operations on the cache entry."
+          },
+          {
+            "vuln_file": "drivers/md/dm-cache-policy-smq.c",
+            "stmt_text": "return -ENODATA;",
+            "location": "hunk",
+            "explanation": "This early return statement at line 1595 executes based on the unsynchronized `e->allocated` check, allowing the function to exit without ever acquiring `mq->lock`. This bypasses the critical section entirely and enables the race condition by permitting decisions based on potentially stale data read outside the lock's protection."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fb7415f2ab0e",
+          "anchor_file": "drivers/md/dm-cache-policy-smq.c",
+          "anchor_lineno": 1594
+        },
+        "commit": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+        "commit_short": "b29d4986d0da",
+        "commit_msg": "dm cache: significant rework to leverage dm-bio-prison-v2\n\nThe cache policy interfaces have been updated to work well wi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-policy-smq.c",
+        "display_lineno": 1559,
+        "code_snippet": "commit b29d4986d0da1a27cd35917cdb433672f5c95d7f\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Thu Dec 15 04:57:31 2016 -0500\n\n    dm cache: significant rework to leverage dm-bio-prison-v2\n    \n    The cache policy interfaces have been updated to work well with the new\n    bio-prison v2 interface's ability to queue work immediately (promotion,\n    demotion, etc) -- overriding benefit being reduced latency on processing\n    IO through the cache.  Previously such work would be left for the DM\n    c",
+        "exists": true,
+        "reason": "The function shows the vulnerable check-then-act race condition. Line 1559 checks `if (!e->allocated)` BEFORE acquiring any lock (mq->lock is not visible in this code section). The subsequent operations on lines 1563-1565 (del_queue, h_remove, free_entry) modify shared state without synchronization relative to the initial check. This creates a race where: (1) Thread A checks e->allocated at line 1559 and sees it's allocated, (2) Thread B acquires mq->lock and invalidates the same entry, (3) Thread A then acquires mq->lock and operates on already-freed/invalid state. The vulnerable construct is the unprotected read of e->allocated before the critical section, which is the classic check-then-act race pattern described in the root cause."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "742c8fdc31e8",
+          "anchor_file": "drivers/md/dm-cache-policy-smq.c",
+          "anchor_lineno": 1559
+        },
+        "commit": "9ed84698fdda63de93c68150c4f63673cc3d7b54",
+        "commit_short": "9ed84698fdda",
+        "commit_msg": "dm cache: make the 'mq' policy an alias for 'smq'\n\nsmq seems to be performing better than the old mq policy in all\nsitua",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-policy-smq.c",
+        "display_lineno": 1580,
+        "code_snippet": "commit 9ed84698fdda63de93c68150c4f63673cc3d7b54\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Wed Feb 10 10:18:10 2016 +0000\n\n    dm cache: make the 'mq' policy an alias for 'smq'\n    \n    smq seems to be performing better than the old mq policy in all\n    situations, as well as using a quarter of the memory.\n    \n    Make 'mq' an alias for 'smq' when choosing a cache policy.  The tunables\n    that were present for the old mq are faked, and have no effect.  mq\n    should be considered deprecated",
+        "exists": false,
+        "reason": "The provided function body is a parameter validation/configuration function that handles deprecated tunable parameters for the mq policy (now an alias for smq). It contains no logic related to `e->allocated` checks, `mq->lock` critical sections, or the `smq_invalidate_mapping()` function mentioned in the vulnerability root cause. The vulnerable construct described in the root cause (a check-then-act race condition on `e->allocated` outside a lock) is completely absent from this code snippet. This function is unrelated to the vulnerability being analyzed."
+      }
+    },
+    {
+      "bic_found": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fb7415f2ab0e",
+          "anchor_file": "drivers/md/dm-cache-policy-smq.c",
+          "anchor_lineno": 1595
+        },
+        "commit": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+        "commit_short": "b29d4986d0da",
+        "commit_msg": "dm cache: significant rework to leverage dm-bio-prison-v2\n\nThe cache policy interfaces have been updated to work well wi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-policy-smq.c",
+        "display_lineno": 1560,
+        "code_snippet": "commit b29d4986d0da1a27cd35917cdb433672f5c95d7f\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Thu Dec 15 04:57:31 2016 -0500\n\n    dm cache: significant rework to leverage dm-bio-prison-v2\n    \n    The cache policy interfaces have been updated to work well with the new\n    bio-prison v2 interface's ability to queue work immediately (promotion,\n    demotion, etc) -- overriding benefit being reduced latency on processing\n    IO through the cache.  Previously such work would be left for the DM\n    c",
+        "exists": true,
+        "reason": "The function shows the vulnerable check-then-act race condition. Line 1559 checks `if (!e->allocated)` BEFORE acquiring `mq->lock`. The vulnerability root cause explicitly states that the `e->allocated` check was performed outside the `mq->lock` critical section. The subsequent operations on lines 1563-1565 (del_queue, h_remove, free_entry) modify shared state that should be protected by the lock. This creates a race where concurrent invalidators could observe stale `allocated` state, pass the check, then race to modify the entry. The fix would require moving the `e->allocated` check inside the lock critical section, which is not present in this code snippet."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "742c8fdc31e8",
+          "anchor_file": "drivers/md/dm-cache-policy-smq.c",
+          "anchor_lineno": 1560
+        },
+        "commit": "9ed84698fdda63de93c68150c4f63673cc3d7b54",
+        "commit_short": "9ed84698fdda",
+        "commit_msg": "dm cache: make the 'mq' policy an alias for 'smq'\n\nsmq seems to be performing better than the old mq policy in all\nsitua",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-policy-smq.c",
+        "display_lineno": 1581,
+        "code_snippet": "commit 9ed84698fdda63de93c68150c4f63673cc3d7b54\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Wed Feb 10 10:18:10 2016 +0000\n\n    dm cache: make the 'mq' policy an alias for 'smq'\n    \n    smq seems to be performing better than the old mq policy in all\n    situations, as well as using a quarter of the memory.\n    \n    Make 'mq' an alias for 'smq' when choosing a cache policy.  The tunables\n    that were present for the old mq are faked, and have no effect.  mq\n    should be considered deprecated",
+        "exists": false,
+        "reason": "The provided code snippet (lines 1577-1593) shows a parameter validation/parsing function that handles tunable settings. This is completely unrelated to the vulnerability root cause described, which concerns a race condition in `smq_invalidate_mapping()` involving the `e->allocated` check performed outside the `mq->lock` critical section. The snippet does not contain any `smq_invalidate_mapping()` function, no `e->allocated` checks, no lock acquisition logic, and no invalidation mapping code. To properly analyze whether this commit introduces or fixes the vulnerability, the actual `smq_invalidate_mapping()` function body would need to be examined. The current snippet is insufficient to make a determination about the specific vulnerability described."
+      }
+    },
+    {
+      "bic_found": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "b29d4986d0da1a27cd35917cdb433672f5c95d7f": 2
+      },
+      "bic_candidates": [
+        "b29d4986d0da1a27cd35917cdb433672f5c95d7f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

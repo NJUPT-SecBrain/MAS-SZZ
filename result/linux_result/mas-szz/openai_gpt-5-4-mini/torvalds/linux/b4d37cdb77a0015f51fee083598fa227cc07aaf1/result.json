@@ -1,0 +1,299 @@
+{
+  "cveid": "CVE-2026-23198",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b4d37cdb77a0015f51fee083598fa227cc07aaf1"
+  ],
+  "ground_truth_bic": "cb210737675ef4c1ad88721e84558eeb2f199312",
+  "predicted_bic": [
+    "56f89f3629ffd1a21d38c3d0bea23deac0e284ce"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 26086,
+  "root_cause": {
+    "text": "KVM’s irqfd teardown path overwrote the cached `irqfd->irq_entry.type` with zero during `kvm_irqfd_deassign()`, which desynchronized core irqfd handling from arch-specific IRQ-bypass code that expects an MSI routing entry and can leave stale bypass state or corrupt freed irqfd bookkeeping.",
+    "evidence": "The patch removes the code in `kvm_irqfd_deassign()` that did `irqfd->irq_entry.type = 0` under `write_seqcount_begin/end()`, and the commit message says this “breaks `kvm_arch_irq_bypass_del_producer()` on x86 and arm64, which explicitly look for `KVM_IRQ_ROUTING_MSI`,” causing the IRQ to remain incorrectly in bypass mode and leading to NULL deref/list corruption on AMD.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "virt/kvm/eventfd.c",
+      "lineno": 596,
+      "content": "irqfd->irq_entry.type = 0;",
+      "confidence": 1.0
+    },
+    {
+      "file": "virt/kvm/eventfd.c",
+      "lineno": 595,
+      "content": "write_seqcount_begin(&irqfd->irq_entry_sc);",
+      "confidence": 1.0
+    },
+    {
+      "file": "virt/kvm/eventfd.c",
+      "lineno": 597,
+      "content": "write_seqcount_end(&irqfd->irq_entry_sc);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "KVM’s irqfd teardown path overwrote the cached `irqfd->irq_entry.type` with zero during `kvm_irqfd_deassign()`, which desynchronized core irqfd handling from arch-specific IRQ-bypass code that expects an MSI routing entry and can leave stale bypass state or corrupt freed irqfd bookkeeping.",
+      "evidence_points": "The patch removes the code in `kvm_irqfd_deassign()` that did `irqfd->irq_entry.type = 0` under `write_seqcount_begin/end()`, and the commit message says this “breaks `kvm_arch_irq_bypass_del_producer()` on x86 and arm64, which explicitly look for `KVM_IRQ_ROUTING_MSI`,” causing the IRQ to remain incorrectly in bypass mode and leading to NULL deref/list corruption on AMD."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "virt/kvm/eventfd.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "virt/kvm/eventfd.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "virt/kvm/eventfd.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add lockdep assertions to enforce the required irqfd synchronization context before checking activity or deactivating an irqfd.",
+        "what": "The function `irqfd_is_active()` was changed from documenting an assumption that `kvm->irqfds.lock` is held to instead performing a `lockdep_assert_once()` that requires either `irqfds.lock` or `irq_srcu` to be held before checking `list_empty()`. The function signature formatting was also collapsed onto one line. The `irqfd_deactivate()` comment was simplified, its signature was reformatted onto one line, and an explicit `lockdep_assert_held(&irqfd->kvm->irqfds.lock);` was added before the existing `BUG_ON(!irqfd_is_active(irqfd));` check.",
+        "how": "At runtime, the code now verifies lock/context assumptions in debug builds: `irqfd_is_active()` can only be called with the proper lock held, or under SRCU protection when checking state during deactivation-related paths, which helps catch incorrect callers and routing-race-prone usage earlier. `irqfd_deactivate()` now explicitly enforces that the irqfds lock is held before deactivating an irqfd, making the precondition checked rather than only implied by comments."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid interrupt injection with stale irqfd routing state by deferring inactive irqfd events to scheduled work.",
+        "what": "The code in irqfd_wakeup() was changed to add a multi-line comment explaining a new condition, and the interrupt injection conditional was modified from checking only the return value of kvm_arch_set_irq_inatomic() to first also test unlikely(!irqfd_is_active(irqfd)). If the irqfd is inactive, the condition now short-circuits and the work item is scheduled without attempting inatomic injection.",
+        "how": "At runtime, an event signaled on an irqfd will no longer use potentially stale routing information after the irqfd has begun deassignment. When the irqfd is inactive, interrupt injection is skipped and deferred work is queued instead, preventing the kernel from injecting an interrupt using outdated state. Normal behavior remains to inject immediately unless kvm_arch_set_irq_inatomic() returns -EWOULDBLOCK, in which case work is scheduled as before."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Simplify irqfd deassignment by moving irq_entry cleanup responsibility into irqfd_deactivate().",
+        "what": "In kvm_irqfd_deassign(), the block that manually cleared irqfd->irq_entry.type under write_seqcount_begin()/end() was removed from the matching irqfd->eventfd and irqfd->gsi case, leaving only a direct call to irqfd_deactivate(irqfd) inside the conditional.",
+        "how": "At runtime, deassigning an irqfd no longer zeroes irq_entry.type inline before deactivation; instead, the cleanup path is delegated entirely to irqfd_deactivate(). This changes where the irqfd state is invalidated and removes the explicit seqcount-protected type clearing from this loop."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add lockdep assertions to enforce the required irqfd synchronization context before checking activity or deactivating an irqfd."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Avoid interrupt injection with stale irqfd routing state by deferring inactive irqfd events to scheduled work."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Simplify irqfd deassignment by moving irq_entry cleanup responsibility into irqfd_deactivate()."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only adds lockdep assertions to verify synchronization context. It does not alter irqfd teardown behavior, does not preserve or fix irqfd->irq_entry.type, and does not address the MSI routing/bypass state corruption described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change targets stale irqfd routing state in the irqfd teardown/inactive path, which is directly related to the root cause of desynchronization between core irqfd handling and IRQ-bypass/MSI routing state."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly targets irqfd deassignment teardown and moves irq_entry cleanup out of kvm_irqfd_deassign(), which matches the root cause of incorrect irqfd->irq_entry.type handling during teardown and the resulting stale bypass/bookkeeping issues."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "virt/kvm/eventfd.c",
+            "lineno": 596,
+            "content": "irqfd->irq_entry.type = 0;",
+            "rationale": "This assignment clears the cached irq routing entry type during irqfd deassignment, which is the root cause of the desynchronization with arch-specific IRQ-bypass code that expects the MSI routing type to remain valid."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "virt/kvm/eventfd.c",
+            "lineno": 595,
+            "content": "write_seqcount_begin(&irqfd->irq_entry_sc);",
+            "rationale": "This begins the update sequence around the destructive overwrite of irq_entry.type, marking the pre-fix teardown path where the cached routing state is modified."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "virt/kvm/eventfd.c",
+            "lineno": 597,
+            "content": "write_seqcount_end(&irqfd->irq_entry_sc);",
+            "rationale": "This ends the sequence after irq_entry.type has been zeroed, completing the unsafe state update that can leave core irqfd state inconsistent with IRQ-bypass bookkeeping."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "virt/kvm/eventfd.c",
+            "stmt_text": "irqfd->irq_entry.type = 0;",
+            "location": "hunk",
+            "explanation": "This statement destroys the cached irq routing type during irqfd deassignment, which desynchronizes irqfd teardown from arch-specific IRQ-bypass handling that still expects a valid MSI routing entry."
+          },
+          {
+            "vuln_file": "virt/kvm/eventfd.c",
+            "stmt_text": "write_seqcount_begin(&irqfd->irq_entry_sc);",
+            "location": "hunk",
+            "explanation": "This begins the protected update around the destructive overwrite of irqfd->irq_entry.type, marking the vulnerable teardown path where the cached routing state is modified."
+          },
+          {
+            "vuln_file": "virt/kvm/eventfd.c",
+            "stmt_text": "write_seqcount_end(&irqfd->irq_entry_sc);",
+            "location": "hunk",
+            "explanation": "This completes the sequence after irqfd->irq_entry.type has been cleared, finalizing the inconsistent state that can leave IRQ-bypass bookkeeping stale or corrupt freed irqfd data."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cfbe371194d1",
+          "anchor_file": "virt/kvm/eventfd.c",
+          "anchor_lineno": 596
+        },
+        "commit": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+        "commit_short": "56f89f3629ff",
+        "commit_msg": "KVM: Don't keep reference to irq routing table in irqfd struct\n\nThis makes the irqfd code keep a copy of the irq routing",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "virt/kvm/eventfd.c",
+        "display_lineno": 484,
+        "code_snippet": "commit 56f89f3629ffd1a21d38c3d0bea23deac0e284ce\nAuthor: Paul Mackerras <paulus@ozlabs.org>\nDate:   Mon Jun 30 20:51:09 2014 +1000\n\n    KVM: Don't keep reference to irq routing table in irqfd struct\n    \n    This makes the irqfd code keep a copy of the irq routing table entry\n    for each irqfd, rather than a reference to the copy in the actual\n    irq routing table maintained in kvm/virt/irqchip.c.  This will enable\n    us to change the routing table structure in future, or even not have a\n    r",
+        "exists": false,
+        "reason": "The vulnerable teardown construct is not present here. In `kvm_irqfd_deassign()`, the code no longer overwrites a routing entry structure with a stale or partially invalid reference; instead it explicitly clears only the cached copy under seqcount protection: `write_seqcount_begin(&irqfd->irq_entry_sc); irqfd->irq_entry.type = 0; write_seqcount_end(&irqfd->irq_entry_sc);`. Likewise, the read side in `irqfd_wakeup()` copies the cached entry under seqcount retry and only uses it if `irq.type == KVM_IRQ_ROUTING_MSI`, which avoids relying on an RCU pointer that could become invalid. This shows the fix is already present, and the old buggy `rcu_assign_pointer(irqfd->irq_entry, NULL);` / reference-to-routing-table behavior has been replaced."
+      }
+    },
+    {
+      "bic_found": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cfbe371194d1",
+          "anchor_file": "virt/kvm/eventfd.c",
+          "anchor_lineno": 595
+        },
+        "commit": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+        "commit_short": "56f89f3629ff",
+        "commit_msg": "KVM: Don't keep reference to irq routing table in irqfd struct\n\nThis makes the irqfd code keep a copy of the irq routing",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "virt/kvm/eventfd.c",
+        "display_lineno": 483,
+        "code_snippet": "commit 56f89f3629ffd1a21d38c3d0bea23deac0e284ce\nAuthor: Paul Mackerras <paulus@ozlabs.org>\nDate:   Mon Jun 30 20:51:09 2014 +1000\n\n    KVM: Don't keep reference to irq routing table in irqfd struct\n    \n    This makes the irqfd code keep a copy of the irq routing table entry\n    for each irqfd, rather than a reference to the copy in the actual\n    irq routing table maintained in kvm/virt/irqchip.c.  This will enable\n    us to change the routing table structure in future, or even not have a\n    r",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present here. In the teardown path, `kvm_irqfd_deassign()` no longer overwrites a shared routing-table reference; instead it updates a private copy under seqcount protection: `write_seqcount_begin(&irqfd->irq_entry_sc); irqfd->irq_entry.type = 0; write_seqcount_end(&irqfd->irq_entry_sc);`. More importantly, the irqfd struct has been changed from `struct kvm_kernel_irq_routing_entry __rcu *irq_entry;` to `struct kvm_kernel_irq_routing_entry irq_entry; seqcount_t irq_entry_sc;`, and the fast path reads a copied entry with retry logic (`irq = irqfd->irq_entry;` and `read_seqcount_retry(...)`). This commit already contains the fix: it stops keeping a reference to the routing-table entry and avoids the stale pointer/desynchronization issue described."
+      }
+    },
+    {
+      "bic_found": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cfbe371194d1",
+          "anchor_file": "virt/kvm/eventfd.c",
+          "anchor_lineno": 597
+        },
+        "commit": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+        "commit_short": "56f89f3629ff",
+        "commit_msg": "KVM: Don't keep reference to irq routing table in irqfd struct\n\nThis makes the irqfd code keep a copy of the irq routing",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "virt/kvm/eventfd.c",
+        "display_lineno": 485,
+        "code_snippet": "commit 56f89f3629ffd1a21d38c3d0bea23deac0e284ce\nAuthor: Paul Mackerras <paulus@ozlabs.org>\nDate:   Mon Jun 30 20:51:09 2014 +1000\n\n    KVM: Don't keep reference to irq routing table in irqfd struct\n    \n    This makes the irqfd code keep a copy of the irq routing table entry\n    for each irqfd, rather than a reference to the copy in the actual\n    irq routing table maintained in kvm/virt/irqchip.c.  This will enable\n    us to change the routing table structure in future, or even not have a\n    r",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the teardown path overwriting the cached irqfd routing entry in a way that desynchronizes consumers. In this snippet, `kvm_irqfd_deassign()` no longer uses an RCU pointer or any stale reference; instead it explicitly clears only the local cached copy under seqcount protection: `write_seqcount_begin(&irqfd->irq_entry_sc);`, `irqfd->irq_entry.type = 0;`, `write_seqcount_end(&irqfd->irq_entry_sc);`. The read side in `irqfd_wakeup()` also matches this design by copying the entry with seqcount retry and checking `if (irq.type == KVM_IRQ_ROUTING_MSI)` before calling `kvm_set_msi(&irq, ...)`. This indicates the fix is already present in this commit, and the older buggy behavior (keeping a reference and then clearing it via RCU pointer teardown) is absent."
+      }
+    },
+    {
+      "bic_found": "56f89f3629ffd1a21d38c3d0bea23deac0e284ce",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "56f89f3629ffd1a21d38c3d0bea23deac0e284ce": 3
+      },
+      "bic_candidates": [
+        "56f89f3629ffd1a21d38c3d0bea23deac0e284ce"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

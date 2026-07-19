@@ -1,0 +1,341 @@
+{
+  "cveid": "CVE-2026-23450",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6d5e4538364b9ceb1ac2941a4deb86650afb3538"
+  ],
+  "ground_truth_bic": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+  "predicted_bic": [
+    "8270d9c21041470f58348248b9d9dcf3bf79592e",
+    "0558226cebee256aa3f8ec0cc5a800a10bf120a6",
+    "97b9af7a70936e331170c79040cc9bf20071b566",
+    "341adeec9adad0874f29a0a1af35638207352a39"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 13,
+  "llm_tokens": 44527,
+  "root_cause": {
+    "text": "A race condition in smc_tcp_syn_recv_sock() where it reads the smc_sock pointer from sk_user_data without proper synchronization (e.g., RCU or refcount), allowing a concurrent SMC close operation to either NULL out sk_user_data or free the smc_sock, leading to NULL pointer dereference or use-after-free when accessing fields like queued_smc_hs.",
+    "evidence": "The commit message describes the race window: \"CPU A (softirq) ... smc_tcp_syn_recv_sock(): smc = user_data(sk) -> NULL or dangling; smc->queued_smc_hs -> crash!\" and states that \"smc_close_active() sets clcsock->sk_user_data to NULL ... then the smc_sock itself can be freed via sock_put() in smc_release().\" The patch adds rcu_read_lock(), refcount_inc_not_zero(), and RCU-assign helpers to safely access the smc_sock under RCU protection.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/smc/af_smc.c",
+      "lineno": 134,
+      "content": "smc = smc_clcsock_user_data(sk);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/af_smc.c",
+      "lineno": 136,
+      "content": "if (READ_ONCE(sk->sk_ack_backlog) + atomic_read(&smc->queued_smc_hs) >",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/af_smc.c",
+      "lineno": 257,
+      "content": "clcsk->sk_user_data = NULL;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/af_smc.c",
+      "lineno": 2690,
+      "content": "smc->clcsock->sk->sk_user_data = NULL;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/smc_close.c",
+      "lineno": 2690,
+      "content": "smc->clcsock->sk->sk_user_data = NULL;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/smc/smc.h",
+      "lineno": 346,
+      "content": "((uintptr_t)clcsk->sk_user_data & ~SK_USER_DATA_NOCOPY);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition in smc_tcp_syn_recv_sock() where it reads the smc_sock pointer from sk_user_data without proper synchronization (e.g., RCU or refcount), allowing a concurrent SMC close operation to either NULL out sk_user_data or free the smc_sock, leading to NULL pointer dereference or use-after-free when accessing fields like queued_smc_hs.",
+      "evidence_points": "The commit message describes the race window: \"CPU A (softirq) ... smc_tcp_syn_recv_sock(): smc = user_data(sk) -> NULL or dangling; smc->queued_smc_hs -> crash!\" and states that \"smc_close_active() sets clcsock->sk_user_data to NULL ... then the smc_sock itself can be freed via sock_put() in smc_release().\" The patch adds rcu_read_lock(), refcount_inc_not_zero(), and RCU-assign helpers to safely access the smc_sock under RCU protection."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/smc/af_smc.c",
+            "lineno": 134,
+            "content": "smc = smc_clcsock_user_data(sk);",
+            "rationale": "Reads sk_user_data without synchronization, allowing racy NULL or dangling pointer."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/smc/af_smc.c",
+            "lineno": 136,
+            "content": "if (READ_ONCE(sk->sk_ack_backlog) + atomic_read(&smc->queued_smc_hs) >",
+            "rationale": "Dereferences smc pointer obtained without lock after risky read, enabling use-after-free or NULL deref."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "net/smc/smc.h",
+            "lineno": 346,
+            "content": "((uintptr_t)clcsk->sk_user_data & ~SK_USER_DATA_NOCOPY);",
+            "rationale": "Helper dereference of sk_user_data without any lock or RCU protection, used by the reader."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/smc/af_smc.c",
+            "lineno": 257,
+            "content": "clcsk->sk_user_data = NULL;",
+            "rationale": "Writer in close path clears sk_user_data without synchronizing with concurrent readers."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "net/smc/af_smc.c",
+            "lineno": 2690,
+            "content": "smc->clcsock->sk->sk_user_data = NULL;",
+            "rationale": "Another writer in listener setup/close path that can race with accept, clearing the pointer."
+          },
+          {
+            "hunk_index": 7,
+            "file_path": "net/smc/smc_close.c",
+            "lineno": 221,
+            "content": "smc->clcsock->sk->sk_user_data = NULL;",
+            "rationale": "Writer in close path NULLs sk_user_data under lock, but reader doesn't hold lock, enabling race."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/smc/af_smc.c",
+            "stmt_text": "smc = smc_clcsock_user_data(sk);",
+            "location": "hunk",
+            "explanation": "Directly reads sk_user_data without any synchronization (RCU or lock), allowing a concurrent close to either NULL out the pointer or free the smc_sock, leading to a null pointer dereference or use-after-free."
+          },
+          {
+            "vuln_file": "net/smc/af_smc.c",
+            "stmt_text": "if (READ_ONCE(sk->sk_ack_backlog) + atomic_read(&smc->queued_smc_hs) >",
+            "location": "hunk",
+            "explanation": "Dereferences the smc pointer obtained from the unsynchronized read, accessing queued_smc_hs field. If the smc_sock was freed or the pointer became NULL, this causes use-after-free or NULL pointer dereference."
+          },
+          {
+            "vuln_file": "net/smc/af_smc.c",
+            "stmt_text": "clcsk->sk_user_data = NULL;",
+            "location": "hunk",
+            "explanation": "Writer in the close path sets sk_user_data to NULL without synchronizing with concurrent readers in smc_tcp_syn_recv_sock, creating a race window where the reader may see a non-NULL but soon-to-be-NULL pointer or a dangling pointer."
+          },
+          {
+            "vuln_file": "net/smc/af_smc.c",
+            "stmt_text": "smc->clcsock->sk->sk_user_data = NULL;",
+            "location": "hunk",
+            "explanation": "Another writer that clears sk_user_data, likely in listener cleanup or close, without proper ordering relative to the accept path's unsynchronized read, exacerbating the race condition."
+          },
+          {
+            "vuln_file": "net/smc/smc_close.c",
+            "stmt_text": "smc->clcsock->sk->sk_user_data = NULL;",
+            "location": "hunk",
+            "explanation": "Writer in the close path NULLs sk_user_data while holding a lock, but the reader in smc_tcp_syn_recv_sock does not hold any synchronization, so the NULL can be observed concurrently."
+          },
+          {
+            "vuln_file": "net/smc/smc.h",
+            "stmt_text": "((uintptr_t)clcsk->sk_user_data & ~SK_USER_DATA_NOCOPY);",
+            "location": "hunk",
+            "explanation": "Helper function that dereferences sk_user_data without any lock or RCU protection, used by the reader to obtain the smc pointer. The lack of synchronization in its caller makes this access unsafe."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 134
+        },
+        "commit": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+        "commit_short": "8270d9c21041",
+        "commit_msg": "net/smc: Limit backlog connections\n\nCurrent implementation does not handling backlog semantics, one\npotential risk is th",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 85,
+        "code_snippet": "commit 8270d9c21041470f58348248b9d9dcf3bf79592e\nAuthor: D. Wythe <alibuda@linux.alibaba.com>\nDate:   Thu Feb 10 17:11:35 2022 +0800\n\n    net/smc: Limit backlog connections\n    \n    Current implementation does not handling backlog semantics, one\n    potential risk is that server will be flooded by infinite amount\n    connections, even if client was SMC-incapable.\n    \n    This patch works to put a limit on backlog connections, referring to the\n    TCP implementation, we divides SMC connections in",
+        "exists": true,
+        "reason": "The new function smc_tcp_syn_recv_sock() reads the smc pointer via smc_clcsock_user_data(sk) without any synchronization (RCU or refcount), then accesses smc->queued_smc_hs and smc->ori_af_ops. This directly matches the root cause: a race condition where concurrent close can NULL out or free smc_sock, leading to NULL deref or use-after-free. The commit does not add any protection against this race."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3079e342d265",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 85
+        },
+        "commit": "f16a7dd5cf27eeda187425c9c7d96802a549f9c4",
+        "commit_short": "f16a7dd5cf27",
+        "commit_msg": "smc: netlink interface for SMC sockets\n\nSupport for SMC socket monitoring via netlink sockets of protocol\nNETLINK_SOCK_D",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 68,
+        "code_snippet": "commit f16a7dd5cf27eeda187425c9c7d96802a549f9c4\nAuthor: Ursula Braun <ubraun@linux.vnet.ibm.com>\nDate:   Mon Jan 9 16:55:26 2017 +0100\n\n    smc: netlink interface for SMC sockets\n    \n    Support for SMC socket monitoring via netlink sockets of protocol\n    NETLINK_SOCK_DIAG.\n    \n    Signed-off-by: Ursula Braun <ubraun@linux.vnet.ibm.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/smc/af_smc.c b/net/smc/af_smc.c\nindex 3f543d58bc5c..5d4208ad029e 100644\n--- a/net/s",
+        "exists": false,
+        "reason": "The commit diff does not include any changes to smc_tcp_syn_recv_sock, the function where the race condition occurs. The modifications are limited to adding netlink support (hash/unhash functions) and their integration in smc_release, smc_sock_alloc, and smc_clcsock_accept. No code related to reading sk_user_data or the vulnerable race condition is present, so the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 136
+        },
+        "commit": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+        "commit_short": "8270d9c21041",
+        "commit_msg": "net/smc: Limit backlog connections\n\nCurrent implementation does not handling backlog semantics, one\npotential risk is th",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 87,
+        "code_snippet": "commit 8270d9c21041470f58348248b9d9dcf3bf79592e\nAuthor: D. Wythe <alibuda@linux.alibaba.com>\nDate:   Thu Feb 10 17:11:35 2022 +0800\n\n    net/smc: Limit backlog connections\n    \n    Current implementation does not handling backlog semantics, one\n    potential risk is that server will be flooded by infinite amount\n    connections, even if client was SMC-incapable.\n    \n    This patch works to put a limit on backlog connections, referring to the\n    TCP implementation, we divides SMC connections in",
+        "exists": true,
+        "reason": "The function `smc_tcp_syn_recv_sock()` introduced in this commit reads the `smc` pointer from `sk_user_data` via `smc_clcsock_user_data(sk)` without any synchronization (e.g., RCU read lock or refcount). This allows a race condition where a concurrent SMC close can NULL out `sk_user_data` or free the `smc_sock`, leading to NULL pointer dereference or use-after-free when accessing `smc->queued_smc_hs` or `smc->ori_af_ops`. No fix (such as proper locking) is present in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3079e342d265",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 87
+        },
+        "commit": "f16a7dd5cf27eeda187425c9c7d96802a549f9c4",
+        "commit_short": "f16a7dd5cf27",
+        "commit_msg": "smc: netlink interface for SMC sockets\n\nSupport for SMC socket monitoring via netlink sockets of protocol\nNETLINK_SOCK_D",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 70,
+        "code_snippet": "commit f16a7dd5cf27eeda187425c9c7d96802a549f9c4\nAuthor: Ursula Braun <ubraun@linux.vnet.ibm.com>\nDate:   Mon Jan 9 16:55:26 2017 +0100\n\n    smc: netlink interface for SMC sockets\n    \n    Support for SMC socket monitoring via netlink sockets of protocol\n    NETLINK_SOCK_DIAG.\n    \n    Signed-off-by: Ursula Braun <ubraun@linux.vnet.ibm.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/smc/af_smc.c b/net/smc/af_smc.c\nindex 3f543d58bc5c..5d4208ad029e 100644\n--- a/net/s",
+        "exists": false,
+        "reason": "The provided code does not include the function smc_tcp_syn_recv_sock() or any logic that reads sk_user_data without synchronization. The commit adds hash table management and netlink interface support, but does not touch the vulnerable construct described in the root cause. Therefore, the vulnerable construct is absent from this code."
+      }
+    },
+    {
+      "bic_found": "8270d9c21041470f58348248b9d9dcf3bf79592e",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 257
+        },
+        "commit": "0558226cebee256aa3f8ec0cc5a800a10bf120a6",
+        "commit_short": "0558226cebee",
+        "commit_msg": "net/smc: Fix slab-out-of-bounds issue in fallback\n\nsyzbot reported a slab-out-of-bounds/use-after-free issue,\nwhich was ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 251,
+        "code_snippet": "commit 0558226cebee256aa3f8ec0cc5a800a10bf120a6\nAuthor: Wen Gu <guwen@linux.alibaba.com>\nDate:   Fri Apr 22 15:56:19 2022 +0800\n\n    net/smc: Fix slab-out-of-bounds issue in fallback\n    \n    syzbot reported a slab-out-of-bounds/use-after-free issue,\n    which was caused by accessing an already freed smc sock in\n    fallback-specific callback functions of clcsock.\n    \n    This patch fixes the issue by restoring fallback-specific\n    callback functions to original ones and resetting clcsock\n    ",
+        "exists": false,
+        "reason": "The function smc_restore_fallback_changes correctly acquires write_lock_bh before setting sk_user_data to NULL (line 250-251). It does not contain the vulnerable construct (reading sk_user_data without synchronization). The locking is already present, so the fix is in place."
+      }
+    },
+    {
+      "bic_found": "0558226cebee256aa3f8ec0cc5a800a10bf120a6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/af_smc.c",
+          "anchor_lineno": 2690
+        },
+        "commit": "97b9af7a70936e331170c79040cc9bf20071b566",
+        "commit_short": "97b9af7a7093",
+        "commit_msg": "net/smc: Only save the original clcsock callback functions\n\nBoth listen and fallback process will save the current clcso",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/af_smc.c",
+        "display_lineno": 2435,
+        "code_snippet": "commit 97b9af7a70936e331170c79040cc9bf20071b566\nAuthor: Wen Gu <guwen@linux.alibaba.com>\nDate:   Fri Apr 22 15:56:18 2022 +0800\n\n    net/smc: Only save the original clcsock callback functions\n    \n    Both listen and fallback process will save the current clcsock\n    callback functions and establish new ones. But if both of them\n    happen, the saved callback functions will be overwritten.\n    \n    So this patch introduces some helpers to ensure that only save\n    the original callback functions",
+        "exists": false,
+        "reason": "The function body shown is smc_listen() (or similar setup function) which sets sk_user_data on the clcsock. The vulnerable construct described in the root cause is in smc_tcp_syn_recv_sock(), which reads sk_user_data without proper synchronization. That function is not present in this code snippet, so the vulnerable construct is absent. Therefore has_bug is false. The code does not contain the fix for the race condition because the race is in a different function."
+      }
+    },
+    {
+      "bic_found": "97b9af7a70936e331170c79040cc9bf20071b566",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace": "blame failed at depth 0"
+    },
+    {
+      "bic_found": null,
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b7405dcf7385",
+          "anchor_file": "net/smc/smc.h",
+          "anchor_lineno": 346
+        },
+        "commit": "341adeec9adad0874f29a0a1af35638207352a39",
+        "commit_short": "341adeec9ada",
+        "commit_msg": "net/smc: Forward wakeup to smc socket waitqueue after fallback\n\nWhen we replace TCP with SMC and a fallback occurs, ther",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/smc/smc.h",
+        "display_lineno": 282,
+        "code_snippet": "commit 341adeec9adad0874f29a0a1af35638207352a39\nAuthor: Wen Gu <guwen@linux.alibaba.com>\nDate:   Wed Jan 26 23:33:04 2022 +0800\n\n    net/smc: Forward wakeup to smc socket waitqueue after fallback\n    \n    When we replace TCP with SMC and a fallback occurs, there may be\n    some socket waitqueue entries remaining in smc socket->wq, such\n    as eppoll_entries inserted by userspace applications.\n    \n    After the fallback, data flows over TCP/IP and only clcsocket->wq\n    will be woken up. Applica",
+        "exists": false,
+        "reason": "The provided code is the inline function smc_clcsock_user_data which reads sk_user_data with a bitmask. This helper does not itself contain the vulnerable race condition (lack of synchronization when reading sk_user_data in smc_tcp_syn_recv_sock). The commit does not modify the vulnerable function, so the race condition is neither introduced nor fixed by this code."
+      }
+    },
+    {
+      "bic_found": "341adeec9adad0874f29a0a1af35638207352a39",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "8270d9c21041470f58348248b9d9dcf3bf79592e": 2,
+        "0558226cebee256aa3f8ec0cc5a800a10bf120a6": 1,
+        "97b9af7a70936e331170c79040cc9bf20071b566": 1,
+        "341adeec9adad0874f29a0a1af35638207352a39": 1
+      },
+      "bic_candidates": [
+        "8270d9c21041470f58348248b9d9dcf3bf79592e",
+        "0558226cebee256aa3f8ec0cc5a800a10bf120a6",
+        "97b9af7a70936e331170c79040cc9bf20071b566",
+        "341adeec9adad0874f29a0a1af35638207352a39"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,141 @@
+{
+  "cveid": "CVE-2026-46051",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "7f9f7c697474268d9ef9479df3ddfe7cdcfbbffc"
+  ],
+  "ground_truth_bic": "773ca82fa1ee58dd1bf88b6a5ca385ec83a2cac6",
+  "predicted_bic": [
+    "6d036f7d52e5a9c3b2ff77883db4c34620681804"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 9,
+  "llm_tokens": 16441,
+  "root_cause": {
+    "text": "The lockless released_stripes llist mechanism introduced in commit 773ca82fa1ee creates a race condition where retry_aligned_read() releases a stripe with STRIPE_HANDLE set via raid5_release_stripe(), causing it to be moved to handle_list in the next raid5d iteration, but then retry_aligned_read() removes it from handle_list before handle_stripe() can process it, resulting in an infinite loop.",
+    "evidence": "The patch explicitly changes from `raid5_release_stripe(sh)` to `__release_stripe(conf, sh, &conf->temp_inactive_list[hash])` to bypass the lockless released_stripes llist. The commit message states that raid5_release_stripe() puts the stripe on released_stripes, which is then drained to handle_list by release_stripe_list(), but retry_aligned_read() runs before handle_active_stripes() and removes the stripe via find_get_stripe() -> list_del_init(), preventing handle_stripe() from ever processing the overlap. By using __release_stripe() with temp_inactive_list instead, the stripe avoids the released_stripes llist entirely, allowing raid5d to break out of its loop.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/md/raid5.c",
+      "lineno": 6644,
+      "content": "raid5_release_stripe(sh);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The lockless released_stripes llist mechanism introduced in commit 773ca82fa1ee creates a race condition where retry_aligned_read() releases a stripe with STRIPE_HANDLE set via raid5_release_stripe(), causing it to be moved to handle_list in the next raid5d iteration, but then retry_aligned_read() removes it from handle_list before handle_stripe() can process it, resulting in an infinite loop.",
+      "evidence_points": "The patch explicitly changes from `raid5_release_stripe(sh)` to `__release_stripe(conf, sh, &conf->temp_inactive_list[hash])` to bypass the lockless released_stripes llist. The commit message states that raid5_release_stripe() puts the stripe on released_stripes, which is then drained to handle_list by release_stripe_list(), but retry_aligned_read() runs before handle_active_stripes() and removes the stripe via find_get_stripe() -> list_del_init(), preventing handle_stripe() from ever processing the overlap. By using __release_stripe() with temp_inactive_list instead, the stripe avoids the released_stripes llist entirely, allowing raid5d to break out of its loop."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/md/raid5.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix stripe release synchronization in retry_aligned_read by directly managing device_lock and using hash-indexed list placement instead of the generic release wrapper.",
+        "what": "Replaced a single `raid5_release_stripe(sh)` call with an expanded code block that: (1) declares a local `hash` variable, (2) acquires `conf->device_lock` with spin_lock_irq, (3) retrieves `sh->hash_lock_index` into `hash`, (4) calls `__release_stripe()` with the hash-indexed temp_inactive_list, and (5) releases the lock with spin_unlock_irq.",
+        "how": "This change modifies how stripe release is handled in the retry_aligned_read error path. Instead of using the high-level `raid5_release_stripe()` wrapper, it now directly manages the lock and calls the lower-level `__release_stripe()` function with explicit hash-based list selection. This ensures the stripe is released to the correct inactive list based on its hash_lock_index while holding the device_lock, preventing potential race conditions or list corruption that could occur if the stripe were released without proper synchronization."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix stripe release synchronization in retry_aligned_read by directly managing device_lock and using hash-indexed list placement instead of the generic release wrapper."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the core vulnerability by fixing the stripe release synchronization issue in retry_aligned_read(). It replaces the generic raid5_release_stripe() wrapper with direct device_lock management and hash-indexed list placement, which prevents the race condition where STRIPE_HANDLE stripes are incorrectly moved to handle_list and then prematurely removed, causing the infinite loop described in the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/raid5.c",
+            "lineno": 6644,
+            "content": "raid5_release_stripe(sh);",
+            "rationale": "This is the vulnerable statement that directly causes the race condition. raid5_release_stripe() uses the lockless released_stripes llist mechanism, which moves the stripe to handle_list without proper synchronization. When retry_aligned_read() then removes the stripe from handle_list before handle_stripe() processes it, it creates an infinite loop. The fix replaces this with direct device_lock management and hash-indexed list placement to ensure proper synchronization."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/md/raid5.c",
+            "stmt_text": "raid5_release_stripe(sh);",
+            "location": "hunk",
+            "explanation": "This statement at line 6644 is the root cause of the race condition. raid5_release_stripe() uses the lockless released_stripes llist mechanism which asynchronously moves the stripe to handle_list via raid5d. When retry_aligned_read() subsequently removes the stripe from handle_list before handle_stripe() can process it (due to STRIPE_HANDLE being set), it creates an infinite loop where the stripe is repeatedly released and removed without proper synchronization. The fix replaces this with direct device_lock management and hash-indexed list placement to ensure atomic, synchronized stripe handling."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cf86bb53b9c9",
+          "anchor_file": "drivers/md/raid5.c",
+          "anchor_lineno": 6644
+        },
+        "commit": "6d036f7d52e5a9c3b2ff77883db4c34620681804",
+        "commit_short": "6d036f7d52e5",
+        "commit_msg": "raid5: export some functions\n\nNext several patches use some raid5 functions, rename them with raid5\nprefix and export ou",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/raid5.c",
+        "display_lineno": 5691,
+        "code_snippet": "commit 6d036f7d52e5a9c3b2ff77883db4c34620681804\nAuthor: Shaohua Li <shli@fb.com>\nDate:   Thu Aug 13 14:31:57 2015 -0700\n\n    raid5: export some functions\n    \n    Next several patches use some raid5 functions, rename them with raid5\n    prefix and export out.\n    \n    Signed-off-by: Shaohua Li <shli@fb.com>\n    Signed-off-by: NeilBrown <neilb@suse.com>\n\ndiff --git a/drivers/md/raid5.c b/drivers/md/raid5.c\nindex 5b79770c4f08..b200c195160c 100644\n--- a/drivers/md/raid5.c\n+++ b/drivers/md/raid5.c\n@",
+        "exists": false,
+        "reason": "The function shown is retry_aligned_read() from commit 6d036f7d52e5. This commit is purely a refactoring commit that renames functions with raid5 prefix and exports them - the message states 'rename them with raid5 prefix and export out.' The vulnerable race condition described in the root cause (involving lockless released_stripes llist mechanism from commit 773ca82fa1ee) is not present in this code. At lines 5691 and 5699, raid5_release_stripe() is called, but this is the normal expected behavior in this commit. The vulnerability requires a specific interaction pattern where STRIPE_HANDLE is set and the stripe is moved to handle_list, then removed before handle_stripe() processes it. This commit does not introduce that problematic pattern - it simply exports existing functions. The vulnerable construct (the race condition mechanism) is not present in this version of the code."
+      }
+    },
+    {
+      "bic_found": "6d036f7d52e5a9c3b2ff77883db4c34620681804",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "6d036f7d52e5a9c3b2ff77883db4c34620681804": 1
+      },
+      "bic_candidates": [
+        "6d036f7d52e5a9c3b2ff77883db4c34620681804"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

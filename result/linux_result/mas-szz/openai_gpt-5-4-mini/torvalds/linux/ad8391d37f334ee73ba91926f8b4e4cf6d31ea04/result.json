@@ -1,0 +1,219 @@
+{
+  "cveid": "CVE-2026-43016",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ad8391d37f334ee73ba91926f8b4e4cf6d31ea04"
+  ],
+  "ground_truth_bic": "c63829182c37c2d6d0608976d15fa61ebebe9e6b",
+  "predicted_bic": [
+    "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+    "1ded5e5a5931bb8b31e15b63b655fe232e3416b2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 12,
+  "llm_tokens": 27964,
+  "root_cause": {
+    "text": "`sk_psock_verdict_data_ready()` in `net/core/skmsg.c` dereferenced `sk->sk_socket` and its `ops` without RCU protection, allowing AF_UNIX `sock_orphan()`/free to race and make `sk->sk_socket` a use-after-free object.",
+    "evidence": "The patch changes `sk_psock_verdict_data_ready()` from plain `sock = sk->sk_socket; ops = READ_ONCE(sock->ops);` to wrapping both reads in `rcu_read_lock()/rcu_read_unlock()` and notes that the peer socket’s `sk_socket` “might be freed after one RCU grace period”; the CVE report also shows KASAN UAF at `sk_psock_verdict_data_ready+0xec` while called from `unix_stream_sendmsg()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/core/skmsg.c",
+      "lineno": 1270,
+      "content": "struct socket *sock = sk->sk_socket;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/core/skmsg.c",
+      "lineno": 1278,
+      "content": "ops = READ_ONCE(sock->ops);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`sk_psock_verdict_data_ready()` in `net/core/skmsg.c` dereferenced `sk->sk_socket` and its `ops` without RCU protection, allowing AF_UNIX `sock_orphan()`/free to race and make `sk->sk_socket` a use-after-free object.",
+      "evidence_points": "The patch changes `sk_psock_verdict_data_ready()` from plain `sock = sk->sk_socket; ops = READ_ONCE(sock->ops);` to wrapping both reads in `rcu_read_lock()/rcu_read_unlock()` and notes that the peer socket’s `sk_socket` “might be freed after one RCU grace period”; the CVE report also shows KASAN UAF at `sk_psock_verdict_data_ready+0xec` while called from `unix_stream_sendmsg()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/core/skmsg.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect sk_psock_verdict_data_ready() from races by reading sk->sk_socket and sock->ops under RCU before invoking read_skb.",
+        "what": "The function sk_psock_verdict_data_ready() was changed to initialize ops to NULL, defer loading sk->sk_socket until inside an rcu_read_lock()/rcu_read_unlock() critical section, and read both sk->sk_socket and sock->ops with READ_ONCE() under RCU. The previous early direct access to sk->sk_socket and immediate null check were replaced by this RCU-protected access pattern.",
+        "how": "At runtime, the socket pointer and its ops table are now fetched in a way that is safer against concurrent teardown or replacement of sk->sk_socket. This reduces the risk of dereferencing a stale or transient socket pointer while still preserving the existing behavior of returning early when no valid read_skb callback is available."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Protect sk_psock_verdict_data_ready() from races by reading sk->sk_socket and sock->ops under RCU before invoking read_skb."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it fixes unsafe dereferences of sk->sk_socket and its ops in sk_psock_verdict_data_ready() by adding RCU protection to avoid the AF_UNIX orphan/free race and resulting use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/skmsg.c",
+            "lineno": 1270,
+            "content": "struct socket *sock = sk->sk_socket;",
+            "rationale": "This direct dereference of sk->sk_socket occurs without RCU protection, so a concurrent AF_UNIX sock_orphan()/free can race and leave sock pointing to freed memory."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/skmsg.c",
+            "lineno": 1278,
+            "content": "ops = READ_ONCE(sock->ops);",
+            "rationale": "Even after obtaining sock from sk->sk_socket, this dereferences sock->ops without the needed RCU protection, allowing a use-after-free if sock has been orphaned and freed concurrently."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/skmsg.c",
+            "lineno": 1276,
+            "content": "if (unlikely(!sock))",
+            "rationale": "This NULL check does not prevent the race described in the root cause because sock can be non-NULL yet already freed due to missing RCU protection on sk->sk_socket."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/skmsg.c",
+            "lineno": 1279,
+            "content": "if (!ops || !ops->read_skb)",
+            "rationale": "This check happens after dereferencing sock->ops and therefore does not address the underlying race; it can still access invalid memory if sock or ops was freed concurrently."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/core/skmsg.c",
+            "stmt_text": "struct socket *sock = sk->sk_socket;",
+            "location": "hunk",
+            "explanation": "This line directly dereferences sk->sk_socket without RCU protection, which is the root cause of the AF_UNIX sock_orphan()/free race leading to use-after-free."
+          },
+          {
+            "vuln_file": "net/core/skmsg.c",
+            "stmt_text": "ops = READ_ONCE(sock->ops);",
+            "location": "hunk",
+            "explanation": "This line dereferences sock->ops after obtaining sock from sk->sk_socket, but still without the required RCU protection, allowing use-after-free if sock was concurrently orphaned and freed."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e2d072d6a3d1",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 1270
+        },
+        "commit": "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+        "commit_short": "ef5659280eb1",
+        "commit_msg": "bpf, sockmap: Allow skipping sk_skb parser program\n\nCurrently, we often run with a nop parser namely one that just does\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 914,
+        "code_snippet": "commit ef5659280eb13e8ac31c296f58cfdfa1684ac06b\nAuthor: John Fastabend <john.fastabend@gmail.com>\nDate:   Sat Oct 10 22:09:38 2020 -0700\n\n    bpf, sockmap: Allow skipping sk_skb parser program\n    \n    Currently, we often run with a nop parser namely one that just does\n    this, 'return skb->len'. This happens when either our verdict program\n    can handle streaming data or it is only looking at socket data such\n    as IP addresses and other metadata associated with the flow. The second\n    case",
+        "exists": true,
+        "reason": "The function directly dereferences `sk->sk_socket` without any RCU protection: `struct socket *sock = sk->sk_socket;` and then immediately uses nested fields `sock->ops` and `sock->ops->read_sock` in `if (unlikely(!sock || !sock->ops || !sock->ops->read_sock))` and `sock->ops->read_sock(...)`. This matches the root cause described: `sk_psock_verdict_data_ready()` accessing `sk->sk_socket` and its `ops` unsafely, allowing AF_UNIX `sock_orphan()`/free to race and leave `sk->sk_socket` as a use-after-free object. There is no RCU read-side critical section, refcounting, or other fix visible here, so the vulnerable construct is present and not fixed in this function body."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "743df8b7749f",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 914
+        },
+        "commit": "604326b41a6fb9b4a78b6179335decee0365cd8c",
+        "commit_short": "604326b41a6f",
+        "commit_msg": "bpf, sockmap: convert to generic sk_msg interface\n\nAdd a generic sk_msg layer, and convert current sockmap and later\nkTL",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 750,
+        "code_snippet": "commit 604326b41a6fb9b4a78b6179335decee0365cd8c\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Sat Oct 13 02:45:58 2018 +0200\n\n    bpf, sockmap: convert to generic sk_msg interface\n    \n    Add a generic sk_msg layer, and convert current sockmap and later\n    kTLS over to make use of it. While sk_buff handles network packet\n    representation from netdevice up to socket, sk_msg handles data\n    representation from application to socket layer.\n    \n    This means that sk_msg framework spa",
+        "exists": false,
+        "reason": "The provided snippet does not include the relevant function body at all. It only shows the tail of a previous function ('}'), then the start of 'void sk_psock_stop_strp(struct sock *sk, struct sk_psock *psock)'. The vulnerable logic described in the root cause is in 'sk_psock_verdict_data_ready()' dereferencing 'sk->sk_socket' and 'ops' without RCU protection, but that code is not present here. Because the critical function and statements are absent, we cannot determine whether this commit version contains the bug or the fix from this snippet."
+      }
+    },
+    {
+      "bic_found": "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e2d072d6a3d1",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 1278
+        },
+        "commit": "1ded5e5a5931bb8b31e15b63b655fe232e3416b2",
+        "commit_short": "1ded5e5a5931",
+        "commit_msg": "net: annotate data-races around sock->ops\n\nIPV6_ADDRFORM socket option is evil, because it can change sock->ops\nwhile ot",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 1208,
+        "code_snippet": "commit 1ded5e5a5931bb8b31e15b63b655fe232e3416b2\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Tue Aug 8 13:58:09 2023 +0000\n\n    net: annotate data-races around sock->ops\n    \n    IPV6_ADDRFORM socket option is evil, because it can change sock->ops\n    while other threads might read it. Same issue for sk->sk_family\n    being set to AF_INET.\n    \n    Adding READ_ONCE() over sock->ops reads is needed for sockets\n    that might be impacted by IPV6_ADDRFORM.\n    \n    Note that mptcp_is_tcpsk() ",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is a dereference of `sk->sk_socket` and `sock->ops` without protection against concurrent changes/free. This function already avoids that specific issue by first checking `if (unlikely(!sock)) return;` and then reading the ops pointer with `ops = READ_ONCE(sock->ops);` before using it. It also checks `if (!ops || !ops->read_skb) return;` prior to the call. This is the annotated/read-once fix for racing `sock->ops` access, so the bug is not present here and the fix is already applied."
+      }
+    },
+    {
+      "bic_found": "1ded5e5a5931bb8b31e15b63b655fe232e3416b2",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "ef5659280eb13e8ac31c296f58cfdfa1684ac06b": 1,
+        "1ded5e5a5931bb8b31e15b63b655fe232e3416b2": 1
+      },
+      "bic_candidates": [
+        "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+        "1ded5e5a5931bb8b31e15b63b655fe232e3416b2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

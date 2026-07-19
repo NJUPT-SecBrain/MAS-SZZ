@@ -1,0 +1,435 @@
+{
+  "cveid": "CVE-2025-71152",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "06e219f6a706c367c93051f408ac61417643d2f9"
+  ],
+  "ground_truth_bic": "83c0afaec7b730b16c518aecc8e6246ec91b265e",
+  "predicted_bic": [
+    "6ca80638b90cec66547011ee1ef79e534589989a"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 36,
+  "llm_tokens": 50000,
+  "root_cause": {
+    "text": "The DSA CPU-port probe paths incorrectly managed the conduit `struct net_device` reference by taking only a kobject/device reference (or leaking it in the OF path) instead of a proper `dev_hold()`/`dev_put()` netdev reference under `rtnl_lock()`, leaving `cpu_dp->conduit` able to become stale or be released incorrectly.",
+    "evidence": "The patch adds `netdevice_tracker conduit_tracker` to `struct dsa_port`, replaces the old `dsa_dev_to_net_device()`/`of_find_net_device_by_node()` handling with `netdev_hold(conduit, &dp->conduit_tracker, GFP_KERNEL)` and matching `netdev_put()`, wraps lookup in `rtnl_lock()`, and explicitly drops the reference in `dsa_switch_release_ports()` and `dsa_switch_shutdown()`, matching the commit’s description that the old code “never releases the elevated refcount on the conduit's kobject” and leaves DSA with a “stale, cpu_dp->conduit pointer.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/dsa/dsa.c",
+      "lineno": 1420,
+      "content": "conduit = dsa_dev_to_net_device(dev);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/dsa/dsa.c",
+      "lineno": 1424,
+      "content": "dev_put(conduit);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/dsa/dsa.c",
+      "lineno": 1426,
+      "content": "return dsa_port_parse_cpu(dp, conduit, NULL);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The DSA CPU-port probe paths incorrectly managed the conduit `struct net_device` reference by taking only a kobject/device reference (or leaking it in the OF path) instead of a proper `dev_hold()`/`dev_put()` netdev reference under `rtnl_lock()`, leaving `cpu_dp->conduit` able to become stale or be released incorrectly.",
+      "evidence_points": "The patch adds `netdevice_tracker conduit_tracker` to `struct dsa_port`, replaces the old `dsa_dev_to_net_device()`/`of_find_net_device_by_node()` handling with `netdev_hold(conduit, &dp->conduit_tracker, GFP_KERNEL)` and matching `netdev_put()`, wraps lookup in `rtnl_lock()`, and explicitly drops the reference in `dsa_switch_release_ports()` and `dsa_switch_shutdown()`, matching the commit’s description that the old code “never releases the elevated refcount on the conduit's kobject” and leaves DSA with a “stale, cpu_dp->conduit pointer.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/dsa.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/dsa/dsa.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/dsa/dsa.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/dsa/dsa.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/dsa/dsa.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add netdevice tracking to `dsa_port` to properly manage the conduit device's lifetime and usage.",
+        "what": "A new struct field named `conduit_tracker` of type `netdevice_tracker` was added to `struct dsa_port`, placed after `pl_config` and before `lag`.",
+        "how": "This adds per-port netdevice tracking state to `dsa_port`, allowing the code to record and manage the lifetime/usage of the conduit netdevice associated with the port."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix conduit net_device lifetime and locking during DSA port parsing to avoid races and reference leaks.",
+        "what": "In dsa_port_parse_of(), the code now takes rtnl_lock() before looking up the conduit net_device from the ethernet device node, returns -EPROBE_DEFER after unlocking if no conduit is found, calls netdev_hold() on the conduit and then put_device() before unlocking, and changes the direct return of dsa_port_parse_cpu() into an intermediate err variable so it can call netdev_put() on failure before returning the error.",
+        "how": "This ensures the conduit net_device remains valid and reference-counted while the port parsing logic uses it, and it properly releases that reference if CPU port parsing fails. It also serializes the device lookup under the RTNL lock, preventing races during net_device discovery and lifetime handling."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "other",
+        "intent_summary": "{\n  \"what\": \"The helper function `dsa_dev_to_net_device()` was removed entirely. In `dsa_port_parse()`, the `\"cpu\"` branch no longer calls that helper; instead it acquires `rtnl_lock()`, searches for a class `\"net\"` child device with `dev_find_class()`, returns `-EPROBE_DEFER` if none is found, converts the device to a `net_device`, takes a tracked reference with `netdev_hold(&dp->conduit_tracker, GFP_KERNEL)`, releases the device with `put_device()`, unlocks RTNL, then calls `dsa_port_parse_cpu()`. If that call fails, it drops the netdevice reference with `netdev_put()` before returning the error.\",\n  \"how\": \"This changes conduit acquisition from an untracked `dev_hold()`/`dev_put()`-based lookup to a tracked `net_device` lifetime management scheme tied to `dp->conduit_tracker`, while also serializing the lookup with the rtnl lock. At runtime, it prevents the conduit netdevice from disappearing during CPU-port parsing, and ensures the reference is properly released if parsing fails. It also preserves deferred probing when the net class device is not yet available.\",\n  \"change_category\": \"bug_fix\",\n  \"intent_summary\": \"Fix CPU port parsing to safely acquire and track the conduit net_device under RTNL and release it on failure.\"\n}",
+        "what": "",
+        "how": ""
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the CPU port conduit reference during switch port teardown to fix a missing cleanup bug.",
+        "what": "In dsa_switch_release_ports(), a new conditional block was inserted at the start of the per-port cleanup loop: if the port is a CPU port and dp->conduit is set, netdev_put(dp->conduit, &dp->conduit_tracker) is called before the existing VLAN/port release logic.",
+        "how": "At runtime, this releases the network device reference held by the CPU port's conduit during switch port teardown, preventing the reference from being retained after cleanup and ensuring the conduit can be properly freed or reused."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Release conduit netdevice references during DSA switch shutdown to ensure correct cleanup.",
+        "what": "In dsa_switch_shutdown(), the loop over CPU ports was changed from a single statement to a braced block, and after setting each CPU port's conduit dsa_ptr to NULL, the code now also calls netdev_put(dp->conduit, &dp->conduit_tracker) for each conduit.",
+        "how": "During switch shutdown, the conduit netdevice reference is now explicitly released for every CPU port after disconnecting the DSA pointer, which prevents the conduit from remaining artificially held and ensures proper reference count cleanup as the switch is torn down."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Release conduit netdevice references during DSA switch shutdown to ensure correct cleanup."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "{\n  \"what\": \"The helper function `dsa_dev_to_net_device()` was removed entirely. In `dsa_port_parse()`, the `\"cpu\"` branch no longer calls that helper; instead it acquires `rtnl_lock()`, searches for a class `\"net\"` child device with `dev_find_class()`, returns `-EPROBE_DEFER` if none is found, converts the device to a `net_device`, takes a tracked reference with `netdev_hold(&dp->conduit_tracker, GFP_KERNEL)`, releases the device with `put_device()`, unlocks RTNL, then calls `dsa_port_parse_cpu()`. If that call fails, it drops the netdevice reference with `netdev_put()` before returning the error.\",\n  \"how\": \"This changes conduit acquisition from an untracked `dev_hold()`/`dev_put()`-based lookup to a tracked `net_device` lifetime management scheme tied to `dp->conduit_tracker`, while also serializing the lookup with the rtnl lock. At runtime, it prevents the conduit netdevice from disappearing during CPU-port parsing, and ensures the reference is properly released if parsing fails. It also preserves deferred probing when the net class device is not yet available.\",\n  \"change_category\": \"bug_fix\",\n  \"intent_summary\": \"Fix CPU port parsing to safely acquire and track the conduit net_device under RTNL and release it on failure.\"\n}"
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Release the CPU port conduit reference during switch port teardown to fix a missing cleanup bug."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "REJECT",
+        "core_intent": "Manage conduit netdevice lifetime and references in DSA port handling to prevent races, leaks, and cleanup issues.",
+        "outliers": [
+          4
+        ],
+        "reason": "Hunks 0 and 1 are about tracking and safely acquiring conduit netdevice references during port parsing, while hunk 4 is specifically about releasing those references during switch shutdown; that shutdown-focused cleanup is a distinct phase and does not fit the shared parsing/lifetime-management intent of the other hunks."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "core_intent": "Release conduit netdevice references during DSA switch teardown/shutdown to fix missing cleanup.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix conduit net_device lifetime and locking during DSA port parsing to avoid races and reference leaks.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "core_intent": "Release conduit netdevice references during DSA switch teardown/shutdown to fix missing cleanup.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly targets conduit net_device lifetime and locking in DSA port parsing, which matches the root cause of incorrectly managing cpu_dp->conduit reference counts and lifetime."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The patch directly addresses the root cause by fixing CPU-port conduit net_device lifetime handling: it switches to a proper netdev reference tracked under RTNL and releases it on failure, which prevents stale or incorrectly released conduit pointers."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group addresses lifecycle management of the DSA CPU-port conduit net_device by adding release/cleanup on teardown and shutdown, which is directly related to the root cause involving incorrect reference handling of cpu_dp->conduit."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/dsa/dsa.c",
+            "lineno": 1420,
+            "content": "conduit = dsa_dev_to_net_device(dev);",
+            "rationale": "This is the direct conduit acquisition path that used the old helper, which relied on an incorrect lifetime/reference scheme instead of the fixed RTNL-serialized tracked netdev hold. It is the statement where the stale/incorrectly referenced conduit device is obtained."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/dsa/dsa.c",
+            "lineno": 1405,
+            "content": "dev_hold(nd);",
+            "rationale": "This line shows the pre-fix helper taking only a generic device reference on the conduit-derived net_device. The root cause is that the CPU-port probe needed a proper net_device lifetime management path, not an ad hoc device reference that could leave the conduit stale or improperly managed."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/dsa/dsa.c",
+            "lineno": 1424,
+            "content": "dev_put(conduit);",
+            "rationale": "In the pre-fix CPU-port parse path, the conduit reference is released as a plain device reference rather than a tracked netdev reference. This mismatched reference handling is part of the lifetime bug described in the root cause."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/dsa/dsa.c",
+            "lineno": 1426,
+            "content": "return dsa_port_parse_cpu(dp, conduit, NULL);",
+            "rationale": "This passes the conduit onward after it was obtained without the corrected locking/tracked reference scheme. If the conduit can disappear or be misreferenced, this call consumes a potentially stale net_device pointer."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/dsa/dsa.c",
+            "lineno": 1259,
+            "content": "if (!conduit)",
+            "rationale": "This is part of the old probe flow that only deferred when no conduit was found, but did not address the underlying lifetime/race issue. It helps identify the vulnerable pre-fix CPU-port parsing path."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/dsa/dsa.c",
+            "stmt_text": "conduit = dsa_dev_to_net_device(dev);",
+            "location": "hunk",
+            "explanation": "This is the conduit acquisition in the pre-fix CPU-port probe path. The root cause is incorrect conduit net_device lifetime management, and this statement obtains the conduit via the old helper without the corrected RTNL-serialized dev_hold/dev_put handling."
+          },
+          {
+            "vuln_file": "net/dsa/dsa.c",
+            "stmt_text": "dev_put(conduit);",
+            "location": "hunk",
+            "explanation": "This releases the conduit using the old generic reference scheme rather than the proper net_device reference management required for the CPU-port probe path, matching the reported lifetime bug."
+          },
+          {
+            "vuln_file": "net/dsa/dsa.c",
+            "stmt_text": "return dsa_port_parse_cpu(dp, conduit, NULL);",
+            "location": "hunk",
+            "explanation": "This consumes the conduit pointer after it was obtained with the incorrect lifetime/reference scheme, so it is part of the vulnerable path where cpu_dp->conduit could be stale or improperly managed."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5e7365b5a1ac",
+          "anchor_file": "net/dsa/dsa.c",
+          "anchor_lineno": 1420
+        },
+        "commit": "6ca80638b90cec66547011ee1ef79e534589989a",
+        "commit_short": "6ca80638b90c",
+        "commit_msg": "net: dsa: Use conduit and user terms\n\nUse more inclusive terms throughout the DSA subsystem by moving away\nfrom \"master\"",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/dsa/dsa.c",
+        "display_lineno": 1417,
+        "code_snippet": "commit 6ca80638b90cec66547011ee1ef79e534589989a\nAuthor: Florian Fainelli <florian.fainelli@broadcom.com>\nDate:   Mon Oct 23 11:17:28 2023 -0700\n\n    net: dsa: Use conduit and user terms\n    \n    Use more inclusive terms throughout the DSA subsystem by moving away\n    from \"master\" which is replaced by \"conduit\" and \"slave\" which is\n    replaced by \"user\". No functional changes.\n    \n    Acked-by: Rob Herring <robh@kernel.org>\n    Acked-by: Stephen Hemminger <stephen@networkplumber.org>\n    Revie",
+        "exists": true,
+        "reason": "The CPU-port probe path clearly shows the problematic reference handling: `conduit = dsa_dev_to_net_device(dev);` followed by `dev_put(conduit);` and then `return dsa_port_parse_cpu(dp, conduit, NULL);`. This means the function drops the netdev reference before handing `conduit` to the CPU-port parser, matching the root cause of using an improper/incorrectly managed conduit `struct net_device` reference instead of keeping a valid `dev_hold()`/`dev_put()`-balanced reference through the probe path. There is no visible fix here such as a prior `dev_hold()` or other correct lifetime management before the `dev_put()`; the shown code is the buggy construct itself."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "00e984cb986b",
+          "anchor_file": "net/dsa/dsa.c",
+          "anchor_lineno": 1417
+        },
+        "commit": "cbabb0ac01052f79cf96d7b7e3d3451ffd275864",
+        "commit_short": "cbabb0ac0105",
+        "commit_msg": "net: dsa: get master device at port parsing time\n\nFetching the master device can be done directly when a port is parsed\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/dsa/dsa.c",
+        "display_lineno": 625,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The described bug is the incorrect handling of the conduit net_device reference in CPU-port probe paths. The provided commit message and diff context indicate this commit changes DSA to \"get master device at port parsing time,\" which is the fix direction for correctly acquiring the master/conduit device earlier. The vulnerable construct is therefore not present in this commit version as shown. The relevant handling is already corrected by moving master-device acquisition into port parsing rather than deferring it and mishandling the reference later."
+      }
+    },
+    {
+      "bic_found": "6ca80638b90cec66547011ee1ef79e534589989a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5e7365b5a1ac",
+          "anchor_file": "net/dsa/dsa.c",
+          "anchor_lineno": 1424
+        },
+        "commit": "6ca80638b90cec66547011ee1ef79e534589989a",
+        "commit_short": "6ca80638b90c",
+        "commit_msg": "net: dsa: Use conduit and user terms\n\nUse more inclusive terms throughout the DSA subsystem by moving away\nfrom \"master\"",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/dsa/dsa.c",
+        "display_lineno": 1421,
+        "code_snippet": "commit 6ca80638b90cec66547011ee1ef79e534589989a\nAuthor: Florian Fainelli <florian.fainelli@broadcom.com>\nDate:   Mon Oct 23 11:17:28 2023 -0700\n\n    net: dsa: Use conduit and user terms\n    \n    Use more inclusive terms throughout the DSA subsystem by moving away\n    from \"master\" which is replaced by \"conduit\" and \"slave\" which is\n    replaced by \"user\". No functional changes.\n    \n    Acked-by: Rob Herring <robh@kernel.org>\n    Acked-by: Stephen Hemminger <stephen@networkplumber.org>\n    Revie",
+        "exists": true,
+        "reason": "The snippet shows the CPU-port probe path taking a net_device pointer and immediately releasing it with `dev_put(conduit);` at line 1421, then passing that same pointer to `dsa_port_parse_cpu(dp, conduit, NULL);` at line 1423. This matches the root cause: the conduit net_device reference is not being held correctly for the CPU-port setup path, so `cpu_dp->conduit` can become stale or be released incorrectly. There is no evidence here of the fix (such as a proper `dev_hold()` under `rtnl_lock()` or equivalent corrected reference management), only the buggy reference handling."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "00e984cb986b",
+          "anchor_file": "net/dsa/dsa.c",
+          "anchor_lineno": 1421
+        },
+        "commit": "cbabb0ac01052f79cf96d7b7e3d3451ffd275864",
+        "commit_short": "cbabb0ac0105",
+        "commit_msg": "net: dsa: get master device at port parsing time\n\nFetching the master device can be done directly when a port is parsed\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/dsa/dsa.c",
+        "display_lineno": 629,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet does not include the function body at all, only module metadata lines: `283: MODULE_ALIAS(\"platform:dsa\");` and `284:`. There is no visible logic about parsing ports, obtaining the master device, or managing `cpu_dp->conduit` references, so the vulnerable construct cannot be identified from this excerpt."
+      }
+    },
+    {
+      "bic_found": "6ca80638b90cec66547011ee1ef79e534589989a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5e7365b5a1ac",
+          "anchor_file": "net/dsa/dsa.c",
+          "anchor_lineno": 1426
+        },
+        "commit": "6ca80638b90cec66547011ee1ef79e534589989a",
+        "commit_short": "6ca80638b90c",
+        "commit_msg": "net: dsa: Use conduit and user terms\n\nUse more inclusive terms throughout the DSA subsystem by moving away\nfrom \"master\"",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/dsa/dsa.c",
+        "display_lineno": 1423,
+        "code_snippet": "commit 6ca80638b90cec66547011ee1ef79e534589989a\nAuthor: Florian Fainelli <florian.fainelli@broadcom.com>\nDate:   Mon Oct 23 11:17:28 2023 -0700\n\n    net: dsa: Use conduit and user terms\n    \n    Use more inclusive terms throughout the DSA subsystem by moving away\n    from \"master\" which is replaced by \"conduit\" and \"slave\" which is\n    replaced by \"user\". No functional changes.\n    \n    Acked-by: Rob Herring <robh@kernel.org>\n    Acked-by: Stephen Hemminger <stephen@networkplumber.org>\n    Revie",
+        "exists": true,
+        "reason": "The shown code clearly contains the problematic CPU-port probe path: it gets a net_device via `conduit = dsa_dev_to_net_device(dev);` and then immediately calls `dev_put(conduit);` before passing the pointer onward with `return dsa_port_parse_cpu(dp, conduit, NULL);`. This matches the root cause of mishandling the conduit net_device reference (releasing it / not holding a proper netdev ref during use), which can leave `cpu_dp->conduit` stale. There is no visible fix here such as a matching `dev_hold()` under `rtnl_lock()` or other corrected reference management, so the vulnerable construct is present and the fix is not."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "00e984cb986b",
+          "anchor_file": "net/dsa/dsa.c",
+          "anchor_lineno": 1423
+        },
+        "commit": "deff710703d80c942c9c85a3f00a053025cfb1e4",
+        "commit_short": "deff710703d8",
+        "commit_msg": "net: dsa: Allow default tag protocol to be overridden from DT\n\nSome combinations of tag protocols and Ethernet controlle",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/dsa/dsa.c",
+        "display_lineno": 1306,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet does not include the function body at all, only unrelated lines such as \"MODULE_ALIAS(\\\"platform:dsa\\\");\". There is no visible CPU-port probe logic, no handling of \"cpu_dp->conduit\", and no reference acquisition/release code (e.g. dev_hold/dev_put or device reference handling). Therefore the vulnerable construct cannot be determined from this snippet."
+      }
+    },
+    {
+      "bic_found": "6ca80638b90cec66547011ee1ef79e534589989a",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "6ca80638b90cec66547011ee1ef79e534589989a": 3
+      },
+      "bic_candidates": [
+        "6ca80638b90cec66547011ee1ef79e534589989a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

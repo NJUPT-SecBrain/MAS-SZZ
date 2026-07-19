@@ -1,0 +1,443 @@
+{
+  "cveid": "CVE-2026-46170",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b7b9a461569734d33d3259d58d2507adfac107ed"
+  ],
+  "ground_truth_bic": "00cfd77b9063dcdf3628a7087faba60de85a9cc8",
+  "predicted_bic": [
+    "9634cb35af17019baec21ca648516ce376fa10e6",
+    "41cb08555c4164996d67c78b3bf1c658075b75f1",
+    "5cd6e0ad79d2615264f63929f8b457ad97ae550d"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 39,
+  "llm_tokens": 22419,
+  "root_cause": {
+    "text": "In the MPTCP PM ADD_ADDR retransmission timer path, the socket reference was released with `__sock_put()` instead of `sock_put()`, and the timer teardown logic did not account for the last-reference case, causing the socket to remain unfreed or deadlock when `sk_free()` synchronously stopped the same timer.",
+    "evidence": "The patch changes `__sock_put(sk)` to `sock_put(sk)` in `mptcp_pm_add_timer()`, adds `entry->timer_done` to avoid calling `sk_stop_timer_sync()` on a timer that is already finishing, and sets that flag when no reschedule occurs; the commit message explicitly says “If at that moment, it was the last reference being held, the sk would not be freed” and that `sk_free()` would otherwise “waiting indefinitely to finish.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 327,
+      "content": "sk_stop_timer_sync(sk, &entry->add_timer);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 334,
+      "content": "if (unlikely(inet_sk_state_load(sk) == TCP_CLOSE))",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 335,
+      "content": "goto exit;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 337,
+      "content": "bh_lock_sock(sk);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the MPTCP PM ADD_ADDR retransmission timer path, the socket reference was released with `__sock_put()` instead of `sock_put()`, and the timer teardown logic did not account for the last-reference case, causing the socket to remain unfreed or deadlock when `sk_free()` synchronously stopped the same timer.",
+      "evidence_points": "The patch changes `__sock_put(sk)` to `sock_put(sk)` in `mptcp_pm_add_timer()`, adds `entry->timer_done` to avoid calling `sk_stop_timer_sync()` on a timer that is already finishing, and sets that flag when no reschedule occurs; the commit message explicitly says “If at that moment, it was the last reference being held, the sk would not be freed” and that `sk_free()` would otherwise “waiting indefinitely to finish.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add per-entry timer completion state to `mptcp_pm_add_entry`.",
+        "what": "A new boolean field named `timer_done` was added to `struct mptcp_pm_add_entry` between `retrans_times` and `add_timer`.",
+        "how": "This extends each add-entry instance with state to record whether its timer processing has completed, allowing later code to distinguish completed timer work from pending timer activity."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix mptcp_pm_add_timer() to lock the socket before state checks and rearm the timer through a unified timeout path.",
+        "what": "The function `mptcp_pm_add_timer()` changes `timeout` from an uninitialized local to `unsigned int timeout = 0;`, moves `bh_lock_sock(sk);` to before the TCP_CLOSE state check, changes the TCP_CLOSE branch to jump to `out` instead of `exit`, and replaces two direct `sk_reset_timer()` calls with assignments to `timeout` (`HZ / 20` and `TCP_RTO_MAX / 8`) before falling through to `out`.",
+        "how": "The timer callback now always acquires the socket lock before inspecting state, avoiding an unlocked state check. Instead of immediately reprogramming the timer in the middle of the function, it records the desired delay and relies on the common exit path to apply it, which makes the locking and timer rearm flow more consistent and avoids using an uninitialized timeout value."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Adjust add-address timer backoff handling to stop scheduling retries after the maximum retransmission count is reached.",
+        "what": "The code no longer calls sk_reset_timer() directly with a shifted timeout expression inside the conditional. Instead, it left-shifts the local variable timeout by entry->retrans_times when retrans_times is below ADD_ADDR_RETRANS_MAX, and sets timeout to 0 in the else branch. The subsequent timer reset call is removed from this hunk.",
+        "how": "This changes how the retransmission delay value is prepared before later use: the timeout is now computed in a separate step and explicitly zeroed once the maximum retransmission count is reached. At runtime, this affects when and whether the add-address timer will be armed, preventing further exponential backoff timing once the retry limit is exceeded."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix timer handling in the MPTCP PM add callback by rescheduling active timeouts and correctly marking completion when no timeout remains.",
+        "what": "The timer callback now checks `timeout` in the `out:` path: if it is nonzero, it calls `sk_reset_timer(sk, timer, jiffies + timeout)`, otherwise it sets `entry->timer_done = true` with a comment explaining this avoids waiting for the timer if `sock_put` triggers `sk_free`. The unlock-and-release sequence also changes from `bh_unlock_sock(sk); __sock_put(sk);` to `bh_unlock_sock(sk); sock_put(sk);`, and the old `exit:` label is removed.",
+        "how": "At runtime, the callback can now re-arm the timer for another interval when a timeout remains, or mark the timer entry as complete when no further timeout is pending so socket teardown can proceed without waiting. Using `sock_put()` instead of `__sock_put()` changes the reference release path to the regular socket put helper after unlocking."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Reset the add-address timer completion state when re-arming the timer to avoid stale timer_done status.",
+        "what": "A new assignment `add_entry->timer_done = false;` was inserted at the `reset_timer:` label in `mptcp_pm_alloc_anno_list()` immediately before computing the timeout and arming `add_entry->add_timer`.",
+        "how": "Each time this code path resets or reuses the add-address timer, it now explicitly clears the `timer_done` state first, ensuring the entry is treated as not yet completed and preventing stale completion state from affecting subsequent timer handling."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid stop-syncing timers that have already completed when freeing annotated MPTCP PM entries.",
+        "what": "In the free-loop inside mptcp_pm_free_anno_list(), the unconditional call to sk_stop_timer_sync(sk, &entry->add_timer) was replaced with a conditional call guarded by 'if (!entry->timer_done)'. The kfree_rcu(entry, rcu) call remains unchanged.",
+        "how": "At runtime, the code now skips stopping the add_timer for entries whose timer has already completed, avoiding an unnecessary or potentially invalid timer stop operation during cleanup. For entries still pending, the timer is stopped as before before the object is freed via RCU."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add per-entry timer completion state to `mptcp_pm_add_entry`."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix mptcp_pm_add_timer() to lock the socket before state checks and rearm the timer through a unified timeout path."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Adjust add-address timer backoff handling to stop scheduling retries after the maximum retransmission count is reached."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Reset the add-address timer completion state when re-arming the timer to avoid stale timer_done status."
+        },
+        {
+          "group_id": 4,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Avoid stop-syncing timers that have already completed when freeing annotated MPTCP PM entries."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix MPTCP PM add-address timer handling by rescheduling active timeouts and ensuring timer completion state is correctly reset/marked.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change adds per-entry timer completion state, but the vulnerability root cause is specifically about incorrect socket reference release and timer teardown in the MPTCP PM ADD_ADDR retransmission timer path. This does not directly address the refcounting or last-reference deadlock issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change targets the MPTCP PM ADD_ADDR timer path directly, which is the same area as the root cause. Locking the socket before state checks and rearming through a unified timeout path suggests a fix for timer lifecycle/teardown handling, closely related to the socket reference and timer-stop issue described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The change only alters ADD_ADDR timer retry/backoff behavior to stop after a maximum retransmission count. It does not address the socket reference release bug (`__sock_put()` vs `sock_put()`) or the timer teardown/last-reference deadlock issue described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": false,
+        "reason": "The root cause is about incorrect socket reference release (__sock_put vs sock_put) and teardown deadlock in the ADD_ADDR retransmission timer path. This group only changes timer rescheduling/completion state handling and does not address socket reference counting or the last-reference teardown issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": true,
+        "reason": "The change targets MPTCP PM timer teardown/freeing logic and specifically avoids stop-synchronizing already completed timers, which is directly related to the root cause involving incorrect timer teardown and last-reference handling in the ADD_ADDR retransmission timer path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 5,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 327,
+            "content": "sk_stop_timer_sync(sk, &entry->add_timer);",
+            "rationale": "This synchronous timer stop path is directly implicated by the root cause: when the socket is in its last-reference teardown, stopping the same timer from sk_free() can deadlock or prevent the socket from being released properly if the teardown logic does not handle the last-reference case."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 337,
+            "content": "bh_lock_sock(sk);",
+            "rationale": "The bug concerns the retransmission timer path and socket lifetime handling around timer execution. Locking the socket after the state check is part of the vulnerable pre-fix ordering that can race with teardown and lead to incorrect timer/socket handling."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 334,
+            "content": "if (unlikely(inet_sk_state_load(sk) == TCP_CLOSE))",
+            "rationale": "This state check occurs before taking the socket lock in the pre-fix code, which is part of the unsafe ordering mentioned in the root cause and can allow the timer path to act on a socket whose lifecycle is concurrently changing."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 335,
+            "content": "goto exit;",
+            "rationale": "Early exit from the timer path before proper lock/timer teardown handling contributes to inconsistent timer lifetime management, which is relevant to the socket leak/deadlock described in the root cause."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 2
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "sk_stop_timer_sync(sk, &entry->add_timer);",
+            "location": "hunk",
+            "explanation": "This synchronous timer stop in the ADD_ADDR retransmission timer teardown path is directly implicated by the root cause: during last-reference socket teardown, stopping the same timer from sk_free() can deadlock or interfere with releasing the socket."
+          },
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "if (unlikely(inet_sk_state_load(sk) == TCP_CLOSE))",
+            "location": "hunk",
+            "explanation": "This pre-fix state check occurs before the socket is locked, matching the unsafe timer/socket lifetime ordering described in the root cause and allowing the timer path to race with teardown."
+          },
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "goto exit;",
+            "location": "hunk",
+            "explanation": "This early exit from the timer handler can bypass the proper lock/rearm/teardown handling needed for correct socket lifetime management in the vulnerable ADD_ADDR retransmission timer path."
+          },
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "bh_lock_sock(sk);",
+            "location": "hunk",
+            "explanation": "Taken after the state check in the pre-fix code, this lock ordering is part of the vulnerable timer path sequencing that can race with socket teardown and contribute to incorrect lifetime handling."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9634cb35af17",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 327
+        },
+        "commit": "41cb08555c4164996d67c78b3bf1c658075b75f1",
+        "commit_short": "41cb08555c41",
+        "commit_msg": "treewide, timers: Rename from_timer() to timer_container_of()\n\nMove this API to the canonical timer_*() namespace.\n\n[ tg",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 274,
+        "code_snippet": "commit 41cb08555c4164996d67c78b3bf1c658075b75f1\nAuthor: Ingo Molnar <mingo@kernel.org>\nDate:   Fri May 9 07:51:14 2025 +0200\n\n    treewide, timers: Rename from_timer() to timer_container_of()\n    \n    Move this API to the canonical timer_*() namespace.\n    \n    [ tglx: Redone against pre rc1 ]\n    \n    Signed-off-by: Ingo Molnar <mingo@kernel.org>\n    Signed-off-by: Thomas Gleixner <tglx@linutronix.de>\n    Link: https://lore.kernel.org/all/aB2X0jCKQO56WdMt@gmail.com\n\ndiff --git a/net/mptcp/pm.c ",
+        "exists": false,
+        "reason": "The shown function body only changes the timer helper macro: `struct mptcp_pm_add_entry *entry = timer_container_of(entry, timer, add_timer);` replacing `from_timer(...)` with `timer_container_of(...)`. There is no socket reference management visible here, and none of the vulnerable logic described in the root cause (`__sock_put()` vs `sock_put()` or timer teardown/last-reference handling) appears in this snippet. Therefore the vulnerable construct is absent in this function body, and this commit does not show the fix for that issue."
+      }
+    },
+    {
+      "bic_found": "41cb08555c4164996d67c78b3bf1c658075b75f1",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9634cb35af17",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 334
+        },
+        "commit": "9634cb35af17019baec21ca648516ce376fa10e6",
+        "commit_short": "9634cb35af17",
+        "commit_msg": "mptcp: pm: ADD_ADDR rtx: always decrease sk refcount\n\nWhen an ADD_ADDR is retransmitted, the sk is held in sk_reset_time",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 334,
+        "code_snippet": "commit 9634cb35af17019baec21ca648516ce376fa10e6\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Tue May 5 17:00:52 2026 +0200\n\n    mptcp: pm: ADD_ADDR rtx: always decrease sk refcount\n    \n    When an ADD_ADDR is retransmitted, the sk is held in sk_reset_timer().\n    It should then be released in all cases at the end.\n    \n    Some (unlikely) checks were returning directly instead of calling\n    sock_put() to decrease the refcount. Jump to a new 'exit' label to call\n    __sock_put() ",
+        "exists": false,
+        "reason": "The function body clearly shows the ADD_ADDR retransmission timer path and the refcount release at the end. The vulnerable pattern from the root cause is the timer path failing to always drop the socket reference; this commit changes the early returns from `return;` to `goto exit;` so `__sock_put(sk);` is always reached: `if (unlikely(inet_sk_state_load(sk) == TCP_CLOSE)) goto exit;` and at the end `exit: __sock_put(sk);`. The diff also removes the earlier `if (!msk) return;` early return. This indicates the bug was present before and the shown code already contains the fix for the leak/deadlock by ensuring the reference is released in all cases."
+      }
+    },
+    {
+      "bic_found": "9634cb35af17019baec21ca648516ce376fa10e6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9634cb35af17",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 335
+        },
+        "commit": "9634cb35af17019baec21ca648516ce376fa10e6",
+        "commit_short": "9634cb35af17",
+        "commit_msg": "mptcp: pm: ADD_ADDR rtx: always decrease sk refcount\n\nWhen an ADD_ADDR is retransmitted, the sk is held in sk_reset_time",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 335,
+        "code_snippet": "commit 9634cb35af17019baec21ca648516ce376fa10e6\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Tue May 5 17:00:52 2026 +0200\n\n    mptcp: pm: ADD_ADDR rtx: always decrease sk refcount\n    \n    When an ADD_ADDR is retransmitted, the sk is held in sk_reset_timer().\n    It should then be released in all cases at the end.\n    \n    Some (unlikely) checks were returning directly instead of calling\n    sock_put() to decrease the refcount. Jump to a new 'exit' label to call\n    __sock_put() ",
+        "exists": false,
+        "reason": "The shown function clearly contains the ADD_ADDR retransmission timer path and its socket reference drop at the end: `__sock_put(sk);`. The commit message explains that previously some early returns were missing the refcount release, causing the leak/deadlock, and the diff changes those early returns to jump to `exit:` so the refcount is always decreased. In the shown code, the `TCP_CLOSE` case now does `goto exit;` and the common `exit:` label executes `__sock_put(sk);`, so the vulnerable construct is present in the pre-fix logic but the fix is already applied in this version. The code is sufficient to determine this because it shows the exact timer teardown/refcount handling."
+      }
+    },
+    {
+      "bic_found": "9634cb35af17019baec21ca648516ce376fa10e6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9634cb35af17",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 337
+        },
+        "commit": "5cd6e0ad79d2615264f63929f8b457ad97ae550d",
+        "commit_short": "5cd6e0ad79d2",
+        "commit_msg": "mptcp: pm: ADD_ADDR rtx: fix potential data-race\n\nThis mptcp_pm_add_timer() helper is executed as a timer callback in\nso",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 340,
+        "code_snippet": "commit 5cd6e0ad79d2615264f63929f8b457ad97ae550d\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Tue May 5 17:00:51 2026 +0200\n\n    mptcp: pm: ADD_ADDR rtx: fix potential data-race\n    \n    This mptcp_pm_add_timer() helper is executed as a timer callback in\n    softirq context. To avoid any data races, the socket lock needs to be\n    held with bh_lock_sock().\n    \n    If the socket is in use, retry again soon after, similar to what is done\n    with the keepalive timer.\n    \n    Fixes:",
+        "exists": false,
+        "reason": "The shown function already contains the new softirq-safe lock handling and retry logic: it calls `bh_lock_sock(sk);`, checks `if (sock_owned_by_user(sk)) { /* Try again later. */ sk_reset_timer(sk, timer, jiffies + HZ / 20); goto out; }`, and releases with `bh_unlock_sock(sk);` before `__sock_put(sk);`. This matches the commit message’s stated fix for the timer callback data-race. The vulnerable construct described in the root cause (the problematic timer path behavior) is not present in this snippet as shown, because the function now serializes against user-owned socket access and defers work instead of proceeding unsafely. Therefore this version already contains the fix and is not the buggy pre-fix form."
+      }
+    },
+    {
+      "bic_found": "5cd6e0ad79d2615264f63929f8b457ad97ae550d",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "41cb08555c4164996d67c78b3bf1c658075b75f1": 1,
+        "9634cb35af17019baec21ca648516ce376fa10e6": 2,
+        "5cd6e0ad79d2615264f63929f8b457ad97ae550d": 1
+      },
+      "bic_candidates": [
+        "9634cb35af17019baec21ca648516ce376fa10e6",
+        "41cb08555c4164996d67c78b3bf1c658075b75f1",
+        "5cd6e0ad79d2615264f63929f8b457ad97ae550d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

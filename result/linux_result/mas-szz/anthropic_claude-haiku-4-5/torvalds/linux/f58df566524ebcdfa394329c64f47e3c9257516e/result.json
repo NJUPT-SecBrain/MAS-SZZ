@@ -1,0 +1,266 @@
+{
+  "cveid": "CVE-2026-31648",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "f58df566524ebcdfa394329c64f47e3c9257516e"
+  ],
+  "ground_truth_bic": "743a2753a02e805347969f6f89f38b736850d808",
+  "predicted_bic": [
+    "74207de2ba10c2973334906822dc94d2e859ffc5",
+    "f1820361f83d556a7f0a9f629100f3825e594328"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 13,
+  "llm_tokens": 56509,
+  "root_cause": {
+    "text": "A time-of-check-time-of-use (TOCTOU) race condition where `end_pgoff` is calculated after retrieving a folio, allowing concurrent file truncation to shrink `i_size` between folio retrieval and `nr_pages` calculation, causing `nr_pages` to overflow and map beyond the folio's actual size.",
+    "evidence": "The patch moves the `end_pgoff` calculation (based on `i_size_read(mapping->host)`) from after `next_uptodate_folio()` to before it. The commit message explicitly describes the race: CPU 0 retrieves a folio with the old `i_size`, then CPU 1 shrinks `i_size` via `i_size_write()`, causing the subsequent `nr_pages = min(end, end_pgoff) - xas.xa_index + 1` calculation to overflow because `end_pgoff` becomes smaller than `xas.xa_index`, resulting in negative arithmetic that wraps to a large positive value. This causes `set_pte_range()` to map pages beyond the folio boundary, corrupting page metadata like `_mapcount`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/filemap.c",
+      "lineno": 3887,
+      "content": "folio = next_uptodate_folio(&xas, mapping, end_pgoff);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/filemap.c",
+      "lineno": 3891,
+      "content": "file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/filemap.c",
+      "lineno": 3892,
+      "content": "end_pgoff = min(end_pgoff, file_end);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A time-of-check-time-of-use (TOCTOU) race condition where `end_pgoff` is calculated after retrieving a folio, allowing concurrent file truncation to shrink `i_size` between folio retrieval and `nr_pages` calculation, causing `nr_pages` to overflow and map beyond the folio's actual size.",
+      "evidence_points": "The patch moves the `end_pgoff` calculation (based on `i_size_read(mapping->host)`) from after `next_uptodate_folio()` to before it. The commit message explicitly describes the race: CPU 0 retrieves a folio with the old `i_size`, then CPU 1 shrinks `i_size` via `i_size_write()`, causing the subsequent `nr_pages = min(end, end_pgoff) - xas.xa_index + 1` calculation to overflow because `end_pgoff` becomes smaller than `xas.xa_index`, resulting in negative arithmetic that wraps to a large positive value. This causes `set_pte_range()` to map pages beyond the folio boundary, corrupting page metadata like `_mapcount`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/filemap.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Move file_end calculation before next_uptodate_folio() call to prevent races with concurrent truncation and ensure correct end_pgoff bounds are used.",
+        "what": "Moved the calculation of `file_end` and the adjustment of `end_pgoff` to occur before the `rcu_read_lock()` call and the `next_uptodate_folio()` invocation, rather than after. Added a comment explaining the rationale for this reordering.",
+        "how": "By recalculating `file_end` and clamping `end_pgoff` before acquiring the RCU read-side lock and calling `next_uptodate_folio()`, the function now passes a correctly bounded `end_pgoff` value to that function. This prevents the function from operating on stale file size information that could race with concurrent truncation operations, ensuring that page mapping decisions are based on the current file size at the time of the lock acquisition."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Move file_end calculation before next_uptodate_folio() call to prevent races with concurrent truncation and ensure correct end_pgoff bounds are used."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "This group directly addresses the TOCTOU race condition by moving the file_end calculation before the folio retrieval. By calculating the bounds before calling next_uptodate_folio(), it ensures that end_pgoff is determined from a consistent i_size value, preventing concurrent truncation from causing the race condition that leads to nr_pages overflow and out-of-bounds mapping."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "mm/filemap.c",
+            "lineno": 3887,
+            "content": "folio = next_uptodate_folio(&xas, mapping, end_pgoff);",
+            "rationale": "This line retrieves the folio before calculating file_end and end_pgoff. A concurrent truncation can shrink i_size between this folio retrieval and the subsequent end_pgoff calculation on line 3892, causing a TOCTOU race condition where end_pgoff becomes stale relative to the actual file size."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/filemap.c",
+            "lineno": 3891,
+            "content": "file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;",
+            "rationale": "This line calculates file_end after folio retrieval, allowing concurrent truncation to change i_size between the folio lookup and this calculation. The calculated file_end may not reflect the actual file bounds at the time the folio was retrieved, leading to incorrect end_pgoff bounds."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/filemap.c",
+            "lineno": 3892,
+            "content": "end_pgoff = min(end_pgoff, file_end);",
+            "rationale": "This line uses a potentially stale file_end value (calculated after folio retrieval) to constrain end_pgoff. If i_size was truncated concurrently, file_end may be smaller than the folio's actual page offset range, causing nr_pages calculation to overflow and map beyond the folio's actual size."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/filemap.c",
+            "stmt_text": "folio = next_uptodate_folio(&xas, mapping, end_pgoff);",
+            "location": "hunk",
+            "explanation": "This statement retrieves the folio before file_end and end_pgoff are calculated. A concurrent truncation can shrink i_size between this folio retrieval (line 3887) and the subsequent end_pgoff calculation (lines 3891-3892), creating a TOCTOU race condition where the folio bounds become misaligned with the actual file size."
+          },
+          {
+            "vuln_file": "mm/filemap.c",
+            "stmt_text": "file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;",
+            "location": "hunk",
+            "explanation": "This statement calculates file_end after folio retrieval, allowing concurrent truncation to change i_size between the folio lookup and this calculation. The calculated file_end may not reflect the actual file bounds at the time the folio was retrieved, leading to incorrect end_pgoff bounds and potential nr_pages overflow."
+          },
+          {
+            "vuln_file": "mm/filemap.c",
+            "stmt_text": "end_pgoff = min(end_pgoff, file_end);",
+            "location": "hunk",
+            "explanation": "This statement uses a potentially stale file_end value (calculated after folio retrieval) to constrain end_pgoff. If i_size was truncated concurrently between folio retrieval and this calculation, file_end may be smaller than the folio's actual page offset range, causing nr_pages calculation to overflow and map beyond the folio's actual size."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2697dd8ae721",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3887
+        },
+        "commit": "de74976eb65151a2f568e477fc2e0032df5b22b4",
+        "commit_short": "de74976eb651",
+        "commit_msg": "filemap: add filemap_map_folio_range()\n\nfilemap_map_folio_range() maps partial/full folio.  Comparing to original\nfilema",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 3531,
+        "code_snippet": "commit de74976eb65151a2f568e477fc2e0032df5b22b4\nAuthor: Yin Fengwei <fengwei.yin@intel.com>\nDate:   Wed Aug 2 16:14:02 2023 +0100\n\n    filemap: add filemap_map_folio_range()\n    \n    filemap_map_folio_range() maps partial/full folio.  Comparing to original\n    filemap_map_pages(), it updates refcount once per folio instead of per\n    page and gets minor performance improvement for large folio.\n    \n    With a will-it-scale.page_fault3 like app (change file write fault testing\n    to read fault t",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the new `filemap_map_folio_range()` function and the modified `filemap_map_pages()` function. The TOCTOU race condition exists because `nr_pages` is calculated AFTER the folio is retrieved but BEFORE it is used for mapping. Specifically, at line 3554 in the diff: `end = folio->index + folio_nr_pages(folio) - 1;` followed by `nr_pages = min(end, end_pgoff) - xas.xa_index + 1;`. Between the folio retrieval (line 3531: `folio = next_uptodate_folio(&xas, mapping, end_pgoff)`) and the `nr_pages` calculation (line 3554), a concurrent truncation could shrink `i_size`, causing `end_pgoff` to become smaller. This would result in `nr_pages` being calculated based on stale folio size information. The vulnerability is that there is no re-check of `i_size` or `end_pgoff` after folio retrieval and before using `nr_pages` to map pages in `filemap_map_folio_range()`. The code does not prevent the race condition where file truncation could occur between folio retrieval and the actual page mapping operation."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "9f1f5b60e76d",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3531
+        },
+        "commit": "f1820361f83d556a7f0a9f629100f3825e594328",
+        "commit_short": "f1820361f83d",
+        "commit_msg": "mm: implement ->map_pages for page cache\n\nfilemap_map_pages() is generic implementation of ->map_pages() for\nfilesystems",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 2116,
+        "code_snippet": "commit f1820361f83d556a7f0a9f629100f3825e594328\nAuthor: Kiryl Shutsemau <kas@kernel.org>\nDate:   Mon Apr 7 15:37:19 2014 -0700\n\n    mm: implement ->map_pages for page cache\n    \n    filemap_map_pages() is generic implementation of ->map_pages() for\n    filesystems who uses page cache.\n    \n    It should be safe to use filemap_map_pages() for ->map_pages() if\n    filesystem use filemap_fault() for ->fault().\n    \n    Signed-off-by: Kirill A. Shutemov <kirill.shutemov@linux.intel.com>\n    Acked-by",
+        "exists": true,
+        "reason": "The function `filemap_map_pages()` contains a TOCTOU race condition. At line 2113, `size = i_size_read(mapping->host) + PAGE_CACHE_SIZE - 1;` reads the file size, and then at line 2114 checks `if (page->index >= size >> PAGE_CACHE_SHIFT)`. However, there is no synchronization preventing concurrent file truncation from shrinking `i_size` between the `i_size_read()` call and the subsequent check. The calculation of `pte = vmf->pte + page->index - vmf->pgoff;` at line 2117 uses `page->index` which could now be beyond the file's actual size if truncation occurred, potentially causing the PTE calculation to map beyond the folio's actual size. The code lacks proper locking (e.g., i_size_read should be protected by appropriate synchronization) to prevent this race condition where concurrent truncation can invalidate the size check."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "8c6e50b0290c",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 2116
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 1534,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function is generic_file_readonly_mmap, which is a simple wrapper that validates VM flags and delegates to generic_file_mmap. This function does not contain any folio retrieval, end_pgoff calculation, nr_pages computation, or file truncation logic. The vulnerability root cause describes a TOCTOU race condition involving folio retrieval and i_size checks, which would occur in a different function (likely in the page fault handling or folio mapping code path). The shown code is insufficient to determine if the vulnerable construct exists, as the actual vulnerable logic is not present in this function. To properly analyze this vulnerability, we would need to see the function that actually performs folio retrieval and nr_pages calculation based on i_size."
+      }
+    },
+    {
+      "bic_found": "f1820361f83d556a7f0a9f629100f3825e594328",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2697dd8ae721",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3891
+        },
+        "commit": "74207de2ba10c2973334906822dc94d2e859ffc5",
+        "commit_short": "74207de2ba10",
+        "commit_msg": "mm/memory: do not populate page table entries beyond i_size\n\nPatch series \"Fix SIGBUS semantics with large folios\", v3.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 3822,
+        "code_snippet": "commit 74207de2ba10c2973334906822dc94d2e859ffc5\nAuthor: Kiryl Shutsemau <kas@kernel.org>\nDate:   Mon Oct 27 11:56:35 2025 +0000\n\n    mm/memory: do not populate page table entries beyond i_size\n    \n    Patch series \"Fix SIGBUS semantics with large folios\", v3.\n    \n    Accessing memory within a VMA, but beyond i_size rounded up to the next\n    page size, is supposed to generate SIGBUS.\n    \n    Darrick reported[1] an xfstests regression in v6.18-rc1.  generic/749\n    failed due to missing SIGBUS",
+        "exists": false,
+        "reason": "The commit introduces a fix for the TOCTOU race condition vulnerability. The key changes are: (1) `file_end` is now calculated early via `DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1` before any folio operations; (2) `end_pgoff` is clamped to `file_end` immediately after folio retrieval with `end_pgoff = min(end_pgoff, file_end)`; (3) A new `can_map_large` boolean is introduced that checks `shmem_mapping(mapping) || file_end >= folio_next_index(folio)` to prevent PMD mappings across i_size; (4) The `can_map_large` flag is passed to `filemap_map_folio_range()` and used to guard large folio mapping attempts. This eliminates the race condition by reading i_size once early and using that value consistently, preventing concurrent truncation from causing `nr_pages` to overflow and map beyond the folio's actual size. The vulnerable construct (calculating `end_pgoff` after folio retrieval without i_size bounds) is not present in this fixed version."
+      }
+    },
+    {
+      "bic_found": "74207de2ba10c2973334906822dc94d2e859ffc5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2697dd8ae721",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3892
+        },
+        "commit": "74207de2ba10c2973334906822dc94d2e859ffc5",
+        "commit_short": "74207de2ba10",
+        "commit_msg": "mm/memory: do not populate page table entries beyond i_size\n\nPatch series \"Fix SIGBUS semantics with large folios\", v3.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 3823,
+        "code_snippet": "commit 74207de2ba10c2973334906822dc94d2e859ffc5\nAuthor: Kiryl Shutsemau <kas@kernel.org>\nDate:   Mon Oct 27 11:56:35 2025 +0000\n\n    mm/memory: do not populate page table entries beyond i_size\n    \n    Patch series \"Fix SIGBUS semantics with large folios\", v3.\n    \n    Accessing memory within a VMA, but beyond i_size rounded up to the next\n    page size, is supposed to generate SIGBUS.\n    \n    Darrick reported[1] an xfstests regression in v6.18-rc1.  generic/749\n    failed due to missing SIGBUS",
+        "exists": false,
+        "reason": "The commit introduces a fix for the TOCTOU race condition vulnerability. The key changes are: (1) `file_end` is now calculated early at line 3822 using `DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1`, (2) `end_pgoff` is clamped to `file_end` immediately after at line 3823 before any folio mapping operations, (3) a new `can_map_large` boolean is introduced at line 3824 that checks both shmem_mapping and whether `file_end >= folio_next_index(folio)`, (4) this flag is used to guard both PMD mapping at line 3845 and PTE range mapping at line 3864. The vulnerable construct (calculating `nr_pages` after folio retrieval without respecting i_size) is eliminated by moving the i_size check and end_pgoff clamping to occur immediately after folio retrieval and before any mapping decisions. The code now prevents PTEs beyond i_size and PMD mappings across i_size (except for shmem/tmpfs), which directly addresses the root cause of the TOCTOU race condition."
+      }
+    },
+    {
+      "bic_found": "74207de2ba10c2973334906822dc94d2e859ffc5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "f1820361f83d556a7f0a9f629100f3825e594328": 1,
+        "74207de2ba10c2973334906822dc94d2e859ffc5": 2
+      },
+      "bic_candidates": [
+        "74207de2ba10c2973334906822dc94d2e859ffc5",
+        "f1820361f83d556a7f0a9f629100f3825e594328"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

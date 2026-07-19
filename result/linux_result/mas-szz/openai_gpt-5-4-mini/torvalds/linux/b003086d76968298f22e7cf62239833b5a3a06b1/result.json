@@ -1,0 +1,167 @@
+{
+  "cveid": "CVE-2026-53271",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b003086d76968298f22e7cf62239833b5a3a06b1"
+  ],
+  "ground_truth_bic": "c8efcc786146a951091588e5fa7e3c754850cb3c",
+  "predicted_bic": [
+    "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 12,
+  "llm_tokens": 8644,
+  "root_cause": {
+    "text": "ksmbd’s oplock/lease break notifier paths dereference `opinfo->conn` after `ci->m_lock` has been dropped, so a concurrent SMB2 LOGOFF can clear `opinfo->conn` to NULL and the notifier then passes a NULL `ksmbd_conn` into `ksmbd_conn_r_count_inc()`, causing a NULL-deref.",
+    "evidence": "The patch changes both `smb2_oplock_break_noti()` and `smb2_lease_break_noti()` from `struct ksmbd_conn *conn = opinfo->conn;` to `conn = READ_ONCE(opinfo->conn); if (!conn) return 0;`, and the CVE text says this race happens because `oplock_break()` runs after `opinfo_get_list()` drops `ci->m_lock`, allowing `session_fd_check()` to set `op->conn = NULL` before `ksmbd_conn_r_count_inc(conn)` writes through NULL.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 714,
+      "content": "struct ksmbd_conn *conn = opinfo->conn;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "ksmbd’s oplock/lease break notifier paths dereference `opinfo->conn` after `ci->m_lock` has been dropped, so a concurrent SMB2 LOGOFF can clear `opinfo->conn` to NULL and the notifier then passes a NULL `ksmbd_conn` into `ksmbd_conn_r_count_inc()`, causing a NULL-deref.",
+      "evidence_points": "The patch changes both `smb2_oplock_break_noti()` and `smb2_lease_break_noti()` from `struct ksmbd_conn *conn = opinfo->conn;` to `conn = READ_ONCE(opinfo->conn); if (!conn) return 0;`, and the CVE text says this race happens because `oplock_break()` runs after `opinfo_get_list()` drops `ci->m_lock`, allowing `session_fd_check()` to set `op->conn = NULL` before `ksmbd_conn_r_count_inc(conn)` writes through NULL."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a NULL/concurrency guard around `opinfo->conn` before sending smb2 oplock break notifications.",
+        "what": "The function `smb2_oplock_break_noti()` was changed to stop reading `opinfo->conn` directly into a local pointer at declaration time. Instead, it now declares `conn` separately, assigns it using `READ_ONCE(opinfo->conn)`, returns 0 immediately if that value is NULL, and only then allocates `work` with `ksmbd_alloc_work_struct()`.",
+        "how": "At runtime, this makes the oplock break notification path resilient to `opinfo->conn` being cleared concurrently or otherwise being unavailable. It avoids dereferencing a NULL connection pointer and skips notification work when no connection exists, preventing a potential crash or invalid access."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a NULL/race guard around opinfo->conn before scheduling SMB2 lease break notification work.",
+        "what": "The function smb2_lease_break_noti() no longer initializes conn directly from opinfo->conn at declaration time. Instead, conn is assigned using READ_ONCE(opinfo->conn) after the variable declarations, and the function now returns 0 immediately if conn is NULL before allocating work.",
+        "how": "At runtime, the function now performs a safe single-read of opinfo->conn and avoids dereferencing or using a missing connection pointer. If the connection has already been cleared, it exits early without scheduling lease-break notification work, preventing a possible race-related NULL pointer use."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Add a NULL/race guard around opinfo->conn before scheduling SMB2 lease break notification work."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add a NULL/concurrency guard around opinfo->conn before scheduling or sending SMB2 lease/oplock break notification work.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the reported NULL-deref race by guarding `opinfo->conn` in the oplock/lease break notifier paths before scheduling or sending notification work, which matches the root cause of dereferencing a connection pointer that can be cleared concurrently by SMB2 LOGOFF."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 714,
+            "content": "struct ksmbd_conn *conn = opinfo->conn;",
+            "rationale": "This captures the vulnerable dereference path: the notifier caches opinfo->conn without holding the mutex, so a concurrent LOGOFF can null it before later use, leading to a NULL pointer being passed onward."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 714,
+            "content": "struct ksmbd_conn *conn = opinfo->conn;",
+            "rationale": "Same race in the lease-break notifier: conn is read from opinfo and later used after the lock is dropped, allowing concurrent cleanup to NULL it and causing a NULL-deref when the connection is referenced."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "struct ksmbd_conn *conn = opinfo->conn;",
+            "location": "hunk",
+            "explanation": "This line caches opinfo->conn before the notifier path drops the lock, so a concurrent SMB2 LOGOFF can clear opinfo->conn to NULL and later code will pass a NULL ksmbd_conn into ksmbd_conn_r_count_inc(), triggering the NULL-deref described in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e43ffb69e043",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 714
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 698,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet is the oplock/lease implementation introduced by this commit, but the vulnerable condition described in the root cause is not shown here: there is no code in the snippet that dereferences `opinfo->conn` after dropping `ci->m_lock`, nor any call to `ksmbd_conn_r_count_inc()` on a possibly NULL connection. Since the commit message says this is the initial addition of the SMB3 oplock/lease cache mechanism, the specific NULL-deref race in the notifier path is not present in the shown function body. Therefore the vulnerable construct is absent from this commit body as provided, and there is no evidence of the later fix either."
+      }
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9": 1
+      },
+      "bic_candidates": [
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

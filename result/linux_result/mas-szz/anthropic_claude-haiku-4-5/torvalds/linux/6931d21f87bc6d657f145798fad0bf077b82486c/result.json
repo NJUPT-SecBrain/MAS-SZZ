@@ -1,0 +1,215 @@
+{
+  "cveid": "CVE-2026-31678",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6931d21f87bc6d657f145798fad0bf077b82486c"
+  ],
+  "ground_truth_bic": "a9020fde67a6eb77f8130feff633189f99264db1",
+  "predicted_bic": [
+    "d62607c3fe45911b2331fac073355a8c914bbde2",
+    "ccb1352e76cff0524e7ccb2074826a092dd13016"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 15590,
+  "root_cause": {
+    "text": "The tunnel vport destroy path was releasing the netdev reference synchronously in `ovs_netdev_tunnel_destroy()` while concurrent RCU readers could still access `vport->dev`, creating a use-after-free race condition when the device unregistration occurs before the destroy function runs.",
+    "evidence": "The patch removes the `netdev_put(vport->dev, &vport->dev_tracker)` and `vport->dev = NULL` calls from `ovs_netdev_tunnel_destroy()` and defers the reference release to the RCU callback `vport_netdev_free()`. The commit message explicitly states: \"ovs_netdev_tunnel_destroy() may run after NETDEV_UNREGISTER already detached the device. Dropping the netdev reference in destroy can race with concurrent readers that still observe vport->dev.\" This indicates the vulnerability stems from premature reference release outside RCU protection, whereas the non-tunnel destroy path safely releases the reference within the RCU callback, providing proper synchronization for concurrent readers.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/openvswitch/vport-netdev.c",
+      "lineno": 199,
+      "content": "netdev_put(vport->dev, &vport->dev_tracker);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/openvswitch/vport-netdev.c",
+      "lineno": 200,
+      "content": "vport->dev = NULL;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The tunnel vport destroy path was releasing the netdev reference synchronously in `ovs_netdev_tunnel_destroy()` while concurrent RCU readers could still access `vport->dev`, creating a use-after-free race condition when the device unregistration occurs before the destroy function runs.",
+      "evidence_points": "The patch removes the `netdev_put(vport->dev, &vport->dev_tracker)` and `vport->dev = NULL` calls from `ovs_netdev_tunnel_destroy()` and defers the reference release to the RCU callback `vport_netdev_free()`. The commit message explicitly states: \"ovs_netdev_tunnel_destroy() may run after NETDEV_UNREGISTER already detached the device. Dropping the netdev reference in destroy can race with concurrent readers that still observe vport->dev.\" This indicates the vulnerability stems from premature reference release outside RCU protection, whereas the non-tunnel destroy path safely releases the reference within the RCU callback, providing proper synchronization for concurrent readers."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/openvswitch/vport-netdev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Defer device reference release from the rtnl-locked section to the RCU callback to avoid potential lock ordering issues or to simplify the cleanup sequence.",
+        "what": "Removed two lines from ovs_netdev_tunnel_destroy(): the netdev_put() call that releases the device reference with tracker, and the assignment setting vport->dev to NULL.",
+        "how": "This change eliminates the explicit device reference release and nullification that occurred before the rtnl_unlock() call. The device reference and cleanup will now be deferred to the call_rcu() callback (vport_netdev_free) instead of being released immediately within the locked section."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Defer device reference release from the rtnl-locked section to the RCU callback to avoid potential lock ordering issues or to simplify the cleanup sequence."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by deferring device reference release to the RCU callback. This prevents the use-after-free race condition where concurrent RCU readers could access vport->dev after synchronous release. By moving the netdev reference release out of the rtnl-locked section and into the RCU callback, the fix ensures RCU grace period completion before the device is actually freed, eliminating the race window."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/openvswitch/vport-netdev.c",
+            "lineno": 199,
+            "content": "netdev_put(vport->dev, &vport->dev_tracker);",
+            "rationale": "This line releases the netdev reference synchronously while still holding rtnl_lock, before the RCU callback is invoked. This creates a race condition where concurrent RCU readers accessing vport->dev can encounter a freed device if device unregistration occurs between this release and the actual RCU grace period completion."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/openvswitch/vport-netdev.c",
+            "lineno": 200,
+            "content": "vport->dev = NULL;",
+            "rationale": "Setting vport->dev to NULL immediately after netdev_put() in the rtnl-locked section exposes a window where the device reference is released but RCU readers may still be traversing the vport structure, leading to use-after-free if they dereference the now-freed device."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/openvswitch/vport-netdev.c",
+            "lineno": 201,
+            "content": "rtnl_unlock();",
+            "rationale": "The rtnl_unlock() occurs after netdev_put() but before the RCU callback executes. This allows concurrent RCU readers to access vport->dev after the reference has been released, creating a use-after-free window if device unregistration happens before the RCU grace period completes."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/openvswitch/vport-netdev.c",
+            "stmt_text": "netdev_put(vport->dev, &vport->dev_tracker);",
+            "location": "hunk",
+            "explanation": "This statement releases the netdev reference synchronously while holding rtnl_lock, before the RCU callback is invoked. This creates a use-after-free race condition where concurrent RCU readers accessing vport->dev can encounter a freed device if device unregistration occurs between this release and the actual RCU grace period completion."
+          },
+          {
+            "vuln_file": "net/openvswitch/vport-netdev.c",
+            "stmt_text": "vport->dev = NULL;",
+            "location": "hunk",
+            "explanation": "Setting vport->dev to NULL immediately after netdev_put() in the rtnl-locked section exposes a window where the device reference is released but RCU readers may still be traversing the vport structure, leading to use-after-free if they dereference the now-freed device."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e069034bd660",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 199
+        },
+        "commit": "d62607c3fe45911b2331fac073355a8c914bbde2",
+        "commit_short": "d62607c3fe45",
+        "commit_msg": "net: rename reference+tracking helpers\n\nNetdev reference helpers have a dev_ prefix for historic\nreasons. Renaming the o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 176,
+        "code_snippet": "commit d62607c3fe45911b2331fac073355a8c914bbde2\nAuthor: Jakub Kicinski <kuba@kernel.org>\nDate:   Tue Jun 7 21:39:55 2022 -0700\n\n    net: rename reference+tracking helpers\n    \n    Netdev reference helpers have a dev_ prefix for historic\n    reasons. Renaming the old helpers would be too much churn\n    but we can rename the tracking ones which are relatively\n    recent and should be the default for new code.\n    \n    Rename:\n     dev_hold_track()    -> netdev_hold()\n     dev_put_track()     -> ne",
+        "exists": false,
+        "reason": "The function shows the correct fix is already in place. Line 176 uses `netdev_put(vport->dev, &vport->dev_tracker)` which is the tracking variant that properly handles reference counting. The vulnerability root cause describes a synchronous netdev reference release creating a use-after-free race. However, this code demonstrates the proper fix: (1) the netdev_put call at line 176 is deferred within the RCU callback path via `call_rcu(&vport->rcu, vport_netdev_free)` at line 180, ensuring RCU readers complete before the actual device is freed, and (2) the use of the tracking helper `netdev_put()` with `&vport->dev_tracker` ensures proper reference accounting. The commit message indicates this is a renaming of tracking helpers, and the code shows the tracking variant is being used, which is the correct approach to prevent the use-after-free condition described in the vulnerability."
+      }
+    },
+    {
+      "bic_found": "d62607c3fe45911b2331fac073355a8c914bbde2",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e069034bd660",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 200
+        },
+        "commit": "a9020fde67a6eb77f8130feff633189f99264db1",
+        "commit_short": "a9020fde67a6",
+        "commit_msg": "openvswitch: Move tunnel destroy function to oppenvswitch module.\n\nThis function will be used in gre and geneve vport im",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 189,
+        "code_snippet": "commit a9020fde67a6eb77f8130feff633189f99264db1\nAuthor: Pravin B Shelar <pshelar@nicira.com>\nDate:   Fri Aug 7 23:51:33 2015 -0700\n\n    openvswitch: Move tunnel destroy function to oppenvswitch module.\n    \n    This function will be used in gre and geneve vport implementations.\n    \n    Signed-off-by: Pravin B Shelar <pshelar@nicira.com>\n    Acked-by: Thomas Graf <tgraf@suug.ch>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/openvswitch/vport-netdev.c b/net/openvswitc",
+        "exists": true,
+        "reason": "The newly introduced `ovs_netdev_tunnel_destroy()` function contains the vulnerable construct. At line 187, it performs `dev_put(vport->dev)` synchronously while holding `rtnl_lock()`, then calls `rtnl_delete_link(vport->dev)` at line 188. This releases the netdev reference synchronously before the RCU grace period completes. The function then sets `vport->dev = NULL` at line 189 and calls `call_rcu(&vport->rcu, vport_netdev_free)` at line 192. The vulnerability exists because concurrent RCU readers could still hold references to `vport->dev` through the vport structure, but the device is being unregistered and the reference is released synchronously. The `vport_netdev_free()` callback (lines 150-157) also calls `dev_put(vport->dev)` at line 155, but by that time the device may have already been unregistered, creating a use-after-free race condition. The fix would require deferring the `dev_put()` and `rtnl_delete_link()` calls to the RCU callback, not performing them synchronously in the destroy path."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "fb811395cd5a",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 189
+        },
+        "commit": "ccb1352e76cff0524e7ccb2074826a092dd13016",
+        "commit_short": "ccb1352e76cf",
+        "commit_msg": "net: Add Open vSwitch kernel components.\n\nOpen vSwitch is a multilayer Ethernet switch targeted at virtualized\nenvironme",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 151,
+        "code_snippet": "commit ccb1352e76cff0524e7ccb2074826a092dd13016\nAuthor: Jesse Gross <jesse@nicira.com>\nDate:   Tue Oct 25 19:26:31 2011 -0700\n\n    net: Add Open vSwitch kernel components.\n    \n    Open vSwitch is a multilayer Ethernet switch targeted at virtualized\n    environments.  In addition to supporting a variety of features\n    expected in a traditional hardware switch, it enables fine-grained\n    programmatic extension and flow-based control of the network.\n    This control is useful in a wide variety o",
+        "exists": true,
+        "reason": "The `netdev_destroy()` function (lines 115-126) contains the vulnerable construct. It calls `synchronize_rcu()` at line 123, but this is INSUFFICIENT to prevent the use-after-free race. The vulnerability exists because: (1) `netdev_rx_handler_unregister()` at line 119 removes the rx_handler, but concurrent RCU readers in `netdev_frame_hook()` (line 62) can still hold references to `vport->dev` via `ovs_netdev_get_vport()` (line 188); (2) The `dev_put()` at line 125 releases the netdev reference synchronously, but if the device unregistration happens before `netdev_destroy()` completes, the device can be freed while RCU readers still access it through `vport->dev`; (3) The `synchronize_rcu()` only waits for RCU grace periods but does not prevent device unregistration from racing with the destroy path. The fix would require deferring the `dev_put()` call or using call_rcu() to ensure the netdev reference is held until after all RCU readers complete, not just until the synchronize_rcu() returns."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "ccb1352e76cff0524e7ccb2074826a092dd13016",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "d62607c3fe45911b2331fac073355a8c914bbde2": 1,
+        "ccb1352e76cff0524e7ccb2074826a092dd13016": 1
+      },
+      "bic_candidates": [
+        "d62607c3fe45911b2331fac073355a8c914bbde2",
+        "ccb1352e76cff0524e7ccb2074826a092dd13016"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

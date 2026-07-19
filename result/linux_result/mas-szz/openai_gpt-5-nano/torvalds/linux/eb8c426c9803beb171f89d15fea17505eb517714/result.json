@@ -1,0 +1,301 @@
+{
+  "cveid": "CVE-2026-31501",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "eb8c426c9803beb171f89d15fea17505eb517714"
+  ],
+  "ground_truth_bic": "46eeb90f03e03d5e8f7f9f1f0eb0792104fc5f86",
+  "predicted_bic": [
+    "7a64bb388df3cf091afdd047c701039a13acd3b4"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 41658,
+  "root_cause": {
+    "text": "The ti icssg-prueth RX path stored `psdata` as a pointer into a CPPI descriptor and then freed that descriptor in `emac_rx_packet()` and `emac_rx_packet_zc()` before later timestamp handling dereferenced `psdata`, causing a use-after-free.",
+    "evidence": "The CVE/commit explicitly states \"`cppi5_hdesc_get_psdata()` returns a pointer into the CPPI descriptor\" and that both functions called `k3_cppi_desc_pool_free()` before `emac_rx_timestamp()` used `psdata[0]` and `psdata[1]`; the patch fixes this by moving `k3_cppi_desc_pool_free()` to after `emac_dispatch_skb_zc()`/the `requeue` path so all `psdata` accesses complete first.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+      "lineno": 965,
+      "content": "k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+      "lineno": 964,
+      "content": "psdata = cppi5_hdesc_get_psdata(desc_rx);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The ti icssg-prueth RX path stored `psdata` as a pointer into a CPPI descriptor and then freed that descriptor in `emac_rx_packet()` and `emac_rx_packet_zc()` before later timestamp handling dereferenced `psdata`, causing a use-after-free.",
+      "evidence_points": "The CVE/commit explicitly states \"`cppi5_hdesc_get_psdata()` returns a pointer into the CPPI descriptor\" and that both functions called `k3_cppi_desc_pool_free()` before `emac_rx_timestamp()` used `psdata[0]` and `psdata[1]`; the patch fixes this by moving `k3_cppi_desc_pool_free()` to after `emac_dispatch_skb_zc()`/the `requeue` path so all `psdata` accesses complete first."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Stop prematurely freeing the RX descriptor in the zero-copy receive path to avoid incorrect descriptor reuse during packet processing.",
+        "what": "The call to k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx) was removed from emac_rx_packet_zc() immediately after retrieving packet metadata and before incrementing count and processing the XDP buffer.",
+        "how": "At runtime, the receive descriptor is no longer returned to the CPPI descriptor pool at that point in the zero-copy RX path, preventing the descriptor from being freed while it may still be needed by subsequent processing and avoiding premature descriptor reuse or related corruption."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Free processed RX descriptors in the zero-copy receive path to prevent descriptor pool leaks and restore descriptor reuse.",
+        "what": "A call to k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx) was added inside the receive-path loop in emac_rx_packet_zc(), after the zero-copy XDP buffer is dispatched/freed.",
+        "how": "This ensures the received descriptor desc_rx is returned to the RX channel descriptor pool during packet processing, preventing descriptor leakage and allowing descriptors to be reused for subsequent packets."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Stop freeing the RX descriptor too early in emac_rx_packet() so it can be correctly reused or requeued during receive processing.",
+        "what": "A call to k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx) was removed from emac_rx_packet() immediately after retrieving the descriptor tag IDs with cppi5_desc_get_tags_ids().",
+        "how": "At runtime, the receive descriptor is no longer returned to the descriptor pool at that point in packet processing, preventing it from being freed before later logic can reuse or requeue it and avoiding descriptor lifecycle issues that could lead to incorrect RX ring handling or stalls."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Free the processed RX DMA descriptor before requeuing a new buffer to avoid descriptor leakage and keep RX functioning correctly.",
+        "what": "A call to k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx); was added at the requeue label in emac_rx_packet(), immediately before queuing another RX DMA buffer with prueth_dma_rx_push_mapped().",
+        "how": "This releases the received DMA descriptor back to the channel's descriptor pool during the requeue path, preventing descriptors from being retained after packet processing and ensuring descriptor resources are available for subsequent RX operations."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Free the processed RX DMA descriptor before requeuing a new buffer to avoid descriptor leakage and keep RX functioning correctly."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Free processed RX descriptors in the zero-copy receive path to prevent descriptor pool leaks and restore descriptor reuse."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Correct RX DMA descriptor lifecycle handling in receive paths by avoiding premature frees and ensuring processed descriptors are freed at the proper point before requeueing/reuse.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is premature freeing of the RX descriptor while later code still uses data derived from it. This group directly changes RX descriptor lifetime handling by preventing early frees in emac_rx_packet()/zero-copy paths and moving the free to the correct point, which addresses that use-after-free condition."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The zero-copy RX path mentioned in the root cause (`emac_rx_packet_zc()`) is directly involved. Changes to free processed RX descriptors there affect the lifetime of CPPI descriptors whose data (`psdata`) was later dereferenced, so this group is directly tied to the use-after-free root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+            "lineno": 964,
+            "content": "psdata = cppi5_hdesc_get_psdata(desc_rx);",
+            "rationale": "This stores psdata as a pointer into the RX descriptor. Because the descriptor is freed immediately afterward in the pre-fix flow, later timestamp handling can dereference a dangling pointer, causing the use-after-free."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+            "lineno": 965,
+            "content": "k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx);",
+            "rationale": "This prematurely frees the RX descriptor in the zero-copy receive path while psdata still points into it, directly creating the use-after-free when psdata is later accessed."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+            "lineno": 965,
+            "content": "k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx);",
+            "rationale": "This prematurely frees the RX descriptor in emac_rx_packet() before later processing completes. Since psdata is derived from the descriptor and later dereferenced for timestamp handling, this free is a direct cause of the use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+            "stmt_text": "k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx);",
+            "location": "hunk",
+            "explanation": "This statement frees the RX descriptor while later receive-path processing still relies on psdata that points into that descriptor, directly causing the use-after-free during timestamp handling."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+            "stmt_text": "psdata = cppi5_hdesc_get_psdata(desc_rx);",
+            "location": "hunk",
+            "explanation": "This statement stores psdata as a pointer into the RX descriptor. When combined with the premature descriptor free, later dereferences of psdata become use-after-free accesses."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "25f5463c91fd",
+          "anchor_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+          "anchor_lineno": 965
+        },
+        "commit": "7a64bb388df3cf091afdd047c701039a13acd3b4",
+        "commit_short": "7a64bb388df3",
+        "commit_msg": "net: ti: icssg-prueth: Add AF_XDP zero copy for RX\n\nUse xsk_pool inside rx_chn to check if a given Rx queue id\nis regist",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "display_lineno": 965,
+        "code_snippet": "commit 7a64bb388df3cf091afdd047c701039a13acd3b4\nAuthor: Meghana Malladi <m-malladi@ti.com>\nDate:   Tue Nov 18 19:25:41 2025 +0530\n\n    net: ti: icssg-prueth: Add AF_XDP zero copy for RX\n    \n    Use xsk_pool inside rx_chn to check if a given Rx queue id\n    is registered for xsk zero copy, which gets populated during\n    xsk enable.\n    \n    Update prueth_create_xdp_rxqs to register and support two different\n    memory models (xsk and page) for a given Rx queue, if registered for\n    zero copy.\n",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the full zero-copy RX path introduced by this commit, including where `psdata` is obtained, when the descriptor is freed, and when timestamp handling later uses `psdata`.\n\nThe vulnerable construct is present in `emac_rx_packet_zc()`: it assigns `psdata = cppi5_hdesc_get_psdata(desc_rx);` and then immediately frees the descriptor with `k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx);`. After that, `psdata` is still passed to later processing: in both the XDP_PASS and non-XDP path, `emac_dispatch_skb_zc(emac, xdp, psdata);` is called. This matches the root cause exactly: `psdata` is a pointer into the CPPI descriptor, but the descriptor has already been freed before later dereference.\n\nThe later dereference is visible in `emac_dispatch_skb_zc()`, which does `if (emac->rx_ts_enabled) emac_rx_timestamp(emac, skb, psdata);`. Therefore timestamp handling can dereference `psdata` after the descriptor backing it has been freed, creating a use-after-free.\n\nNo fix is present in this snippet. There is no copying of PS data before freeing the descriptor, no delayed descriptor free until after timestamp processing, and no alternative safe storage for `psdata`. Therefore the function contains the bug and is not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "121133163c9f",
+          "anchor_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+          "anchor_lineno": 965
+        },
+        "commit": "a8ea8d531d1edf7b29e559713fe1aaab3530d7d9",
+        "commit_short": "a8ea8d531d1e",
+        "commit_msg": "net: ti: icssg-prueth: Split out common object into module\n\nicssg_prueth.c and icssg_prueth_sr1.c drivers use multiple c",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "display_lineno": 659,
+        "code_snippet": "commit a8ea8d531d1edf7b29e559713fe1aaab3530d7d9\nAuthor: MD Danish Anwar <danishanwar@ti.com>\nDate:   Fri Jul 12 17:36:36 2024 +0530\n\n    net: ti: icssg-prueth: Split out common object into module\n    \n    icssg_prueth.c and icssg_prueth_sr1.c drivers use multiple common .c\n    files. These common objects are getting added to multiple modules. As a\n    result when both drivers are enabled in .config, below warning is seen.\n    \n    drivers/net/ethernet/ti/Makefile: icssg/icssg_common.o is added t",
+        "exists": false,
+        "reason": "The provided function is `icssg_ndo_start_xmit()`, which is the TX path. The stated root cause is specifically in the RX path: `psdata` was stored as a pointer into a CPPI descriptor and then the descriptor was freed in `emac_rx_packet()` / `emac_rx_packet_zc()` before later timestamp handling dereferenced `psdata`, causing a use-after-free. In this snippet, there is no `psdata` variable, no RX packet handling, and no descriptor-free-then-later-dereference pattern related to RX timestamps. The code only allocates and chains TX descriptors, stores `skb` in `swdata` (`swdata = cppi5_hdesc_get_swdata(first_desc); *swdata = skb;`), pushes the TX descriptor, and on error frees descriptors via `prueth_xmit_free(tx_chn, first_desc)`. Because the vulnerable RX construct is completely absent from this function, `has_bug` must be false. Likewise, this function does not show the RX-side fix either, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "7a64bb388df3cf091afdd047c701039a13acd3b4",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "25f5463c91fd",
+          "anchor_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+          "anchor_lineno": 964
+        },
+        "commit": "7a64bb388df3cf091afdd047c701039a13acd3b4",
+        "commit_short": "7a64bb388df3",
+        "commit_msg": "net: ti: icssg-prueth: Add AF_XDP zero copy for RX\n\nUse xsk_pool inside rx_chn to check if a given Rx queue id\nis regist",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "display_lineno": 964,
+        "code_snippet": "commit 7a64bb388df3cf091afdd047c701039a13acd3b4\nAuthor: Meghana Malladi <m-malladi@ti.com>\nDate:   Tue Nov 18 19:25:41 2025 +0530\n\n    net: ti: icssg-prueth: Add AF_XDP zero copy for RX\n    \n    Use xsk_pool inside rx_chn to check if a given Rx queue id\n    is registered for xsk zero copy, which gets populated during\n    xsk enable.\n    \n    Update prueth_create_xdp_rxqs to register and support two different\n    memory models (xsk and page) for a given Rx queue, if registered for\n    zero copy.\n",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the full new zero-copy RX path where psdata is obtained and later used. In `emac_rx_packet_zc()`, the code does `psdata = cppi5_hdesc_get_psdata(desc_rx);` and then immediately frees the descriptor with `k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx);`. After that, the freed-descriptor-backed `psdata` pointer is still passed down to timestamp handling via `emac_dispatch_skb_zc(emac, xdp, psdata);`. In `emac_dispatch_skb_zc()`, timestamping dereferences that pointer through `emac_rx_timestamp(emac, skb, psdata);` when `emac->rx_ts_enabled` is set. This exactly matches the stated root cause: storing `psdata` as a pointer into a CPPI descriptor, freeing that descriptor first, then later dereferencing `psdata`, creating a use-after-free. There is no fix present here such as copying PS data before `k3_cppi_desc_pool_free()` or delaying descriptor free until after timestamp processing."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "121133163c9f",
+          "anchor_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+          "anchor_lineno": 964
+        },
+        "commit": "e2dc7bfd677fc454668eb5bf0eab74ea35691040",
+        "commit_short": "e2dc7bfd677f",
+        "commit_msg": "net: ti: icssg-prueth: Move common functions into a separate file\n\nIn order to allow code sharing between Silicon Revisi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/ti/icssg/icssg_common.c",
+        "display_lineno": 608,
+        "code_snippet": "commit e2dc7bfd677fc454668eb5bf0eab74ea35691040\nAuthor: Diogo Ivo <diogo.ivo@siemens.com>\nDate:   Wed Apr 3 11:48:13 2024 +0100\n\n    net: ti: icssg-prueth: Move common functions into a separate file\n    \n    In order to allow code sharing between Silicon Revisions 1.0 and 2.0\n    move all functions that can be shared into a common file. This commit\n    introduces no functional changes.\n    \n    Signed-off-by: Diogo Ivo <diogo.ivo@siemens.com>\n    Reviewed-by: MD Danish Anwar <danishanwar@ti.com>",
+        "exists": false,
+        "reason": "The relevant RX timestamp logic is fully visible in this snippet, especially in `emac_rx_packet()` and `emac_rx_timestamp()`, so it is sufficient to decide. The root cause described is: storing `psdata` as a pointer into the CPPI descriptor, then freeing the descriptor in `emac_rx_packet()`/`emac_rx_packet_zc()` before later timestamp handling dereferences `psdata`. In this commit's `emac_rx_packet()`, `psdata` is obtained with `psdata = cppi5_hdesc_get_psdata(desc_rx);` and then immediately consumed before the descriptor is freed: `if (emac->rx_ts_enabled) emac_rx_timestamp(emac, skb, psdata);` occurs before `k3_cppi_desc_pool_free(rx_chn->desc_pool, desc_rx);`. Inside `emac_rx_timestamp()`, the pointer is dereferenced synchronously via `psdata[1]` and `psdata[0]`. Because the dereference happens before `desc_rx` is freed, the specific use-after-free condition is not present in this function. Therefore the vulnerable construct is absent here (`has_bug=false`), and the code already reflects the safe ordering that avoids dereferencing `psdata` after descriptor free (`is_fixed=true`)."
+      }
+    },
+    {
+      "bic_found": "7a64bb388df3cf091afdd047c701039a13acd3b4",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "7a64bb388df3cf091afdd047c701039a13acd3b4": 2
+      },
+      "bic_candidates": [
+        "7a64bb388df3cf091afdd047c701039a13acd3b4"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,445 @@
+{
+  "cveid": "CVE-2026-43033",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e02494114ebf7c8b42777c6cd6982f113bfdbec7"
+  ],
+  "ground_truth_bic": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+  "predicted_bic": [
+    "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+    "a5079d084f8be781aae8a635cab4b179cfea4ebd"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 25,
+  "llm_tokens": 94664,
+  "root_cause": {
+    "text": "The `crypto/authencesn` AEAD decryption path assumed the source and destination scatterlists were the same and incorrectly stored/rearranged the ESN high-order sequence bits in `dst`, so out-of-place decryption (`src != dst`) corrupted the hashed/authenticated layout and could lead to incorrect verification or decryption handling.",
+    "evidence": "The patch adds explicit `src == dst` / `src != dst` handling in both `crypto_authenc_esn_decrypt_tail()` and `crypto_authenc_esn_decrypt()`: previously it always did `scatterwalk_map_and_copy()` to move the high-order sequence bits within `dst` and then set up decryption with `skcipher_request_set_crypt(skreq, dst, dst, ...)`, but the fix changes out-of-place cases to copy data from `src` instead, use `scatterwalk_ffwd(..., src, ...)`, and rearrange the hashed data differently.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "crypto/authencesn.c",
+      "lineno": 220,
+      "content": "scatterwalk_map_and_copy(tmp, dst, 0, 8, 1);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/authencesn.c",
+      "lineno": 218,
+      "content": "scatterwalk_map_and_copy(tmp, dst, 4, 4, 0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/authencesn.c",
+      "lineno": 219,
+      "content": "scatterwalk_map_and_copy(tmp + 1, dst, assoclen + cryptlen, 4, 0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/authencesn.c",
+      "lineno": 277,
+      "content": "scatterwalk_map_and_copy(tmp, dst, 0, 8, 0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/authencesn.c",
+      "lineno": 278,
+      "content": "scatterwalk_map_and_copy(tmp, dst, 4, 4, 1);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `crypto/authencesn` AEAD decryption path assumed the source and destination scatterlists were the same and incorrectly stored/rearranged the ESN high-order sequence bits in `dst`, so out-of-place decryption (`src != dst`) corrupted the hashed/authenticated layout and could lead to incorrect verification or decryption handling.",
+      "evidence_points": "The patch adds explicit `src == dst` / `src != dst` handling in both `crypto_authenc_esn_decrypt_tail()` and `crypto_authenc_esn_decrypt()`: previously it always did `scatterwalk_map_and_copy()` to move the high-order sequence bits within `dst` and then set up decryption with `skcipher_request_set_crypt(skreq, dst, dst, ...)`, but the fix changes out-of-place cases to copy data from `src` instead, use `scatterwalk_ffwd(..., src, ...)`, and rearrange the hashed data differently."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "crypto/authencesn.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "crypto/authencesn.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "crypto/authencesn.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "crypto/authencesn.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Introduce a local source scatterlist pointer in the AEAD decrypt tail path for clearer and more direct access to the request input.",
+        "what": "A new local variable `struct scatterlist *src = req->src;` was added in `crypto_authenc_esn_decrypt_tail()`, alongside the existing `dst` and other local variables.",
+        "how": "This change makes the request source scatterlist explicitly available within the function, likely so later code can reference the input buffer directly during decryption/authentication processing without repeatedly dereferencing `req->src`."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix ESN authenc decryption to correctly support separate source and destination scatterlists by preserving auth data and decrypting from the proper input buffer.",
+        "what": "The code now branches on `src == dst` before restoring the ESN high-order sequence bits: the original `scatterwalk_map_and_copy()` sequence is kept for in-place requests, while non-in-place requests call `memcpy_sglist(dst, src, assoclen)` instead. In the decrypt path, the destination scatterlist is still fast-forwarded as before, but when `src != dst` the source scatterlist is also fast-forwarded with `scatterwalk_ffwd(areq_ctx->src, src, assoclen)`. Finally, `skcipher_request_set_crypt()` is changed from using `dst` for both source and destination to using `src` as the source and `dst` as the destination, and the explicit `sg_init_table(areq_ctx->dst, 2)` line is removed.",
+        "how": "This changes decryption to correctly handle non-in-place AEAD requests where source and destination scatterlists differ. For such cases, the authentication-data copy/restoration is performed from `src` to `dst`, and the underlying skcipher decrypt operates on the actual input buffer rather than incorrectly reusing the destination buffer as both input and output. In-place behavior remains unchanged."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Store the request source scatterlist locally in `crypto_authenc_esn_decrypt()` so the function can use it correctly during decryption.",
+        "what": "A new local variable declaration, `struct scatterlist *src = req->src;`, was added to `crypto_authenc_esn_decrypt(struct aead_request *req)` immediately before the existing `dst` declaration.",
+        "how": "This makes the request's source scatterlist explicitly available in the function body, allowing later code in the function to reference the source buffer directly instead of repeatedly dereferencing `req->src` or relying on an undeclared variable."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix authenc ESN decryption to handle separate source and destination scatterlists correctly while preserving the zero-authsize path.",
+        "what": "In `crypto_authenc_esn_decrypt()`, the code now returns early to `tail` when `authsize` is zero, moves `cryptlen -= authsize` to after that check, changes the hash-input copy to read from `src` instead of `dst`, and replaces the previous unconditional destination copy/setup with a conditional `src == dst` path versus `src != dst` path. In the aliasing case, it keeps the existing scatterwalk copies and `scatterwalk_ffwd()` behavior; in the non-aliasing case, it copies portions of the scatterlist from `src` to `dst`, advances both scatterlists with `scatterwalk_ffwd()`, copies the remaining data with `memcpy_sglist()`, and restores `dst` to `req->dst` before continuing.",
+        "how": "This changes decryption handling so the code correctly works whether the source and destination scatterlists are the same or different. It avoids assuming in-place operation, preserves the right input bytes for the authentication hash, and ensures the destination buffer is populated correctly before the AEAD authentication step. It also preserves the zero-authsize fast path without performing unnecessary length adjustments or copies."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Introduce a local source scatterlist pointer in the AEAD decrypt tail path for clearer and more direct access to the request input."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix authenc ESN decryption to handle separate source and destination scatterlists correctly while preserving the zero-authsize path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix authenc ESN decryption to correctly support separate source and destination scatterlists while preserving the zero-authsize path.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is specifically about AEAD decryption incorrectly assuming src and dst are the same in the authencesn path. A change that introduces an explicit source scatterlist pointer in the decrypt tail path is directly related to handling src vs dst correctly, so it appears tied to the vulnerability fix rather than an unrelated refactor."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the reported root cause: authenc ESN decryption incorrectly assumed src and dst were the same and mishandled ESN/authenticated data placement for out-of-place decryption. The fixes explicitly restore correct handling for separate source/destination scatterlists and preserve the zero-authsize path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "crypto/authencesn.c",
+            "lineno": 220,
+            "content": "scatterwalk_map_and_copy(tmp, dst, 0, 8, 1);",
+            "rationale": "This line mutates the ESN high-order sequence bytes in the destination scatterlist instead of the source/authentication input path, which is the core out-of-place decryption bug."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "crypto/authencesn.c",
+            "lineno": 218,
+            "content": "scatterwalk_map_and_copy(tmp, dst, 4, 4, 0);",
+            "rationale": "This reads the sequence bytes from dst, assuming src and dst are the same buffer; when they differ, the wrong authenticated layout is used."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "crypto/authencesn.c",
+            "lineno": 219,
+            "content": "scatterwalk_map_and_copy(tmp + 1, dst, assoclen + cryptlen, 4, 0);",
+            "rationale": "This also operates on dst for the ESN tail placement, contributing to corruption of the authenticated/decryption layout for separate source and destination scatterlists."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "crypto/authencesn.c",
+            "lineno": 277,
+            "content": "scatterwalk_map_and_copy(tmp, dst, 0, 8, 0);",
+            "rationale": "This copies the auth/ESN header from dst rather than from the actual request source, embodying the assumption that src and dst are identical."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "crypto/authencesn.c",
+            "lineno": 278,
+            "content": "scatterwalk_map_and_copy(tmp, dst, 4, 4, 1);",
+            "rationale": "This writes ESN bits back into dst, which is incorrect for out-of-place decryption and directly matches the reported root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "crypto/authencesn.c",
+            "stmt_text": "scatterwalk_map_and_copy(tmp, dst, 0, 8, 1);",
+            "location": "hunk",
+            "explanation": "This writes the ESN/auth header back into dst, assuming the destination buffer is the correct place to mutate during decryption. That breaks out-of-place decryption when src != dst and can corrupt the authenticated layout."
+          },
+          {
+            "vuln_file": "crypto/authencesn.c",
+            "stmt_text": "scatterwalk_map_and_copy(tmp, dst, 4, 4, 0);",
+            "location": "hunk",
+            "explanation": "This reads the ESN sequence bytes from dst instead of the real input source, assuming src and dst are identical. When they differ, decryption uses the wrong authenticated data."
+          },
+          {
+            "vuln_file": "crypto/authencesn.c",
+            "stmt_text": "scatterwalk_map_and_copy(tmp + 1, dst, assoclen + cryptlen, 4, 0);",
+            "location": "hunk",
+            "explanation": "This also operates on dst for ESN tail handling rather than the source/authentication input path, contributing to incorrect layout handling for separate source and destination scatterlists."
+          },
+          {
+            "vuln_file": "crypto/authencesn.c",
+            "stmt_text": "scatterwalk_map_and_copy(tmp, dst, 0, 8, 0);",
+            "location": "hunk",
+            "explanation": "This copies the auth/ESN header from dst, embodying the incorrect assumption that the source and destination are the same buffer during decryption."
+          },
+          {
+            "vuln_file": "crypto/authencesn.c",
+            "stmt_text": "scatterwalk_map_and_copy(tmp, dst, 4, 4, 1);",
+            "location": "hunk",
+            "explanation": "This writes ESN bits back into dst, which is incorrect for out-of-place decryption and directly matches the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a664bf3d603d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 220
+        },
+        "commit": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+        "commit_short": "104880a6b470",
+        "commit_msg": "crypto: authencesn - Convert to new AEAD interface\n\nThis patch converts authencesn to the new AEAD interface.\n\nSigned-of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 251,
+        "code_snippet": "commit 104880a6b470958ddc30e139c41aa4f6ed3a5234\nAuthor: Herbert Xu <herbert@gondor.apana.org.au>\nDate:   Fri Aug 7 16:42:59 2015 +0800\n\n    crypto: authencesn - Convert to new AEAD interface\n    \n    This patch converts authencesn to the new AEAD interface.\n    \n    Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>\n\ndiff --git a/crypto/authencesn.c b/crypto/authencesn.c\nindex b8efe36ce114..c30393e2ad22 100644\n--- a/crypto/authencesn.c\n+++ b/crypto/authencesn.c\n@@ -4,6 +4,7 @@\n  *\n  * Copyr",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": false,\n  \"is_fixed\": true,\n  \"reason\": \"The snippet shows the new AEAD conversion, and the specific vulnerable construct described is not present as a bug here. In"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0e91657e331d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 251
+        },
+        "commit": "a5079d084f8be781aae8a635cab4b179cfea4ebd",
+        "commit_short": "a5079d084f8b",
+        "commit_msg": "crypto: authencesn - Add algorithm to handle IPsec extended sequence numbers\n\nESP with separate encryption/authenticatio",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 269,
+        "code_snippet": "commit a5079d084f8be781aae8a635cab4b179cfea4ebd\nAuthor: Steffen Klassert <steffen.klassert@secunet.com>\nDate:   Tue Mar 8 00:04:58 2011 +0000\n\n    crypto: authencesn - Add algorithm to handle IPsec extended sequence numbers\n    \n    ESP with separate encryption/authentication algorithms needs a special\n    treatment for the associated data. This patch add a new algorithm that\n    handles esp with extended sequence numbers.\n    \n    Signed-off-by: Steffen Klassert <steffen.klassert@secunet.com>\n ",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": false,\n  \"is_fixed\": false,\n  \"reason\": \"The snippet is sufficient to inspect the decryption path, and this commit does not show the vulnerable out-of-place handli"
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "a5079d084f8be781aae8a635cab4b179cfea4ebd",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a664bf3d603d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 218
+        },
+        "commit": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+        "commit_short": "104880a6b470",
+        "commit_msg": "crypto: authencesn - Convert to new AEAD interface\n\nThis patch converts authencesn to the new AEAD interface.\n\nSigned-of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 249,
+        "code_snippet": "commit 104880a6b470958ddc30e139c41aa4f6ed3a5234\nAuthor: Herbert Xu <herbert@gondor.apana.org.au>\nDate:   Fri Aug 7 16:42:59 2015 +0800\n\n    crypto: authencesn - Convert to new AEAD interface\n    \n    This patch converts authencesn to the new AEAD interface.\n    \n    Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>\n\ndiff --git a/crypto/authencesn.c b/crypto/authencesn.c\nindex b8efe36ce114..c30393e2ad22 100644\n--- a/crypto/authencesn.c\n+++ b/crypto/authencesn.c\n@@ -4,6 +4,7 @@\n  *\n  * Copyr",
+        "exists": false,
+        "reason": "The snippet shows the new AEAD conversion code, and the vulnerable out-of-place decryption assumption is not present here. In the decrypt path, it explicitly handles `req->src != dst` with a copy: `if (req->src != dst) { err = crypto_authenc_esn_copy(req, assoclen + cryptlen); ... }` and later decrypts using `ablkcipher_request_set_crypt(abreq, dst, dst, cryptlen, req->iv);`. The code also rearranges ESN bits in the destination before verification: `/* Move high-order bits of sequence number back. */ scatterwalk_map_and_copy(tmp, dst, 4, 4, 0); ...`. This indicates the path has explicit handling for separate source/destination scatterlists, so the buggy construct described in the root cause is absent and the fix is already present in this commit body."
+      }
+    },
+    {
+      "bic_found": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a664bf3d603d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 219
+        },
+        "commit": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+        "commit_short": "104880a6b470",
+        "commit_msg": "crypto: authencesn - Convert to new AEAD interface\n\nThis patch converts authencesn to the new AEAD interface.\n\nSigned-of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 250,
+        "code_snippet": "commit 104880a6b470958ddc30e139c41aa4f6ed3a5234\nAuthor: Herbert Xu <herbert@gondor.apana.org.au>\nDate:   Fri Aug 7 16:42:59 2015 +0800\n\n    crypto: authencesn - Convert to new AEAD interface\n    \n    This patch converts authencesn to the new AEAD interface.\n    \n    Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>\n\ndiff --git a/crypto/authencesn.c b/crypto/authencesn.c\nindex b8efe36ce114..c30393e2ad22 100644\n--- a/crypto/authencesn.c\n+++ b/crypto/authencesn.c\n@@ -4,6 +4,7 @@\n  *\n  * Copyr",
+        "exists": true,
+        "reason": "The snippet contains the out-of-place AEAD decrypt path and it still assumes it can rearrange the ESN bits directly in the destination scatterlist. In `crypto_authenc_esn_decrypt()`, the code does `if (req->src != dst) { err = crypto_authenc_esn_copy(req, assoclen + cryptlen); ... }`, but then later computes the internal hash on `dst` and calls `crypto_authenc_esn_decrypt_tail(req, ...)`, which also manipulates `dst` with comments like `/* Move high-order bits of sequence number back. */` and uses `scatterwalk_map_and_copy(..., dst, ...)`. The vulnerable construct is present because the ESN high-order sequence bits are being moved/rearranged in `dst` rather than handling `src` and `dst` independently for out-of-place decryption. There is no fix here: the code still does the sequence-bit shuffling on `req->dst` and relies on `req->src == req->dst` semantics in the internal layout, so the corruption issue described in the root cause remains unaddressed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0e91657e331d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 250
+        },
+        "commit": "a5079d084f8be781aae8a635cab4b179cfea4ebd",
+        "commit_short": "a5079d084f8b",
+        "commit_msg": "crypto: authencesn - Add algorithm to handle IPsec extended sequence numbers\n\nESP with separate encryption/authenticatio",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 268,
+        "code_snippet": "commit a5079d084f8be781aae8a635cab4b179cfea4ebd\nAuthor: Steffen Klassert <steffen.klassert@secunet.com>\nDate:   Tue Mar 8 00:04:58 2011 +0000\n\n    crypto: authencesn - Add algorithm to handle IPsec extended sequence numbers\n    \n    ESP with separate encryption/authentication algorithms needs a special\n    treatment for the associated data. This patch add a new algorithm that\n    handles esp with extended sequence numbers.\n    \n    Signed-off-by: Steffen Klassert <steffen.klassert@secunet.com>\n ",
+        "exists": false,
+        "reason": "The shown file is the initial introduction of `authencesn.c`, and the relevant decryption path already uses `req->src` for verification/hash input rather than assuming `src == dst`. In `crypto_authenc_esn_iverify()` it sets `areq_ctx->sg = src;` and later the verify/decrypt callbacks hash from `areq_ctx->sg` (for example `ahash_request_set_crypt(ahreq, areq_ctx->sg, ...)` and `scatterwalk_map_and_copy(..., areq_ctx->sg, ...)`). In `crypto_authenc_esn_decrypt()` the actual decrypt is done with `ablkcipher_request_set_crypt(abreq, req->src, req->dst, cryptlen, iv);`, which correctly supports out-of-place operation. There is no code here that stores or rearranges ESN high-order sequence bits in `dst` as described in the root cause, so the vulnerable construct is absent in this commit version."
+      }
+    },
+    {
+      "bic_found": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a664bf3d603d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 277
+        },
+        "commit": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+        "commit_short": "104880a6b470",
+        "commit_msg": "crypto: authencesn - Convert to new AEAD interface\n\nThis patch converts authencesn to the new AEAD interface.\n\nSigned-of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 308,
+        "code_snippet": "commit 104880a6b470958ddc30e139c41aa4f6ed3a5234\nAuthor: Herbert Xu <herbert@gondor.apana.org.au>\nDate:   Fri Aug 7 16:42:59 2015 +0800\n\n    crypto: authencesn - Convert to new AEAD interface\n    \n    This patch converts authencesn to the new AEAD interface.\n    \n    Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>\n\ndiff --git a/crypto/authencesn.c b/crypto/authencesn.c\nindex b8efe36ce114..c30393e2ad22 100644\n--- a/crypto/authencesn.c\n+++ b/crypto/authencesn.c\n@@ -4,6 +4,7 @@\n  *\n  * Copyr",
+        "exists": false,
+        "reason": "The shown code already handles src != dst correctly in both encrypt and decrypt paths, so the vulnerable construct described in the root cause is not present here. In `crypto_authenc_esn_encrypt()` it explicitly checks `if (req->src != req->dst)` and then uses `crypto_authenc_esn_copy(req, assoclen)` plus separate SGs (`src = scatterwalk_ffwd(areq_ctx->src, req->src, assoclen);` and `dst = scatterwalk_ffwd(areq_ctx->dst, req->dst, assoclen);`). In `crypto_authenc_esn_decrypt()` it likewise checks `if (req->src != dst)` and copies with `crypto_authenc_esn_copy(req, assoclen + cryptlen);` before hashing/decrypting. The ESN high-order bits are rearranged using the current destination scatterlist only where appropriate, and the out-of-place case is explicitly supported rather than assuming `src == dst`. Therefore the vulnerable assumption/corruption condition is absent, and the fix is already present in this code."
+      }
+    },
+    {
+      "bic_found": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a664bf3d603d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 278
+        },
+        "commit": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+        "commit_short": "104880a6b470",
+        "commit_msg": "crypto: authencesn - Convert to new AEAD interface\n\nThis patch converts authencesn to the new AEAD interface.\n\nSigned-of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 309,
+        "code_snippet": "commit 104880a6b470958ddc30e139c41aa4f6ed3a5234\nAuthor: Herbert Xu <herbert@gondor.apana.org.au>\nDate:   Fri Aug 7 16:42:59 2015 +0800\n\n    crypto: authencesn - Convert to new AEAD interface\n    \n    This patch converts authencesn to the new AEAD interface.\n    \n    Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>\n\ndiff --git a/crypto/authencesn.c b/crypto/authencesn.c\nindex b8efe36ce114..c30393e2ad22 100644\n--- a/crypto/authencesn.c\n+++ b/crypto/authencesn.c\n@@ -4,6 +4,7 @@\n  *\n  * Copyr",
+        "exists": true,
+        "reason": "Yes, the snippet shows the exact decrypt-path scatterlist handling relevant to the reported bug. In `crypto_authenc_esn_decrypt_tail()` the code says `/* Move high-order bits of sequence number back. */` and then performs `scatterwalk_map_and_copy(tmp, dst, 4, 4, 0);`, `scatterwalk_map_and_copy(tmp + 1, dst, assoclen + cryptlen, 4, 0);`, and `scatterwalk_map_and_copy(tmp, dst, 0, 8, 1);` using only `dst`. This matches the root cause: the ESN high-order sequence bits are rearranged in `dst`, assuming the source/destination layout is the one being decrypted. In `crypto_authenc_esn_decrypt()` the code only conditionally copies when `req->src != dst` via `crypto_authenc_esn_copy(req, assoclen + cryptlen);`, but the tail-path verification still manipulates `dst` for the ICV/ESN layout. There is no explicit handling here that preserves a separate out-of-place source/authenticated layout during decryption, so the vulnerable construct is present and the fix is not yet present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0e91657e331d",
+          "anchor_file": "crypto/authencesn.c",
+          "anchor_lineno": 309
+        },
+        "commit": "a5079d084f8be781aae8a635cab4b179cfea4ebd",
+        "commit_short": "a5079d084f8b",
+        "commit_msg": "crypto: authencesn - Add algorithm to handle IPsec extended sequence numbers\n\nESP with separate encryption/authenticatio",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/authencesn.c",
+        "display_lineno": 327,
+        "code_snippet": "commit a5079d084f8be781aae8a635cab4b179cfea4ebd\nAuthor: Steffen Klassert <steffen.klassert@secunet.com>\nDate:   Tue Mar 8 00:04:58 2011 +0000\n\n    crypto: authencesn - Add algorithm to handle IPsec extended sequence numbers\n    \n    ESP with separate encryption/authentication algorithms needs a special\n    treatment for the associated data. This patch add a new algorithm that\n    handles esp with extended sequence numbers.\n    \n    Signed-off-by: Steffen Klassert <steffen.klassert@secunet.com>\n ",
+        "exists": false,
+        "reason": "The shown file is the initial addition of `crypto/authencesn.c`, and the vulnerable construct described in the root cause is not present in this commit. In the decryption path, `crypto_authenc_esn_decrypt()` calls `crypto_authenc_esn_iverify(req, iv, cryptlen);` and then decrypts with `ablkcipher_request_set_crypt(abreq, req->src, req->dst, cryptlen, iv);`, but there is no logic here that rearranges ESN high-order sequence bits into `dst` or otherwise assumes `src == dst` for the AEAD verification layout. The associated-data handling is done via `areq_ctx->sg = src;` in `crypto_authenc_esn_iverify()` and similar `dst` handling in `crypto_authenc_esn_genicv()`, but this commit does not contain the later buggy out-of-place decryption behavior described. Since the vulnerable construct is absent, `has_bug` is false, and because there is no fix for that later bug in this initial commit, `is_fixed` is also false."
+      }
+    },
+    {
+      "bic_found": "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "a5079d084f8be781aae8a635cab4b179cfea4ebd": 1,
+        "104880a6b470958ddc30e139c41aa4f6ed3a5234": 4
+      },
+      "bic_candidates": [
+        "104880a6b470958ddc30e139c41aa4f6ed3a5234",
+        "a5079d084f8be781aae8a635cab4b179cfea4ebd"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

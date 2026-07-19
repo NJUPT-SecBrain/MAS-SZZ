@@ -1,0 +1,409 @@
+{
+  "cveid": "CVE-2026-46170",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b7b9a461569734d33d3259d58d2507adfac107ed"
+  ],
+  "ground_truth_bic": "00cfd77b9063dcdf3628a7087faba60de85a9cc8",
+  "predicted_bic": [
+    "e4c28e3d5c09097b5ca7bc5690e01f48adb33811"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 34,
+  "llm_tokens": 43297,
+  "root_cause": {
+    "text": "The MPTCP ADD_ADDR retransmission timer handler uses `__sock_put()` instead of `sock_put()` and calls `sk_reset_timer()` unconditionally, causing a reference counting leak when the timer is the last reference holder, and creating a deadlock when `sk_free()` attempts to synchronously stop the same timer.",
+    "evidence": "",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 363,
+      "content": "sk_reset_timer(sk, timer,",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 362,
+      "content": "if (entry->retrans_times < ADD_ADDR_RETRANS_MAX)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The MPTCP ADD_ADDR retransmission timer handler uses `__sock_put()` instead of `sock_put()` and calls `sk_reset_timer()` unconditionally, causing a reference counting leak when the timer is the last reference holder, and creating a deadlock when `sk_free()` attempts to synchronously stop the same timer.",
+      "evidence_points": ""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Add a boolean flag to track timer completion state in MPTCP path manager add entry structure.",
+        "what": "Added a new boolean field `timer_done` to the `mptcp_pm_add_entry` structure, positioned between the `retrans_times` field and the `add_timer` field.",
+        "how": "This change introduces a new state flag that can track whether a timer associated with an MPTCP path manager add entry has completed. This allows the kernel to distinguish between timer states without relying solely on timer_list state inspection, enabling more explicit control flow and state management in timer callback and cleanup logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Consolidate timer rescheduling logic by extracting timeout calculations into a single variable and unifying the timer reset at function exit, while moving lock acquisition earlier for proper synchronization.",
+        "what": "Refactored timer scheduling logic by: (1) initializing `timeout` variable to 0 at declaration, (2) moving `bh_lock_sock(sk)` call before the `inet_sk_state_load()` check, (3) replacing two `sk_reset_timer()` calls with simple timeout value assignments, and (4) renaming the early exit label from `exit` to `out`.",
+        "how": "The change consolidates timer rescheduling into a single code path at the end of the function. Instead of calling `sk_reset_timer()` at multiple points with different timeout values, the function now assigns timeout values to a variable and uses a unified exit point to call `sk_reset_timer()` once (implied by the pattern). The lock is acquired earlier to protect the state check, ensuring proper synchronization. This reduces code duplication and centralizes timer management logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential use of uninitialized timeout value by explicitly handling the retry limit exceeded case and preventing sk_reset_timer() invocation when maximum retransmissions are reached.",
+        "what": "Replaced inline exponential backoff calculation in sk_reset_timer() call with explicit assignment to timeout variable, adding an else clause that sets timeout to 0 when retrans_times exceeds ADD_ADDR_RETRANS_MAX.",
+        "how": "The change separates the timeout computation from the timer reset call. When retrans_times < ADD_ADDR_RETRANS_MAX, timeout is left-shifted by retrans_times (exponential backoff). When the condition is false, timeout is explicitly set to 0 instead of being passed to sk_reset_timer(). This prevents sk_reset_timer() from being called with an uninitialized or stale timeout value in the retry limit exceeded case."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential use-after-free race condition by marking timer entry as done before releasing socket lock when no timeout is pending.",
+        "what": "Restructured the timer cleanup logic in mptcp_pm_add_timer(): moved the sk_reset_timer() call before bh_unlock_sock(), added a conditional branch to set entry->timer_done=true when timeout is zero, removed the exit label, and changed __sock_put(sk) to sock_put(sk).",
+        "how": "This change ensures that when a timer has no timeout value, the entry is marked as done before releasing the socket lock, preventing a potential use-after-free if sk_free() is called during sock_put(). The timer is now rearmed (if timeout exists) while still holding the bottom-half lock, and the socket reference is released with the standard sock_put() instead of the internal __sock_put() variant."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize timer_done flag to false when resetting the add_timer to prevent stale state from causing incorrect timer behavior.",
+        "what": "Added initialization of `add_entry->timer_done = false;` at the `reset_timer:` label, before the timeout adjustment and timer reset logic.",
+        "how": "This ensures that the `timer_done` flag is explicitly set to false whenever the timer is being reset or reconfigured. This prevents stale state from a previous timer cycle from affecting the current timer operation, guaranteeing the flag reflects the actual timer state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "guard",
+        "intent_summary": "Add a guard check to prevent calling sk_stop_timer_sync on already-completed timers, avoiding redundant or unsafe timer operations during announcement list cleanup.",
+        "what": "Added a conditional check `if (!entry->timer_done)` before calling `sk_stop_timer_sync(sk, &entry->add_timer)` in the mptcp_pm_free_anno_list function.",
+        "how": "This change prevents sk_stop_timer_sync from being called on timers that have already been stopped or completed (when timer_done flag is set). This avoids redundant or potentially unsafe timer operations on entries whose timers are no longer active."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Add a boolean flag to track timer completion state in MPTCP path manager add entry structure."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Consolidate timer rescheduling logic by extracting timeout calculations into a single variable and unifying the timer reset at function exit, while moving lock acquisition earlier for proper synchronization."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix potential use of uninitialized timeout value by explicitly handling the retry limit exceeded case and preventing sk_reset_timer() invocation when maximum retransmissions are reached."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix potential use-after-free race condition by marking timer entry as done before releasing socket lock when no timeout is pending."
+        },
+        {
+          "group_id": 4,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize timer_done flag to false when resetting the add_timer to prevent stale state from causing incorrect timer behavior."
+        },
+        {
+          "group_id": 5,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a guard check to prevent calling sk_stop_timer_sync on already-completed timers, avoiding redundant or unsafe timer operations during announcement list cleanup."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 5,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group adds a boolean flag to track timer completion state, which is a data structure enhancement. However, the vulnerability root cause is specifically about incorrect reference counting (`__sock_put()` vs `sock_put()`) and unconditional timer reset logic (`sk_reset_timer()`). Adding a flag does not directly address these core issues - the fix would require changing the socket reference handling and conditional timer management logic, not just tracking completion state."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group's changes focus on refactoring timer rescheduling logic and consolidating timeout calculations. The vulnerability root cause involves incorrect reference counting (using __sock_put() instead of sock_put()) and unconditional sk_reset_timer() calls that cause leaks and deadlocks. The group does not address the reference counting issue or the conditional logic needed to prevent the timer from being reset when it's the last reference holder."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses a key element of the vulnerability root cause: preventing unconditional invocation of sk_reset_timer(). By explicitly handling the retry limit exceeded case and preventing sk_reset_timer() from being called when maximum retransmissions are reached, this change eliminates one of the problematic conditions that leads to the reference counting leak and deadlock. The root cause involves sk_reset_timer() being called unconditionally; this fix adds a guard condition to prevent that call in specific scenarios."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": false,
+        "reason": "The group addresses a use-after-free race condition by marking timer entries as done before releasing socket locks. The root cause involves reference counting leaks (__sock_put vs sock_put) and unconditional sk_reset_timer() calls causing deadlocks. While both involve timers, the group's fix targets a different mechanism (marking entries as done) rather than the core issues of incorrect reference counting or conditional timer reset logic."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": false,
+        "reason": "The group addresses timer state management by initializing a timer_done flag, which is a preventive measure against stale state. However, the vulnerability root cause is specifically about reference counting leaks (using __sock_put instead of sock_put) and deadlock issues from unconditional sk_reset_timer() calls. The group's focus on flag initialization does not directly address the reference counting or deadlock mechanisms that are the core of the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 5,
+        "is_relevant": false,
+        "reason": "The group adds a guard check to prevent calling sk_stop_timer_sync on already-completed timers during cleanup. While this addresses timer safety, it does not directly address the root cause vulnerabilities: (1) the incorrect use of __sock_put() instead of sock_put() causing reference counting leaks, or (2) the unconditional sk_reset_timer() call that creates deadlocks. The group is a defensive measure for timer operations but does not fix the core reference counting or timer reset issues identified in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 363,
+            "content": "sk_reset_timer(sk, timer,",
+            "rationale": "The sk_reset_timer() call is invoked unconditionally within the timer handler without proper reference counting protection. According to the root cause, this causes a deadlock when sk_free() attempts to synchronously stop the same timer, as the timer handler holds an improper reference via __sock_put() instead of sock_put()."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 362,
+            "content": "if (entry->retrans_times < ADD_ADDR_RETRANS_MAX)",
+            "rationale": "This condition check is insufficient to prevent sk_reset_timer() invocation in all cases. The root cause indicates that sk_reset_timer() should not be called unconditionally, and this guard condition alone does not address the reference counting leak issue when the timer is the last reference holder."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 1
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "sk_reset_timer(sk, timer,",
+            "location": "hunk",
+            "explanation": "This unconditional call to sk_reset_timer() within the ADD_ADDR retransmission timer handler is the primary vulnerable statement. It is invoked without proper reference counting protection, causing a deadlock when sk_free() attempts to synchronously stop the same timer. The timer handler holds an improper reference via __sock_put() instead of sock_put(), and sk_reset_timer() should not be called unconditionally when maximum retransmissions are reached, as this creates both a reference leak and deadlock scenario."
+          },
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "if (entry->retrans_times < ADD_ADDR_RETRANS_MAX)",
+            "location": "hunk",
+            "explanation": "This condition check is insufficient to prevent sk_reset_timer() invocation in all cases. The guard condition alone does not address the reference counting leak issue when the timer is the last reference holder. The condition fails to properly protect against the scenario where sk_reset_timer() should not be called, allowing the vulnerable unconditional timer reset to proceed and cause the deadlock/leak."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9634cb35af17",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 363
+        },
+        "commit": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+        "commit_short": "e4c28e3d5c09",
+        "commit_msg": "mptcp: pm: move generic PM helpers to pm.c\n\nBefore this patch, the PM code was dispersed in different places:\n\n- pm.c ha",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 299,
+        "code_snippet": "commit e4c28e3d5c09097b5ca7bc5690e01f48adb33811\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Fri Mar 7 12:21:57 2025 +0100\n\n    mptcp: pm: move generic PM helpers to pm.c\n    \n    Before this patch, the PM code was dispersed in different places:\n    \n    - pm.c had common code for all PMs\n    \n    - pm_netlink.c was supposed to be about the in-kernel PM, but also had\n      exported common helpers, callbacks used by the different PMs, NL\n      events for PM userspace daemon, etc. q",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the `mptcp_pm_add_timer()` function. At line 267 (in the timer handler), the code calls `__sock_put(sk)` instead of `sock_put(sk)`. This is the reference counting leak mentioned in the vulnerability root cause. Additionally, the function calls `sk_reset_timer(sk, timer, ...)` unconditionally at lines 259 and 273 without proper synchronization. The vulnerability exists because: (1) `__sock_put()` is used instead of `sock_put()`, which bypasses the socket's destructor logic and can cause a reference leak when the timer is the last reference holder, and (2) `sk_reset_timer()` is called unconditionally, which can create a deadlock when `sk_free()` attempts to synchronously stop the same timer. The fix would require using `sock_put()` instead of `__sock_put()` and ensuring proper timer synchronization, neither of which is present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bcc32640ada0",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 299
+        },
+        "commit": "1b1c7a0ef7f323f37281b134ade17baa94779787",
+        "commit_short": "1b1c7a0ef7f3",
+        "commit_msg": "mptcp: Add path manager interface\n\nAdd enough of a path manager interface to allow sending of ADD_ADDR\nwhen an incoming ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 74,
+        "code_snippet": "commit 1b1c7a0ef7f323f37281b134ade17baa94779787\nAuthor: Peter Krystad <peter.krystad@linux.intel.com>\nDate:   Fri Mar 27 14:48:38 2020 -0700\n\n    mptcp: Add path manager interface\n    \n    Add enough of a path manager interface to allow sending of ADD_ADDR\n    when an incoming MPTCP connection is created. Capable of sending only\n    a single IPv4 ADD_ADDR option. The 'pm_data' element of the connection\n    sock will need to be expanded to handle multiple interfaces and IPv6.\n    Partial processi",
+        "exists": false,
+        "reason": "The provided code snippet only shows the beginning of the mptcp_pm_addr_signal function (lines 77-79) and does not contain the ADD_ADDR retransmission timer handler logic. The vulnerability root cause specifically mentions a timer handler that uses __sock_put() instead of sock_put() and calls sk_reset_timer() unconditionally. This timer handler function is not present in the provided snippet. To make a proper determination, the actual timer handler function (likely mptcp_pm_add_addr_timer or similar) would need to be shown, as that is where the vulnerable __sock_put() call and sk_reset_timer() logic would reside."
+      }
+    },
+    {
+      "bic_found": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9634cb35af17",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 362
+        },
+        "commit": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+        "commit_short": "e4c28e3d5c09",
+        "commit_msg": "mptcp: pm: move generic PM helpers to pm.c\n\nBefore this patch, the PM code was dispersed in different places:\n\n- pm.c ha",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 298,
+        "code_snippet": "commit e4c28e3d5c09097b5ca7bc5690e01f48adb33811\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Fri Mar 7 12:21:57 2025 +0100\n\n    mptcp: pm: move generic PM helpers to pm.c\n    \n    Before this patch, the PM code was dispersed in different places:\n    \n    - pm.c had common code for all PMs\n    \n    - pm_netlink.c was supposed to be about the in-kernel PM, but also had\n      exported common helpers, callbacks used by the different PMs, NL\n      events for PM userspace daemon, etc. q",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the `mptcp_pm_add_timer()` function (lines 233-268). The function uses `__sock_put(sk)` at line 267 instead of `sock_put(sk)`, which is the root cause of the reference counting leak. Additionally, the function calls `sk_reset_timer(sk, timer, ...)` unconditionally at lines 256 and 263 without proper synchronization. When the timer is the last reference holder and `__sock_put()` is used instead of `sock_put()`, the socket is not properly freed, causing a leak. Furthermore, if `sk_free()` attempts to synchronously stop this same timer, it would deadlock because the timer handler itself holds the reference. The fix would require using `sock_put(sk)` instead of `__sock_put(sk)` and ensuring proper timer cancellation before the socket is freed, but this commit does not implement such fixes - it merely moves code around as stated in the commit message 'No behavioural changes intended.'"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bcc32640ada0",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 298
+        },
+        "commit": "1b1c7a0ef7f323f37281b134ade17baa94779787",
+        "commit_short": "1b1c7a0ef7f3",
+        "commit_msg": "mptcp: Add path manager interface\n\nAdd enough of a path manager interface to allow sending of ADD_ADDR\nwhen an incoming ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 73,
+        "code_snippet": "commit 1b1c7a0ef7f323f37281b134ade17baa94779787\nAuthor: Peter Krystad <peter.krystad@linux.intel.com>\nDate:   Fri Mar 27 14:48:38 2020 -0700\n\n    mptcp: Add path manager interface\n    \n    Add enough of a path manager interface to allow sending of ADD_ADDR\n    when an incoming MPTCP connection is created. Capable of sending only\n    a single IPv4 ADD_ADDR option. The 'pm_data' element of the connection\n    sock will need to be expanded to handle multiple interfaces and IPv6.\n    Partial processi",
+        "exists": false,
+        "reason": "The provided code snippet only shows the end of a function (line 73 with closing brace) and the beginning of another function `mptcp_pm_addr_signal` starting at line 77. The vulnerable code mentioned in the root cause - the ADD_ADDR retransmission timer handler that uses `__sock_put()` instead of `sock_put()` and calls `sk_reset_timer()` unconditionally - is not present in this snippet. To determine if this commit introduces the vulnerability, we would need to see the actual timer handler function (likely named something like `mptcp_addaddr_retransmit` or similar) that contains the problematic `__sock_put()` call and `sk_reset_timer()` invocation. The current snippet is insufficient to make a determination."
+      }
+    },
+    {
+      "bic_found": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "e4c28e3d5c09097b5ca7bc5690e01f48adb33811": 2
+      },
+      "bic_candidates": [
+        "e4c28e3d5c09097b5ca7bc5690e01f48adb33811"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

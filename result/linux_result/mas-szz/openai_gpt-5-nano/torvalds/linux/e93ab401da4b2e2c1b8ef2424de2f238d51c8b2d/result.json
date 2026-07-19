@@ -1,0 +1,300 @@
+{
+  "cveid": "CVE-2026-53050",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e93ab401da4b2e2c1b8ef2424de2f238d51c8b2d"
+  ],
+  "ground_truth_bic": "869b6ea1609f655a43251bf41757aa44e5350a8f",
+  "predicted_bic": [
+    "12c77527e4138bc3b17d17b0e0c909e4fc84924f",
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 19253,
+  "root_cause": {
+    "text": "The quota subsystem incremented `dquot->dq_count` in `dquot_scan_active()`/`dqgrab()` without holding `dq_list_lock` and without removing zero-ref `dquot`s from the `releasing_dquots`/free list, allowing a race with `quota_release_workfn()` that reactivated a dquot already queued for release and possible freeing.",
+    "evidence": "The patch introduces locked helper `__dqgrab()` that, under `dq_list_lock`, checks `if (!atomic_read(&dquot->dq_count)) remove_free_dquot(dquot);` before `atomic_inc(&dquot->dq_count)`, and replaces plain `atomic_inc()`/old inline `dqgrab()` in `dquot_scan_active()`, `dqget()`, and writeback paths; the commit message explicitly shows `dquot_scan_active()` finding a dquot with `dq_count == 0` and `DQ_ACTIVE_B` still set while `quota_release_workfn()` has moved it to `rls_head`, leading to `WARN_ON_ONCE(atomic_read(&dquot->dq_count))` and potential use of freed dquot.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/quota/dquot.c",
+      "lineno": 645,
+      "content": "atomic_inc(&dquot->dq_count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/quota/dquot.c",
+      "lineno": 720,
+      "content": "dqgrab(dquot);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The quota subsystem incremented `dquot->dq_count` in `dquot_scan_active()`/`dqgrab()` without holding `dq_list_lock` and without removing zero-ref `dquot`s from the `releasing_dquots`/free list, allowing a race with `quota_release_workfn()` that reactivated a dquot already queued for release and possible freeing.",
+      "evidence_points": "The patch introduces locked helper `__dqgrab()` that, under `dq_list_lock`, checks `if (!atomic_read(&dquot->dq_count)) remove_free_dquot(dquot);` before `atomic_inc(&dquot->dq_count)`, and replaces plain `atomic_inc()`/old inline `dqgrab()` in `dquot_scan_active()`, `dqget()`, and writeback paths; the commit message explicitly shows `dquot_scan_active()` finding a dquot with `dq_count == 0` and `DQ_ACTIVE_B` still set while `quota_release_workfn()` has moved it to `rls_head`, leading to `WARN_ON_ONCE(atomic_read(&dquot->dq_count))` and potential use of freed dquot."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/quota/dquot.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/quota/dquot.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/quota/dquot.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/quota/dquot.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "include/linux/quotaops.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a locked exported helper to safely grab a reference to an active dquot and remove it from the free list when reviving it from zero references.",
+        "what": "The change adds a new internal helper `__dqgrab(struct dquot *dquot)` and a new exported function `dqgrab(struct dquot *dquot)`. `__dqgrab()` asserts that `dq_list_lock` is held, removes the dquot from the free list if its reference count is zero, increments `dq_count`, and returns the dquot. `dqgrab()` acquires `dq_list_lock`, warns once if the dquot is not active, calls `__dqgrab()`, releases the lock, returns the dquot, and is exported with `EXPORT_SYMBOL_GPL`.",
+        "how": "At runtime, this provides a safe public way to acquire a reference to an already-obtained active dquot while holding the appropriate global lock around the refcount transition. It ensures that a dquot with zero references is removed from the free list before being resurrected and then increments its reference count, preventing races or misuse when re-referencing active quota objects."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the proper dquot reference-grab helper in dquot_scan_active() so active quota entries are safely held during races with dquot release.",
+        "what": "In dquot_scan_active(), the direct reference count increment `atomic_inc(&dquot->dq_count)` was replaced with the helper call `__dqgrab(dquot)`, and the accompanying comment was updated from referring to protecting against new `->release_dquot()` calls to protecting against `dquot_release()` proceeding while waiting for any outstanding release to finish.",
+        "how": "At runtime, acquiring a reference to an active dquot now uses the dedicated dquot reference helper instead of manually incrementing the counter, aligning the reference acquisition with the subsystem's intended semantics during races with release logic and ensuring the object is held correctly while waiting and rechecking activity state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the internal refcount increment helper under dq_list_lock during dquot writeback to correctly grab a referenced dquot without inappropriate locking behavior.",
+        "what": "The call to dqgrab(dquot) was replaced with __dqgrab(dquot) in dquot_writeback_dquots() while keeping the surrounding locking and writeback logic unchanged.",
+        "how": "At runtime, the code now increments the dquot reference count using the internal non-locking helper while dq_list_lock is already held, avoiding redundant locking or lock-state assumptions and making the reference acquisition match the existing synchronization context before writeback."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "refactor",
+        "intent_summary": "Replace the inline cached-dquot reference acquisition logic in dqget() with __dqgrab() to centralize reference handling.",
+        "what": "In the cache-hit path of dqget(), the open-coded sequence that checked whether dquot->dq_count was zero, conditionally called remove_free_dquot(dquot), and then incremented dq_count with atomic_inc() was removed and replaced with a single call to __dqgrab(dquot).",
+        "how": "At runtime, acquiring a cached dquot reference is now delegated to the helper that encapsulates the reference-grab logic, including handling the transition from zero references and removal from the free list before incrementing the count. This preserves the intended behavior while centralizing it in one routine."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "refactor",
+        "intent_summary": "Move dqgrab from a header-inline implementation to a centralized out-of-line function without changing its external interface.",
+        "what": "The patch removes the static inline definition of dqgrab(struct dquot *dquot) from the header, including its WARN_ON_ONCE checks, atomic_inc on dq_count, and return statement, and replaces it with a non-inline function declaration for dqgrab.",
+        "how": "At runtime, dqgrab will now be provided by an out-of-line function implementation instead of being expanded inline at each call site, centralizing the reference-grab logic and any checks it performs while preserving the callable interface."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Use the internal refcount increment helper under dq_list_lock during dquot writeback to correctly grab a referenced dquot without inappropriate locking behavior."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 2,
+          "intent": "Move dqgrab from a header-inline implementation to a centralized out-of-line function without changing its external interface."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix dquot reference acquisition under dq_list_lock by introducing and using the correct helper so active quota entries are safely revived or held during writeback and scan races.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Centralize dquot reference acquisition by moving dqgrab from an inline/header implementation to an out-of-line helper and updating callers to use it without changing external behavior.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by fixing dquot reference acquisition under dq_list_lock, adding the correct helper to safely revive zero-ref dquots by removing them from release/free lists, and using that helper in the scan/writeback paths involved in the race with quota_release_workfn()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group only centralizes/moves dqgrab implementation and updates callers without changing locking, free-list removal, or zero-ref/reactivation behavior that caused the race with quota_release_workfn()."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/quota/dquot.c",
+            "lineno": 645,
+            "content": "atomic_inc(&dquot->dq_count);",
+            "rationale": "This directly increments the dquot reference count in dquot_scan_active() without using the helper that holds dq_list_lock semantics and removes zero-ref dquots from the releasing/free list, enabling the race with quota_release_workfn()."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/quota/dquot.c",
+            "lineno": 720,
+            "content": "dqgrab(dquot);",
+            "rationale": "The root cause states dqgrab() was used in a context where it could increment dq_count without the proper locked revive/removal handling for zero-ref dquots, allowing reactivation of a dquot already queued for release."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/quota/dquot.c",
+            "stmt_text": "atomic_inc(&dquot->dq_count);",
+            "location": "hunk",
+            "explanation": "This statement increments the dquot reference count directly in dquot_scan_active() without the required dq_list_lock-protected revive/removal handling for zero-ref dquots. That allows a race where a dquot already queued on releasing/free lists can be reactivated while quota_release_workfn() is releasing or freeing it."
+          },
+          {
+            "vuln_file": "fs/quota/dquot.c",
+            "stmt_text": "dqgrab(dquot);",
+            "location": "hunk",
+            "explanation": "This statement uses dqgrab() in the affected pre-fix path where the refcount could be incremented without the proper locked handling needed for zero-ref dquots on the releasing/free lists. Per the root cause, this could revive a dquot already queued for release and race with quota_release_workfn()."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "08841b06fa64",
+          "anchor_file": "fs/quota/dquot.c",
+          "anchor_lineno": 645
+        },
+        "commit": "12c77527e4138bc3b17d17b0e0c909e4fc84924f",
+        "commit_short": "12c77527e413",
+        "commit_msg": "quota: Implement function for scanning active dquots\n\nOCFS2 needs to scan all active dquots once in a while and sync quo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/quota/dquot.c",
+        "display_lineno": 495,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function body is sufficient because it directly shows the active-dquot scan and the reference acquisition logic in question. The vulnerable construct is present at line 495: `atomic_inc(&dquot->dq_count);` done while iterating `inuse_list`, with the comment at line 494 saying it can 'just increase use count'. There is no logic here to safely grab the dquot under the proper release-list protection, no removal of a zero-ref dquot from any `releasing_dquots`/free list, and no use of a safe helper such as `dqgrab()` with the necessary locking/validation. The root cause describes a race where incrementing `dq_count` without the required `dq_list_lock`-protected zero-ref handling can revive a dquot already queued for release. This function performs exactly that simplistic refcount increment and then drops `dq_list_lock` at line 497 before using the object, so the vulnerable pattern is present. Therefore this commit contains the bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "12c77527e4138bc3b17d17b0e0c909e4fc84924f",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "08841b06fa64",
+          "anchor_file": "fs/quota/dquot.c",
+          "anchor_lineno": 720
+        },
+        "commit": "9f985cb6c45bc3f8b7e161c9658d409d051d576f",
+        "commit_short": "9f985cb6c45b",
+        "commit_msg": "quota: provide function to grab quota structure reference\n\nProvide dqgrab() function to get quota structure reference wh",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/quota/dquot.c",
+        "display_lineno": 635,
+        "code_snippet": "commit 9f985cb6c45bc3f8b7e161c9658d409d051d576f\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Thu Apr 3 14:46:55 2014 -0700\n\n    quota: provide function to grab quota structure reference\n    \n    Provide dqgrab() function to get quota structure reference when we are\n    sure it already has at least one active reference.  Make use of this\n    function inside quota code.\n    \n    Signed-off-by: Jan Kara <jack@suse.cz>\n    Reviewed-by: Mark Fasheh <mfasheh@suse.de>\n    Reviewed-by: Srinivas Eeda <sriniva",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the exact reference-grab logic being changed at the vulnerable call sites. The root cause is incrementing `dquot->dq_count` without the proper locked/validated grab semantics. In this commit, the old code `atomic_inc(&dquot->dq_count);` is replaced by `dqgrab(dquot);` in both shown locations (`invalidate_dquots()` and `dquot_writeback_dquots()`). The commit message says: `Provide dqgrab() function to get quota structure reference when we are sure it already has at least one active reference`, which indicates `dqgrab()` is just a helper for the same unsafe pattern when the caller assumes a live reference already exists. In the shown code, the condition is only `if (atomic_read(&dquot->dq_count))` followed by `dqgrab(dquot);`, which still relies on observing a nonzero refcount and then incrementing, rather than preventing races with a zero-ref dquot already queued on `releasing_dquots`/free list under `dq_list_lock`. There is no shown logic removing zero-ref dquots from releasing/free lists before reactivating them, nor any stronger locked ref acquisition. Thus the vulnerable construct is still present in helper form, and the later fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bd62ad7aebd8",
+          "anchor_file": "fs/quota/dquot.c",
+          "anchor_lineno": 635
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/quota/dquot.c",
+        "display_lineno": 461,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact refcount-taking logic under discussion. Inside the dirty-list walk, the code selects a dquot from the list (`dquot = list_entry(dirty->next, struct dquot, dq_dirty);`) and, if `DQ_ACTIVE_B` is set, it treats that as enough to assume safety: `/* Now we have active dquot from which someone is holding reference so we can safely just increase use count */` followed by `atomic_inc(&dquot->dq_count);` at line 461. This is the vulnerable construct described by the root cause: the code increments `dq_count` directly while merely holding `dq_list_lock`, without any logic to ensure the dquot is not a zero-ref object already on a releasing/free list, and without any removal from such a list before re-grabbing it. The root cause specifically says the bug is reactivating a dquot already queued for release by incrementing the count without proper protected grab semantics; this code does exactly that by using a bare `atomic_inc()` based only on `DQ_ACTIVE_B`. There is no visible fix here such as a safe `dqgrab()`-style conditional ref acquisition under the correct lock state, nor any check/removal of zero-ref dquots from `releasing_dquots`/free list before taking the reference. Therefore the vulnerable logic is present and the fix is absent."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_votes": {
+        "12c77527e4138bc3b17d17b0e0c909e4fc84924f": 1,
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 1
+      },
+      "bic_candidates": [
+        "12c77527e4138bc3b17d17b0e0c909e4fc84924f",
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

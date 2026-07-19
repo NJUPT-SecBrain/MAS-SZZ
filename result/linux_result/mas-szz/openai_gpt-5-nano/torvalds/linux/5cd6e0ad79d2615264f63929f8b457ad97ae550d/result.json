@@ -1,0 +1,265 @@
+{
+  "cveid": "CVE-2026-46137",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "5cd6e0ad79d2615264f63929f8b457ad97ae550d"
+  ],
+  "ground_truth_bic": "00cfd77b9063dcdf3628a7087faba60de85a9cc8",
+  "predicted_bic": [
+    "e4c28e3d5c09097b5ca7bc5690e01f48adb33811"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 22399,
+  "root_cause": {
+    "text": "The MPTCP path manager’s `mptcp_pm_add_timer()` timer callback accessed and modified socket/MPTCP state in softirq context without taking the socket lock, allowing concurrent unsynchronized access to `sk`/`msk` state when the socket was in use.",
+    "evidence": "The commit message states the helper “is executed as a timer callback in softirq context” and that “to avoid any data races, the socket lock needs to be held with `bh_lock_sock()`”; the patch adds `bh_lock_sock(sk)`, checks `sock_owned_by_user(sk)` to defer work if the socket is busy, and adds the matching `bh_unlock_sock(sk)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 340,
+      "content": "if (mptcp_pm_should_add_signal_addr(msk)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 365,
+      "content": "mptcp_pm_subflow_established(msk);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The MPTCP path manager’s `mptcp_pm_add_timer()` timer callback accessed and modified socket/MPTCP state in softirq context without taking the socket lock, allowing concurrent unsynchronized access to `sk`/`msk` state when the socket was in use.",
+      "evidence_points": "The commit message states the helper “is executed as a timer callback in softirq context” and that “to avoid any data races, the socket lock needs to be held with `bh_lock_sock()`”; the patch adds `bh_lock_sock(sk)`, checks `sock_owned_by_user(sk)` to defer work if the socket is busy, and adds the matching `bh_unlock_sock(sk)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Guard the MPTCP add timer callback against running while the socket is user-owned by deferring the timer and retrying later.",
+        "what": "The change adds a bottom-half socket lock acquisition with bh_lock_sock(sk) near the start of mptcp_pm_add_timer(), then inserts a check for sock_owned_by_user(sk); if true, it reschedules the same timer for jiffies + HZ / 20 and jumps to the existing out path before executing the rest of the function.",
+        "how": "At runtime, the timer callback now avoids proceeding with MPTCP path manager work while the socket is currently owned by user context. Instead of accessing or modifying socket-related state concurrently, it defers execution briefly and retries later, reducing the risk of races or unsafe timer-side processing."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the socket BH lock in mptcp_pm_add_timer() before putting the socket to fix a missing unlock on the exit path.",
+        "what": "A call to bh_unlock_sock(sk); was added in the out: path of mptcp_pm_add_timer(), immediately before __sock_put(sk).",
+        "how": "This change releases the socket bottom-half lock before dropping the socket reference, preventing the function from exiting while still holding the socket lock and thereby avoiding lock leaks or subsequent deadlock/stall conditions during timer-driven MPTCP path manager processing."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Guard the MPTCP add timer callback against running while the socket is user-owned by deferring the timer and retrying later."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Release the socket BH lock in mptcp_pm_add_timer() before putting the socket to fix a missing unlock on the exit path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly targets the root cause by preventing the add timer callback from operating on MPTCP/socket state while the socket is user-owned, deferring execution to avoid unsynchronized concurrent access in softirq context."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change is in mptcp_pm_add_timer(), the exact timer callback involved in the root cause, and it fixes locking behavior around the socket state by releasing the BH socket lock on an exit path. Since the vulnerability is about improper socket locking/concurrency in this callback, this lock-handling fix is directly related."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 340,
+            "content": "if (mptcp_pm_should_add_signal_addr(msk)) {",
+            "rationale": "This condition reads MPTCP socket state inside the timer callback before the fix's user-owned socket guard was added. The root cause is unsynchronized access to sk/msk state from softirq context without taking the socket lock."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 365,
+            "content": "mptcp_pm_subflow_established(msk);",
+            "rationale": "This call modifies/uses MPTCP path-manager state from the timer callback. Per the root cause, such state access occurred in softirq context without proper socket locking, enabling races with concurrent socket users."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 341,
+            "content": "sk_reset_timer(sk, timer, jiffies + TCP_RTO_MAX / 8);",
+            "rationale": "Although not itself the missing lock, this statement is part of the timer callback flow that reschedules based on MPTCP/socket state while running without the needed socket lock/user-owned check, reflecting the unsafe callback behavior."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "if (mptcp_pm_should_add_signal_addr(msk)) {",
+            "location": "hunk",
+            "explanation": "This condition performs the unsafe access to MPTCP socket state from the add-timer callback in softirq context before the fix added proper socket-lock/user-owned handling. It is the clearest statement directly tied to the root cause: unsynchronized access to sk/msk state."
+          },
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "mptcp_pm_subflow_established(msk);",
+            "location": "hunk",
+            "explanation": "This callback-side state update/use of MPTCP path-manager state also occurred without the required socket locking, contributing to the same race against concurrent socket users."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "03f324f3f1f7",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 340
+        },
+        "commit": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+        "commit_short": "e4c28e3d5c09",
+        "commit_msg": "mptcp: pm: move generic PM helpers to pm.c\n\nBefore this patch, the PM code was dispersed in different places:\n\n- pm.c ha",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 284,
+        "code_snippet": "commit e4c28e3d5c09097b5ca7bc5690e01f48adb33811\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Fri Mar 7 12:21:57 2025 +0100\n\n    mptcp: pm: move generic PM helpers to pm.c\n    \n    Before this patch, the PM code was dispersed in different places:\n    \n    - pm.c had common code for all PMs\n    \n    - pm_netlink.c was supposed to be about the in-kernel PM, but also had\n      exported common helpers, callbacks used by the different PMs, NL\n      events for PM userspace daemon, etc. q",
+        "exists": true,
+        "reason": "The vulnerable timer callback is present in this snippet as `static void mptcp_pm_add_timer(struct timer_list *timer)`. The root cause says the bug is that the timer callback accesses/modifies socket/MPTCP state in softirq context without taking the socket lock. That is exactly what this function does. Early in the callback it dereferences and reads socket/MPTCP state without taking the socket lock: `struct mptcp_sock *msk = entry->sock; struct sock *sk = (struct sock *)msk;`, then `if (inet_sk_state_load(sk) == TCP_CLOSE) return;`, `if (!entry->addr.id) return;`, and `if (mptcp_pm_should_add_signal_addr(msk)) { ... }`. Later, even though it takes `spin_lock_bh(&msk->pm.lock);`, it still never takes the socket lock (`lock_sock*` / `bh_lock_sock` / similar) before operating on MPTCP/socket state. Inside that region it calls `mptcp_pm_announce_addr(msk, &entry->addr, false);`, `mptcp_pm_add_addr_send_ack(msk);`, updates `entry->retrans_times++`, and after unlocking may call `mptcp_pm_subflow_established(msk);` — all from the timer callback context. The snippet contains no socket-lock acquisition in this callback, so the fix is not present. Therefore this function still contains the vulnerable construct."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bcc32640ada0",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 284
+        },
+        "commit": "557963c383e8209b14de91bf2a0301a41b94d8c4",
+        "commit_short": "557963c383e8",
+        "commit_msg": "mptcp: move to next addr when subflow creation fail\n\nWhen an invalid address was announced, the subflow couldn't be crea",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 206,
+        "code_snippet": "commit 557963c383e8209b14de91bf2a0301a41b94d8c4\nAuthor: Geliang Tang <geliang@kernel.org>\nDate:   Fri Mar 26 11:26:38 2021 -0700\n\n    mptcp: move to next addr when subflow creation fail\n    \n    When an invalid address was announced, the subflow couldn't be created\n    for this address. Therefore mptcp_pm_nl_subflow_established couldn't be\n    invoked. Then the next addresses in the local address list didn't have a\n    chance to be announced.\n    \n    This patch invokes the new function mptcp_pm",
+        "exists": false,
+        "reason": "The provided function body is sufficient to evaluate the specific root cause because it fully shows the synchronization used in this code path. The vulnerability root cause is that the timer callback `mptcp_pm_add_timer()` accessed or modified socket/MPTCP state without taking the socket lock, causing unsynchronized access to `sk`/`msk` state in softirq context. In this snippet, the function only takes `spin_lock_bh(&pm->lock);` and then checks `mptcp_lookup_anno_list_by_saddr(msk, addr)` and `READ_ONCE(pm->work_pending)` before calling `mptcp_pm_schedule_work(msk, MPTCP_PM_SUBFLOW_ESTABLISHED);`. There is no socket lock acquisition here (no `lock_sock()`, `bh_lock_sock()`, or equivalent protection of the socket itself), so the specific vulnerable construct described for `mptcp_pm_add_timer()` is not present in this function body. Therefore `has_bug` is false because the vulnerable function/logic is absent from the shown code. Likewise, this function does not show the fix for the timer-callback locking issue either, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "03f324f3f1f7",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 365
+        },
+        "commit": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+        "commit_short": "e4c28e3d5c09",
+        "commit_msg": "mptcp: pm: move generic PM helpers to pm.c\n\nBefore this patch, the PM code was dispersed in different places:\n\n- pm.c ha",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 305,
+        "code_snippet": "commit e4c28e3d5c09097b5ca7bc5690e01f48adb33811\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Fri Mar 7 12:21:57 2025 +0100\n\n    mptcp: pm: move generic PM helpers to pm.c\n    \n    Before this patch, the PM code was dispersed in different places:\n    \n    - pm.c had common code for all PMs\n    \n    - pm_netlink.c was supposed to be about the in-kernel PM, but also had\n      exported common helpers, callbacks used by the different PMs, NL\n      events for PM userspace daemon, etc. q",
+        "exists": true,
+        "reason": "The vulnerable timer callback is present in this snippet as `static void mptcp_pm_add_timer(struct timer_list *timer)`. The root cause says the bug is that the timer callback accessed/modified socket/MPTCP state in softirq context without taking the socket lock. That is exactly what this function does. It derives `msk`/`sk` from the timer entry (`struct mptcp_sock *msk = entry->sock; struct sock *sk = (struct sock *)msk;`) and then directly reads socket state with `if (inet_sk_state_load(sk) == TCP_CLOSE) return;` and MPTCP state with `if (mptcp_pm_should_add_signal_addr(msk)) { ... }` before any socket lock is taken. Later, even though it takes `spin_lock_bh(&msk->pm.lock)`, it still operates on MPTCP/socket-related state without taking the main socket lock, e.g. `mptcp_pm_announce_addr(msk, &entry->addr, false);`, `mptcp_pm_add_addr_send_ack(msk);`, increments `entry->retrans_times++;`, and after unlocking calls `mptcp_pm_subflow_established(msk);`. There is no `lock_sock()`, `lock_sock_fast()`, `bh_lock_sock()`, or equivalent socket-lock acquisition anywhere in this callback. The commit message also says 'No behavioural changes intended', and the diff shows only code movement, not the addition of socket-locking protection in this timer path. Therefore the vulnerable construct is present and the fix is not yet included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bcc32640ada0",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 305
+        },
+        "commit": "d0876b2284cf8b34dd214b2d0aa21071c345da59",
+        "commit_short": "d0876b2284cf",
+        "commit_msg": "mptcp: add the incoming RM_ADDR support\n\nThis patch added the RM_ADDR option parsing logic:\n\nWe parsed the incoming opti",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 155,
+        "code_snippet": "commit d0876b2284cf8b34dd214b2d0aa21071c345da59\nAuthor: Geliang Tang <geliang@kernel.org>\nDate:   Thu Sep 24 08:29:49 2020 +0800\n\n    mptcp: add the incoming RM_ADDR support\n    \n    This patch added the RM_ADDR option parsing logic:\n    \n    We parsed the incoming options to find if the rm_addr option is received,\n    and called mptcp_pm_rm_addr_received to schedule PM work to a new status,\n    named MPTCP_PM_RM_ADDR_RECEIVED.\n    \n    PM work got this status, and called mptcp_pm_nl_rm_addr_rec",
+        "exists": false,
+        "reason": "The provided function body is sufficient to assess this specific function. The root cause describes a bug in the timer callback `mptcp_pm_add_timer()` accessing/modifying socket/MPTCP state in softirq context without taking the socket lock. This snippet is not that timer callback and does not show any timer-based softirq access or direct unsynchronized manipulation of `sk`/`msk` state under the socket lock. Instead, it only takes `pm->lock` with `spin_lock_bh(&pm->lock);`, schedules work via `mptcp_pm_schedule_work(msk, MPTCP_PM_RM_ADDR_RECEIVED);`, sets `pm->rm_id = rm_id;`, and unlocks with `spin_unlock_bh(&pm->lock);`. Therefore, the vulnerable construct identified in the root cause is absent from this function, so `has_bug` is false. The fix for the timer-callback bug is also not present here, because there is no socket-locking or timer-callback logic shown."
+      }
+    },
+    {
+      "bic_found": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "e4c28e3d5c09097b5ca7bc5690e01f48adb33811": 2
+      },
+      "bic_candidates": [
+        "e4c28e3d5c09097b5ca7bc5690e01f48adb33811"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

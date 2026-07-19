@@ -1,0 +1,302 @@
+{
+  "cveid": "CVE-2026-23005",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b45f721775947a84996deb5c661602254ce25ce6"
+  ],
+  "ground_truth_bic": "820a6ee944e74e57255ac2e90916ecdaade57b95",
+  "predicted_bic": [
+    "8eb9a48ac1e86a8a59f7123b529d6e498fb1f163",
+    "d69c1382e1b73a0496a70872a035ca2b22d074e5"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 24975,
+  "root_cause": {
+    "text": "KVM’s guest FPU/XSAVE handling failed to keep `XSTATE_BV` consistent with guest `XFD` in `struct fpstate`, so state for XFD-disabled features could be left marked “in use” and later be restored with XRSTOR, triggering a host `#NM` in the x86 FPU subsystem.",
+    "evidence": "The patch explicitly says “clear XFD-disabled features in the saved (or to be restored) XSTATE_BV to ensure KVM doesn't attempt to load state for features that are disabled via the guest's XFD” and adds fixes in `fpu_update_guest_xfd()` and `kvm_vcpu_ioctl_x86_set_xsave()` to mask `xfeatures` with `~xfd`; the commit message also states that “saving XSTATE_BV[i]=1 with XFD[i]=1 will cause XRSTOR to #NM and panic the kernel.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/x86/kvm/x86.c",
+      "lineno": 5813,
+      "content": "return fpu_copy_uabi_to_guest_fpstate(&vcpu->arch.guest_fpu,",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kernel/fpu/core.c",
+      "lineno": 324,
+      "content": "if (guest_fpu->fpstate->in_use)",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kernel/fpu/core.c",
+      "lineno": 325,
+      "content": "xfd_update_state(guest_fpu->fpstate);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "KVM’s guest FPU/XSAVE handling failed to keep `XSTATE_BV` consistent with guest `XFD` in `struct fpstate`, so state for XFD-disabled features could be left marked “in use” and later be restored with XRSTOR, triggering a host `#NM` in the x86 FPU subsystem.",
+      "evidence_points": "The patch explicitly says “clear XFD-disabled features in the saved (or to be restored) XSTATE_BV to ensure KVM doesn't attempt to load state for features that are disabled via the guest's XFD” and adds fixes in `fpu_update_guest_xfd()` and `kvm_vcpu_ioctl_x86_set_xsave()` to mask `xfeatures` with `~xfd`; the commit message also states that “saving XSTATE_BV[i]=1 with XFD[i]=1 will cause XRSTOR to #NM and panic the kernel.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/x86/kernel/fpu/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "arch/x86/kernel/fpu/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "arch/x86/kvm/x86.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix guest XFD updates to clear disabled xstate bits when the guest FPU state is not resident, preventing host #NM on later XRSTOR.",
+        "what": "In fpu_update_guest_xfd(), the code now caches guest_fpu->fpstate in a local fpstate pointer, adds a detailed comment, conditionally clears disabled xstate components from fpstate->regs.xsave.header.xfeatures when xfd is nonzero and TIF_NEED_FPU_LOAD is set, then assigns fpstate->xfd and calls xfd_update_state(fpstate) if fpstate->in_use; the previous direct guest_fpu->fpstate field accesses are replaced accordingly.",
+        "how": "The update changes guest XFD handling so that when the guest FPU state is not currently loaded into hardware, components marked disabled by XFD are also removed from the saved XSTATE_BV/xfeatures bitmap immediately. This prevents a later XRSTOR from trying to restore disabled state and triggering a #NM in the host, while preserving the existing behavior when the state is resident in hardware."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Reject guest FP state that includes disabled features to prevent XRSTOR exceptions during restore.",
+        "what": "A new check was added in fpu_copy_uabi_to_guest_fpstate() after the xfeatures/XCR0 validation: it warns once and returns -EINVAL if any features present in ustate->xsave.header.xfeatures are also marked disabled in kstate->xfd. A comment was added explaining that disabled features must remain in their initial state because XRSTOR would otherwise fault.",
+        "how": "At runtime, the function now rejects guest FP state images that try to restore state for features that the kernel has currently disabled. This prevents XRSTOR from encountering disabled-but-noninitial state and raising an exception, avoiding invalid guest state import."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear XSAVE feature bits for XFD-disabled state before copying guest FPU state to avoid XRSTOR #NM and maintain backward compatibility.",
+        "what": "A local pointer `xstate` of type `union fpregs_state *` was added in `kvm_vcpu_ioctl_x86_set_xsave()`, initialized from `guest_xsave->region`. Before calling `fpu_copy_uabi_to_guest_fpstate()`, the code now clears bits in `xstate->xsave.header.xfeatures` using `vcpu->arch.guest_fpu.fpstate->xfd`, with an explanatory comment about backwards compatibility and avoiding XRSTOR #NM faults.",
+        "how": "The change sanitizes the guest-provided XSAVE header so that any feature disabled via XFD is also cleared from XSTATE_BV/xfeatures. This prevents XRSTOR from attempting to restore disabled state and triggering a #NM, while preserving compatibility with guests that do not initialize disabled features to the expected initial state."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix guest XFD updates to clear disabled xstate bits when the guest FPU state is not resident, preventing host #NM on later XRSTOR."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Reject guest FP state that includes disabled features to prevent XRSTOR exceptions during restore."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear XSAVE feature bits for XFD-disabled state before copying guest FPU state to avoid XRSTOR #NM and maintain backward compatibility."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it updates guest XFD handling so disabled xstate bits are cleared when the guest FPU state is not resident, keeping XSTATE_BV consistent and avoiding later XRSTOR-triggered host #NM."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses unsafe guest FPU/XSAVE restore handling by rejecting FP state with disabled features, which matches the root cause of inconsistent XSTATE_BV/XFD state leading to XRSTOR-triggered #NM faults."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly matches the root cause: it fixes inconsistent XSAVE/XSTATE_BV handling for XFD-disabled guest FPU state by clearing feature bits before copying/restoring state, which prevents XRSTOR from triggering #NM."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kernel/fpu/core.c",
+            "lineno": 324,
+            "content": "if (guest_fpu->fpstate->in_use)",
+            "rationale": "This condition limits XFD state synchronization to cases where the guest FP state is resident. If the state is not in use, disabled xstate bits may remain marked active in fpstate, which matches the root cause of inconsistent XSTATE_BV/XFD handling leading to later XRSTOR-triggered #NM."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kernel/fpu/core.c",
+            "lineno": 325,
+            "content": "xfd_update_state(guest_fpu->fpstate);",
+            "rationale": "This is the operation that updates fpstate based on the current XFD value. Because it is only invoked under the resident-state condition, the vulnerable behavior is that disabled features are not cleared when guest FPU state is not resident."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "arch/x86/kvm/x86.c",
+            "lineno": 5813,
+            "content": "return fpu_copy_uabi_to_guest_fpstate(&vcpu->arch.guest_fpu,",
+            "rationale": "This call copies guest XSAVE state into guest fpstate without any visible pre-fix clearing of XFD-disabled feature bits, which is directly tied to the root cause of allowing inconsistent XSTATE_BV state that later causes XRSTOR faults."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/x86/kvm/x86.c",
+            "stmt_text": "return fpu_copy_uabi_to_guest_fpstate(&vcpu->arch.guest_fpu,",
+            "location": "hunk",
+            "explanation": "This statement copies userspace XSAVE/UABI data into the guest fpstate without the pre-fix clearing of XFD-disabled xstate bits, allowing XSTATE_BV to remain inconsistent with guest XFD and later be restored via XRSTOR into a state that can trigger host #NM."
+          },
+          {
+            "vuln_file": "arch/x86/kernel/fpu/core.c",
+            "stmt_text": "if (guest_fpu->fpstate->in_use)",
+            "location": "hunk",
+            "explanation": "This condition gates XFD synchronization on guest fpstate residency. When the guest state is not resident, disabled xstate bits are not updated/cleared, leaving them marked in use and enabling the inconsistent XSTATE_BV/XFD state described in the root cause."
+          },
+          {
+            "vuln_file": "arch/x86/kernel/fpu/core.c",
+            "stmt_text": "xfd_update_state(guest_fpu->fpstate);",
+            "location": "hunk",
+            "explanation": "This is the actual update operation that should reconcile fpstate with guest XFD. In the vulnerable flow it is only reached under the resident-state condition, so XFD-disabled features may remain active in fpstate and later provoke XRSTOR-related host #NM."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "95cc9e7cf03d",
+          "anchor_file": "arch/x86/kvm/x86.c",
+          "anchor_lineno": 5813
+        },
+        "commit": "d69c1382e1b73a0496a70872a035ca2b22d074e5",
+        "commit_short": "d69c1382e1b7",
+        "commit_msg": "x86/kvm: Convert FPU handling to a single swap buffer\n\nFor the upcoming AMX support it's necessary to do a proper integr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/x86.c",
+        "display_lineno": 4721,
+        "code_snippet": "commit d69c1382e1b73a0496a70872a035ca2b22d074e5\nAuthor: Thomas Gleixner <tglx@kernel.org>\nDate:   Fri Oct 22 20:55:53 2021 +0200\n\n    x86/kvm: Convert FPU handling to a single swap buffer\n    \n    For the upcoming AMX support it's necessary to do a proper integration with\n    KVM. Currently KVM allocates two FPU structs which are used for saving the user\n    state of the vCPU thread and restoring the guest state when entering\n    vcpu_run() and doing the reverse operation before leaving vcpu_run",
+        "exists": false,
+        "reason": "The shown diff already contains the new single-fpstate swap-buffer scheme and explicitly moves to the new fpstate APIs, which address the stated XSTATE_BV/XFD consistency issue. For example, KVM now uses `fpu_alloc_guest_fpstate(&vcpu->arch.guest_fpu)` instead of separate `user_fpu`/`guest_fpu` allocations, and restore/save paths call `fpu_swap_kvm_fpstate(&vcpu->arch.guest_fpu, true/false)` rather than the old dual-struct `fpu_swap_kvm_fpu(...)`. The comment says this new scheme means fpstate information `(features, sizes, xfd) are always consistent`, which is the fix for the root cause. The vulnerable construct is not present in this commit snapshot, so `has_bug` is false and `is_fixed` is true."
+      }
+    },
+    {
+      "bic_found": "d69c1382e1b73a0496a70872a035ca2b22d074e5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "95cc9e7cf03d",
+          "anchor_file": "arch/x86/kernel/fpu/core.c",
+          "anchor_lineno": 324
+        },
+        "commit": "8eb9a48ac1e86a8a59f7123b529d6e498fb1f163",
+        "commit_short": "8eb9a48ac1e8",
+        "commit_msg": "x86/fpu: Provide fpu_update_guest_xfd() for IA32_XFD emulation\n\nGuest XFD can be updated either in the emulation path or",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kernel/fpu/core.c",
+        "display_lineno": 291,
+        "code_snippet": "commit 8eb9a48ac1e86a8a59f7123b529d6e498fb1f163\nAuthor: Kevin Tian <kevin.tian@intel.com>\nDate:   Wed Jan 5 04:35:20 2022 -0800\n\n    x86/fpu: Provide fpu_update_guest_xfd() for IA32_XFD emulation\n    \n    Guest XFD can be updated either in the emulation path or in the\n    restore path.\n    \n    Provide a wrapper to update guest_fpu::fpstate::xfd. If the guest\n    fpstate is currently in-use, also update the per-cpu xfd cache and\n    the actual MSR.\n    \n    Signed-off-by: Kevin Tian <kevin.tian@",
+        "exists": false,
+        "reason": "The shown function is the new helper `fpu_update_guest_xfd()` and it already keeps guest XFD state synchronized: `guest_fpu->fpstate->xfd = xfd;` followed by `if (guest_fpu->fpstate->in_use) xfd_update_state(guest_fpu->fpstate);`. This is the corrective behavior for the root cause, because it updates the per-CPU/active XFD state when the fpstate is currently in use, preventing stale XFD/XSTATE mismatch. The vulnerable construct described in the root cause (failing to keep `XSTATE_BV` consistent with guest `XFD`) is not present in this function body; instead, the function explicitly performs the needed update path."
+      }
+    },
+    {
+      "bic_found": "8eb9a48ac1e86a8a59f7123b529d6e498fb1f163",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "95cc9e7cf03d",
+          "anchor_file": "arch/x86/kernel/fpu/core.c",
+          "anchor_lineno": 325
+        },
+        "commit": "8eb9a48ac1e86a8a59f7123b529d6e498fb1f163",
+        "commit_short": "8eb9a48ac1e8",
+        "commit_msg": "x86/fpu: Provide fpu_update_guest_xfd() for IA32_XFD emulation\n\nGuest XFD can be updated either in the emulation path or",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kernel/fpu/core.c",
+        "display_lineno": 292,
+        "code_snippet": "commit 8eb9a48ac1e86a8a59f7123b529d6e498fb1f163\nAuthor: Kevin Tian <kevin.tian@intel.com>\nDate:   Wed Jan 5 04:35:20 2022 -0800\n\n    x86/fpu: Provide fpu_update_guest_xfd() for IA32_XFD emulation\n    \n    Guest XFD can be updated either in the emulation path or in the\n    restore path.\n    \n    Provide a wrapper to update guest_fpu::fpstate::xfd. If the guest\n    fpstate is currently in-use, also update the per-cpu xfd cache and\n    the actual MSR.\n    \n    Signed-off-by: Kevin Tian <kevin.tian@",
+        "exists": false,
+        "reason": "The snippet shows the new helper `fpu_update_guest_xfd()` that writes `guest_fpu->fpstate->xfd = xfd;` and, crucially, if the guest fpstate is active, immediately synchronizes the live state via `if (guest_fpu->fpstate->in_use) xfd_update_state(guest_fpu->fpstate);`. This is the corrective behavior needed to keep guest XFD consistent with the in-use XSAVE state. The vulnerable construct described in the root cause is not present here; instead the code already contains the fix."
+      }
+    },
+    {
+      "bic_found": "8eb9a48ac1e86a8a59f7123b529d6e498fb1f163",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "d69c1382e1b73a0496a70872a035ca2b22d074e5": 1,
+        "8eb9a48ac1e86a8a59f7123b529d6e498fb1f163": 2
+      },
+      "bic_candidates": [
+        "8eb9a48ac1e86a8a59f7123b529d6e498fb1f163",
+        "d69c1382e1b73a0496a70872a035ca2b22d074e5"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

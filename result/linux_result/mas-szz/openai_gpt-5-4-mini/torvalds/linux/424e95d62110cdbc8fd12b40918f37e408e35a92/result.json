@@ -1,0 +1,269 @@
+{
+  "cveid": "CVE-2026-31474",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "424e95d62110cdbc8fd12b40918f37e408e35a92"
+  ],
+  "ground_truth_bic": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+  "predicted_bic": [
+    "96d1c81e6a0478535342dff6c730adb076cd84e8"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 15086,
+  "root_cause": {
+    "text": "A race in the CAN ISO-TP socket teardown path lets `isotp_release()` free the potentially extended `so->tx.buf` while `isotp_sendmsg()` is still using it, because `tx.state` alone does not fully serialize buffer lifetime and `wait_event_interruptible()` can be interrupted by a signal during close.",
+    "evidence": "The patch removes `kfree(so->tx.buf)` from `isotp_release()` and adds `isotp_sock_destruct()` to free `rx.buf`/`tx.buf` at `sk_destruct` time, with the commit message explicitly stating that a signal can interrupt `wait_event_interruptible()` in `close()` while `tx.state` is `ISOTP_SENDING`, causing `release` to continue and `kfree(so->tx.buf)` while `sendmsg` may still be reading it in `isotp_fill_dataframe()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/can/isotp.c",
+      "lineno": 1255,
+      "content": "kfree(so->tx.buf);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/can/isotp.c",
+      "lineno": 1252,
+      "content": "kfree(so->rx.buf);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the CAN ISO-TP socket teardown path lets `isotp_release()` free the potentially extended `so->tx.buf` while `isotp_sendmsg()` is still using it, because `tx.state` alone does not fully serialize buffer lifetime and `wait_event_interruptible()` can be interrupted by a signal during close.",
+      "evidence_points": "The patch removes `kfree(so->tx.buf)` from `isotp_release()` and adds `isotp_sock_destruct()` to free `rx.buf`/`tx.buf` at `sk_destruct` time, with the commit message explicitly stating that a signal can interrupt `wait_event_interruptible()` in `close()` while `tx.state` is `ISOTP_SENDING`, causing `release` to continue and `kfree(so->tx.buf)` while `sendmsg` may still be reading it in `isotp_fill_dataframe()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/can/isotp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/can/isotp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/can/isotp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove explicit RX/TX buffer freeing from ISO-TP socket release to correct teardown handling.",
+        "what": "The release path in `isotp_release()` no longer explicitly frees `so->rx.buf` and `so->tx.buf` when they differ from the embedded static buffers `so->rx.sbuf` and `so->tx.sbuf`; those `kfree()` calls were removed.",
+        "how": "At runtime, socket teardown no longer deallocates the RX and TX buffer pointers at this point in the release sequence. This changes cleanup behavior during socket release and may rely on those buffers being managed elsewhere or avoid freeing them here."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add an ISO-TP socket destructor that frees dynamically allocated RX/TX buffers during socket teardown to prevent memory leaks.",
+        "what": "A new static socket destructor function `isotp_sock_destruct(struct sock *sk)` was added. It casts the generic sock to `struct isotp_sock`, calls `can_sock_destruct(sk)`, and then conditionally frees `so->rx.buf` and `so->tx.buf` only when they differ from the embedded small-buffer members `so->rx.sbuf` and `so->tx.sbuf`.",
+        "how": "At runtime, ISO-TP socket teardown now releases any separately allocated extended RX/TX PDU buffers in addition to performing the standard CAN socket destruction. This prevents those heap allocations from being left unreleased when a socket is destroyed, avoiding memory leaks for sockets that used buffers larger than the встроенный small-buffer storage."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Restore the ISO-TP socket destructor assignment during initialization so socket cleanup uses the correct destructor.",
+        "what": "In isotp_init(), after adding the socket to the notifier list and releasing the notifier lock, the code now explicitly assigns sk->sk_destruct to isotp_sock_destruct, preceded by a comment noting it re-assigns the default can_sock_destruct() reference.",
+        "how": "At runtime, ISO-TP sockets will use the protocol-specific destructor again instead of retaining the generic CAN socket destructor. This changes cleanup behavior so socket teardown follows the intended ISO-TP destruction path, preventing incorrect or incomplete resource cleanup."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Restore the ISO-TP socket destructor assignment during initialization so socket cleanup uses the correct destructor."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add an ISO-TP socket destructor that frees dynamically allocated RX/TX buffers during socket teardown to prevent memory leaks."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "REJECT",
+        "core_intent": "Adjust ISO-TP socket teardown and initialization so cleanup is handled by the correct destructor path.",
+        "outliers": [
+          0
+        ],
+        "reason": "Hunk 2 matches the stated intent about restoring destructor assignment during initialization, while Hunk 0 is a separate teardown change removing explicit RX/TX buffer freeing and is not part of that specific initialization/destructor fix."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change restores the socket destructor assignment during initialization, which affects cleanup bookkeeping, but it does not address the race in ISO-TP teardown where isotp_release() can free tx.buf while isotp_sendmsg() is still using it or the signal-interrupted wait during close."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group changes ISO-TP socket teardown and directly affects freeing of RX/TX buffers, which is the same area as the race where isotp_release() can free tx.buf while isotp_sendmsg() still uses it."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause is a teardown race where isotp_release() frees the TX buffer while isotp_sendmsg() may still be using it. Removing explicit RX/TX buffer freeing from socket release directly addresses that buffer lifetime problem."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/can/isotp.c",
+            "lineno": 1255,
+            "content": "kfree(so->tx.buf);",
+            "rationale": "This is the direct teardown free of the transmit buffer. Per the root cause, isotp_release() can free an extended tx.buf while isotp_sendmsg() is still using it, creating the use-after-free race."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/can/isotp.c",
+            "lineno": 1252,
+            "content": "kfree(so->rx.buf);",
+            "rationale": "This is the corresponding explicit buffer free in release. Although the root cause specifically mentions tx.buf, this teardown pattern shows the vulnerable lifetime management in the same release path."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/can/isotp.c",
+            "stmt_text": "kfree(so->tx.buf);",
+            "location": "hunk",
+            "explanation": "This release-path free can run while isotp_sendmsg() is still operating on the transmit buffer, matching the described race where tx.buf lifetime is not fully serialized and the buffer can be freed prematurely."
+          },
+          {
+            "vuln_file": "net/can/isotp.c",
+            "stmt_text": "kfree(so->rx.buf);",
+            "location": "hunk",
+            "explanation": "This is part of the same teardown pattern in isotp_release(); although the root cause centers on tx.buf, the explicit buffer freeing in the release path shows the vulnerable lifetime handling that was corrected."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b9c310d72783",
+          "anchor_file": "net/can/isotp.c",
+          "anchor_lineno": 1255
+        },
+        "commit": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+        "commit_short": "96d1c81e6a04",
+        "commit_msg": "can: isotp: add module parameter for maximum pdu size\n\nWith ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (40",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/can/isotp.c",
+        "display_lineno": 1235,
+        "code_snippet": "commit 96d1c81e6a0478535342dff6c730adb076cd84e8\nAuthor: Oliver Hartkopp <socketcan@hartkopp.net>\nDate:   Sun Mar 26 13:59:11 2023 +0200\n\n    can: isotp: add module parameter for maximum pdu size\n    \n    With ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (4095)\n    bytes but can be represented as a 32 bit unsigned integer value which\n    allows 2^32 - 1 bytes (~4GB). The use-cases like automotive unified\n    diagnostic services (UDS) and flashing of ECUs still use the small\n    static",
+        "exists": false,
+        "reason": "The shown diff is about adding configurable larger PDU buffers, not about teardown/sendmsg synchronization. In this snippet, `isotp_release()` now frees only dynamically allocated buffers: `if (so->tx.buf != so->tx.sbuf) kfree(so->tx.buf);`, while `isotp_init()` sets `so->tx.buf = so->tx.sbuf` and `so->tx.buflen = ARRAY_SIZE(so->tx.sbuf);`. The vulnerable construct described in the root cause—`isotp_release()` freeing `so->tx.buf` while `isotp_sendmsg()` is still using it because `tx.state`/`wait_event_interruptible()` do not serialize lifetime—is not shown here. There is no visible synchronization fix either (no reference counting, no close/sendmsg exclusion, no state-based lifetime protection). This commit therefore does not show the race bug itself, nor does it contain the later fix for it."
+      }
+    },
+    {
+      "bic_found": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b9c310d72783",
+          "anchor_file": "net/can/isotp.c",
+          "anchor_lineno": 1252
+        },
+        "commit": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+        "commit_short": "96d1c81e6a04",
+        "commit_msg": "can: isotp: add module parameter for maximum pdu size\n\nWith ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (40",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/can/isotp.c",
+        "display_lineno": 1232,
+        "code_snippet": "commit 96d1c81e6a0478535342dff6c730adb076cd84e8\nAuthor: Oliver Hartkopp <socketcan@hartkopp.net>\nDate:   Sun Mar 26 13:59:11 2023 +0200\n\n    can: isotp: add module parameter for maximum pdu size\n    \n    With ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (4095)\n    bytes but can be represented as a 32 bit unsigned integer value which\n    allows 2^32 - 1 bytes (~4GB). The use-cases like automotive unified\n    diagnostic services (UDS) and flashing of ECUs still use the small\n    static",
+        "exists": false,
+        "reason": "The vulnerable teardown/use-after-free race is not present in this diff. The new code introduces dynamic buffers and frees them in `isotp_release()` with `if (so->tx.buf != so->tx.sbuf) kfree(so->tx.buf);`, but this snippet does not show the earlier race condition where `isotp_release()` could free `so->tx.buf` while `isotp_sendmsg()` still uses it. In the shown `isotp_sendmsg()` path, the function only allocates/uses `so->tx.buf` for size checks and does not show any teardown synchronization issue. The specific vulnerable construct described in the root cause (freeing during concurrent sendmsg due to interrupted wait/insufficient serialization) is absent from this snippet, and there is no fix logic here addressing that race."
+      }
+    },
+    {
+      "bic_found": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "96d1c81e6a0478535342dff6c730adb076cd84e8": 2
+      },
+      "bic_candidates": [
+        "96d1c81e6a0478535342dff6c730adb076cd84e8"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,186 @@
+{
+  "cveid": "CVE-2025-71066",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ce052b9402e461a9aded599f5b47e76bc727f7de"
+  ],
+  "ground_truth_bic": "de6d25924c2a8c2988c6a385990cafbe742061bf",
+  "predicted_bic": [
+    "87c6efc5ce9c126ae4a781bc04504b83780e3650"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 23979,
+  "root_cause": {
+    "text": "`ets_qdisc_change()` in the ETS qdisc code could free a class’s `struct Qdisc` after setting `q->classes[i].qdisc = NULL` while leaving that class on `q->active`, so `ets_qdisc_dequeue()` could later traverse the stale active-list entry and dereference a freed `Qdisc`.",
+    "evidence": "The patch changes the deletion path from removing the class only when `i >= q->nstrict && q->classes[i].qdisc->q.qlen` to always checking `cl_is_active(&q->classes[i])` and doing `list_del_init(&q->classes[i].alist)` before `qdisc_purge_queue()`, and the commit message explicitly says “some of the classes have their qdiscs assigned to NULL, but remain in the active list,” causing the race/UAF between `ets_qdisc_dequeue` and `ets_qdisc_change`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/sched/sch_ets.c",
+      "lineno": 655,
+      "content": "q->classes[i].qdisc->q.qlen",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/sched/sch_ets.c",
+      "lineno": 657,
+      "content": "qdisc_purge_queue(q->classes[i].qdisc);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`ets_qdisc_change()` in the ETS qdisc code could free a class’s `struct Qdisc` after setting `q->classes[i].qdisc = NULL` while leaving that class on `q->active`, so `ets_qdisc_dequeue()` could later traverse the stale active-list entry and dereference a freed `Qdisc`.",
+      "evidence_points": "The patch changes the deletion path from removing the class only when `i >= q->nstrict && q->classes[i].qdisc->q.qlen` to always checking `cl_is_active(&q->classes[i])` and doing `list_del_init(&q->classes[i].alist)` before `qdisc_purge_queue()`, and the commit message explicitly says “some of the classes have their qdiscs assigned to NULL, but remain in the active list,” causing the race/UAF between `ets_qdisc_dequeue` and `ets_qdisc_change`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/sched/sch_ets.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the class active-state check when removing excess ETS bands so active classes are correctly unlinked before queue purge.",
+        "what": "In the loop that removes excess bands in `ets_qdisc_change()`, the condition `if (i >= q->nstrict && q->classes[i].qdisc->q.qlen)` was replaced with `if (cl_is_active(&q->classes[i]))` before calling `list_del_init(&q->classes[i].alist)`. The subsequent `qdisc_purge_queue(q->classes[i].qdisc);` call is unchanged.",
+        "how": "At runtime, the code now decides whether to detach a class from its active list based on the class's active state rather than only the queue length of its qdisc. This makes removal of outdated bands more accurate and avoids relying on a narrower proxy for activity, helping ensure active classes are properly unlinked before their queues are purged."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use the class active-state check when removing excess ETS bands so active classes are correctly unlinked before queue purge."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change explicitly addresses ETS band removal and correctly unlinking active classes before purging queues, which matches the root cause where a class could remain on `q->active` after its `Qdisc` was cleared/freed, leading to a stale traversal and use-after-free in dequeue."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/sched/sch_ets.c",
+            "lineno": 657,
+            "content": "qdisc_purge_queue(q->classes[i].qdisc);",
+            "rationale": "This statement frees/purges the class's qdisc. In the vulnerable flow, the class could remain on the active list while its qdisc is removed, allowing later dequeue traversal to dereference a freed qdisc."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/sched/sch_ets.c",
+            "lineno": 655,
+            "content": "q->classes[i].qdisc->q.qlen",
+            "rationale": "This access shows the code deciding whether to remove or purge based on queue length rather than active-list membership, which is part of the incorrect cleanup logic that can leave an active class linked after its qdisc is freed."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 1
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/sched/sch_ets.c",
+            "stmt_text": "q->classes[i].qdisc->q.qlen",
+            "location": "hunk",
+            "explanation": "This queue-length check is part of the faulty ETS class removal logic in `ets_qdisc_change()`. By deciding teardown based on `qdisc->q.qlen` instead of ensuring the class is unlinked from `q->active`, it can leave a class on the active list after its qdisc is later freed, enabling `ets_qdisc_dequeue()` to follow a stale active-list entry and dereference freed memory."
+          },
+          {
+            "vuln_file": "net/sched/sch_ets.c",
+            "stmt_text": "qdisc_purge_queue(q->classes[i].qdisc);",
+            "location": "hunk",
+            "explanation": "This statement performs the purge/freeing of the class qdisc. In the vulnerable flow, the qdisc can be purged while the class remains linked on `q->active`, creating the use-after-free condition later observed in `ets_qdisc_dequeue()`."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "188e0fa5a679",
+          "anchor_file": "net/sched/sch_ets.c",
+          "anchor_lineno": 655
+        },
+        "commit": "87c6efc5ce9c126ae4a781bc04504b83780e3650",
+        "commit_short": "87c6efc5ce9c",
+        "commit_msg": "net/sched: ets: use old 'nbands' while purging unused classes\n\nShuang reported sch_ets test-case [1] crashing in ets_cla",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ets.c",
+        "display_lineno": 655,
+        "code_snippet": "commit 87c6efc5ce9c126ae4a781bc04504b83780e3650\nAuthor: Davide Caratti <dcaratti@redhat.com>\nDate:   Tue Aug 12 18:40:29 2025 +0200\n\n    net/sched: ets: use old 'nbands' while purging unused classes\n    \n    Shuang reported sch_ets test-case [1] crashing in ets_class_qlen_notify()\n    after recent changes from Lion [2]. The problem is: in ets_qdisc_change()\n    we purge unused DWRR queues; the value of 'q->nbands' is the new one, and\n    the cleanup should be done with the old one. The problem i",
+        "exists": false,
+        "reason": "The snippet shows the exact ETS qdisc purge logic in `ets_qdisc_change()`, including the active-list handling: `if (i >= q->nstrict && q->classes[i].qdisc->q.qlen) list_del_init(&q->classes[i].alist); qdisc_purge_queue(q->classes[i].qdisc);`. The commit message and diff explain that the bug was caused by purging unused classes with the wrong `q->nbands`/`q->nstrict` values, and the fix is to purge using the old configuration before updating `q->nbands` and `q->nstrict`. Since this code already moved the purge loop before `WRITE_ONCE(q->nbands, nbands)` and before `WRITE_ONCE(q->nstrict, nstrict)`, the vulnerable construct is present in the sense of needing that purge path, but the fix is already applied here. This matches the described root cause: stale active-list entries are avoided by purging before the new band/strict counts are installed."
+      }
+    },
+    {
+      "bic_found": "87c6efc5ce9c126ae4a781bc04504b83780e3650",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "188e0fa5a679",
+          "anchor_file": "net/sched/sch_ets.c",
+          "anchor_lineno": 657
+        },
+        "commit": "87c6efc5ce9c126ae4a781bc04504b83780e3650",
+        "commit_short": "87c6efc5ce9c",
+        "commit_msg": "net/sched: ets: use old 'nbands' while purging unused classes\n\nShuang reported sch_ets test-case [1] crashing in ets_cla",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ets.c",
+        "display_lineno": 657,
+        "code_snippet": "commit 87c6efc5ce9c126ae4a781bc04504b83780e3650\nAuthor: Davide Caratti <dcaratti@redhat.com>\nDate:   Tue Aug 12 18:40:29 2025 +0200\n\n    net/sched: ets: use old 'nbands' while purging unused classes\n    \n    Shuang reported sch_ets test-case [1] crashing in ets_class_qlen_notify()\n    after recent changes from Lion [2]. The problem is: in ets_qdisc_change()\n    we purge unused DWRR queues; the value of 'q->nbands' is the new one, and\n    the cleanup should be done with the old one. The problem i",
+        "exists": false,
+        "reason": "The snippet shows the vulnerable purge logic has already been moved to use the old band count before state changes: `for (i = nbands; i < oldbands; i++) { ... qdisc_purge_queue(q->classes[i].qdisc); }` appears before `WRITE_ONCE(q->nbands, nbands);`. This matches the commit message’s fix: purging unused classes with the old `nbands` so cleanup sees a consistent configuration. The buggy ordering described in the root cause is not present here; the old code that purged using `q->nbands` after it was updated is shown only as removed lines. Therefore the vulnerable construct is absent and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "87c6efc5ce9c126ae4a781bc04504b83780e3650",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "87c6efc5ce9c126ae4a781bc04504b83780e3650": 2
+      },
+      "bic_candidates": [
+        "87c6efc5ce9c126ae4a781bc04504b83780e3650"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

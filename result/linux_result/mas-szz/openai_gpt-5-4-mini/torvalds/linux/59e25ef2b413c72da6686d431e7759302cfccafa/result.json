@@ -1,0 +1,410 @@
+{
+  "cveid": "CVE-2025-68756",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "59e25ef2b413c72da6686d431e7759302cfccafa"
+  ],
+  "ground_truth_bic": "98d81f0df70ce6fc48517d938026e3c684b9051a",
+  "predicted_bic": [
+    "414dd48e882c5a39e7bd01b096ee6497eb3314b0",
+    "08c875cbf481d74db82d6bba2fbcf580087dee24"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 30,
+  "llm_tokens": 28538,
+  "root_cause": {
+    "text": "`blk_mq_quiesce_tagset()`/`blk_mq_unquiesce_tagset()` in the block multiqueue tagset code iterated `set->tag_list` while holding `set->tag_list_lock`, so when NVMe started quiescing the whole tagset from timeout/remove paths it could deadlock against `blk_mq_{add,del}_queue_tag_set()` which also needed that mutex while waiting for queue freeze/quiesce to complete.",
+    "evidence": "The patch replaces `mutex_lock(&set->tag_list_lock)` and `list_for_each_entry()` in `blk_mq_quiesce_tagset()`/`blk_mq_unquiesce_tagset()` with `rcu_read_lock()` and `list_for_each_entry_rcu()`, changes `list_del()`/`list_add_tail()` to RCU-safe variants in `blk_mq_del_queue_tag_set()`/`blk_mq_add_queue_tag_set()`, and the CVE text explicitly says the mutex caused a deadlock between `nvme_timeout()->blk_mq_quiesce_tagset()` and `blk_mq_update_tag_set_shared()->blk_mq_freeze_queue_wait()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "block/blk-mq.c",
+      "lineno": 339,
+      "content": "mutex_lock(&set->tag_list_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/blk-mq.c",
+      "lineno": 340,
+      "content": "list_for_each_entry(q, &set->tag_list, tag_set_list) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/blk-mq.c",
+      "lineno": 4341,
+      "content": "list_add_tail(&q->tag_set_list, &set->tag_list);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`blk_mq_quiesce_tagset()`/`blk_mq_unquiesce_tagset()` in the block multiqueue tagset code iterated `set->tag_list` while holding `set->tag_list_lock`, so when NVMe started quiescing the whole tagset from timeout/remove paths it could deadlock against `blk_mq_{add,del}_queue_tag_set()` which also needed that mutex while waiting for queue freeze/quiesce to complete.",
+      "evidence_points": "The patch replaces `mutex_lock(&set->tag_list_lock)` and `list_for_each_entry()` in `blk_mq_quiesce_tagset()`/`blk_mq_unquiesce_tagset()` with `rcu_read_lock()` and `list_for_each_entry_rcu()`, changes `list_del()`/`list_add_tail()` to RCU-safe variants in `blk_mq_del_queue_tag_set()`/`blk_mq_add_queue_tag_set()`, and the CVE text explicitly says the mutex caused a deadlock between `nvme_timeout()->blk_mq_quiesce_tagset()` and `blk_mq_update_tag_set_shared()->blk_mq_freeze_queue_wait()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "block/blk-mq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "block/blk-mq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "block/blk-mq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "block/blk-mq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "block/blk-mq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Switch blk_mq_quiesce_tagset() to RCU-based tag list iteration instead of locking the tag list mutex.",
+        "what": "In blk_mq_quiesce_tagset(), the code no longer acquires set->tag_list_lock and iterates the tag_list with list_for_each_entry(); instead it enters an RCU read-side critical section with rcu_read_lock(), iterates using list_for_each_entry_rcu(), and then exits with rcu_read_unlock(). The subsequent blk_mq_wait_quiesce_done(set) call is unchanged.",
+        "how": "This changes tag_list traversal to be protected by RCU rather than a mutex, allowing the function to safely walk the list while other code may concurrently modify it under RCU rules. It preserves the quiesce behavior for each eligible queue while avoiding dependence on tag_list_lock during iteration."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Switch blk_mq_unquiesce_tagset() to RCU-protected iteration over the tag list instead of mutex locking.",
+        "what": "In blk_mq_unquiesce_tagset(), the code stops taking set->tag_list_lock and instead wraps the iteration over set->tag_list with rcu_read_lock()/rcu_read_unlock(), changing list_for_each_entry() to list_for_each_entry_rcu().",
+        "how": "This makes traversal of the tag_set list use RCU protection rather than a mutex, allowing the function to safely iterate over queues under RCU read-side synchronization while avoiding the previous lock-based access pattern."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use RCU-safe list deletion when removing a queue from the tag-set list to fix concurrent traversal races.",
+        "what": "In blk_mq_del_queue_tag_set(), the queue is removed from set->tag_set_list with list_del_rcu() instead of list_del(), while the surrounding mutex lock and singular-list check remain unchanged.",
+        "how": "This changes the list removal to be RCU-safe, allowing concurrent RCU readers to continue traversing the tag-set list without seeing immediate invalidation, which helps prevent use-after-free or list traversal races during queue teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Stop reinitializing the queue tag-set list head during tag-set removal.",
+        "what": "The call to `INIT_LIST_HEAD(&q->tag_set_list);` was removed from `blk_mq_del_queue_tag_set(struct request_queue *q)`, leaving the rest of the function unchanged.",
+        "how": "At runtime, the queue's `tag_set_list` is no longer reinitialized to an empty list when a tag set is deleted from the queue. This changes the post-removal state of that list head, potentially preserving its previous linkage instead of resetting it."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Use an RCU-safe list insertion when adding a queue tag set to the shared tag list.",
+        "what": "The code changes the insertion of `q->tag_set_list` into `set->tag_list` from `list_add_tail()` to `list_add_tail_rcu()` inside `blk_mq_add_queue_tag_set()`.",
+        "how": "This makes the tag-set list entry insertion RCU-aware, allowing safe concurrent traversal of `set->tag_list` under RCU read-side protection without risking list corruption or unsafe access during updates."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Switch blk_mq_quiesce_tagset() to RCU-based tag list iteration instead of locking the tag list mutex."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Switch blk_mq_unquiesce_tagset() to RCU-protected iteration over the tag list instead of mutex locking."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Stop reinitializing the queue tag-set list head during tag-set removal."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use an RCU-safe list insertion when adding a queue tag set to the shared tag list."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix queue tag-set removal to be safe for concurrent list traversal and avoid improper list head reinitialization.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it removes mutex-based iteration of set->tag_list in blk_mq_quiesce_tagset() and switches to RCU-based iteration to avoid the deadlock involving set->tag_list_lock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the described deadlock root cause by replacing mutex-based iteration in blk_mq_unquiesce_tagset() with RCU-protected iteration over set->tag_list, removing the lock contention with blk_mq_{add,del}_queue_tag_set()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The patch focuses on making tag-set list removal RCU-safe and avoiding list head reinitialization, which addresses concurrent traversal/list corruption. The reported vulnerability is a deadlock in quiesce/unquiesce holding `tag_list_lock` while waiting on queue freeze/quiesce, so the core mutex contention issue is not what these changes fix."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The root cause involves deadlock around tagset list handling during quiesce/add/remove paths. Changing queue tag set insertion to use RCU-safe list insertion directly affects the shared `tag_list` access pattern involved in that locking issue, so it is related to the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "block/blk-mq.c",
+            "lineno": 339,
+            "content": "mutex_lock(&set->tag_list_lock);",
+            "rationale": "This lock around tag_list iteration is the direct cause of the deadlock described in the root cause, because quiesce waits can block while holding the same mutex needed by add/del queue tag set paths."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "block/blk-mq.c",
+            "lineno": 340,
+            "content": "list_for_each_entry(q, &set->tag_list, tag_set_list) {",
+            "rationale": "Iterating the shared tag list under the mutex is the vulnerable pattern that forces quiesce operations to serialize with tag-set modifications and can contribute to the lock inversion/deadlock."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "block/blk-mq.c",
+            "lineno": 339,
+            "content": "mutex_lock(&set->tag_list_lock);",
+            "rationale": "The same mutex-held iteration in unquiesce has the same deadlock hazard when the tag list mutex is needed by queue add/del paths that may be waiting for quiesce completion."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "block/blk-mq.c",
+            "lineno": 340,
+            "content": "list_for_each_entry(q, &set->tag_list, tag_set_list) {",
+            "rationale": "This statement embodies the unsafe traversal of the shared tag list under mutex protection, which is the core concurrency issue fixed by switching to RCU iteration."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "block/blk-mq.c",
+            "lineno": 4341,
+            "content": "list_add_tail(&q->tag_set_list, &set->tag_list);",
+            "rationale": "This tag-list manipulation participates in the same shared-list locking scheme; combined with quiesce/unquiesce holding the mutex, it is part of the deadlock cycle involving add/del queue tag set operations."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "block/blk-mq.c",
+            "stmt_text": "mutex_lock(&set->tag_list_lock);",
+            "location": "hunk",
+            "explanation": "Holding set->tag_list_lock while quiescing/unquiescing the tagset is the direct deadlock trigger: blk_mq_{add,del}_queue_tag_set() also needs this mutex while waiting for queue freeze/quiesce to finish, so this lock acquisition can block progress and deadlock."
+          },
+          {
+            "vuln_file": "block/blk-mq.c",
+            "stmt_text": "list_for_each_entry(q, &set->tag_list, tag_set_list) {",
+            "location": "hunk",
+            "explanation": "This traversal iterates the shared tag list while the mutex is held, which is the unsafe pattern that forces quiesce/unquiesce to serialize with tag-set modifications and contributes to the deadlock."
+          },
+          {
+            "vuln_file": "block/blk-mq.c",
+            "stmt_text": "list_add_tail(&q->tag_set_list, &set->tag_list);",
+            "location": "hunk",
+            "explanation": "This shared-list insertion participates in the same tag-list locking scheme. When quiesce/unquiesce holds tag_list_lock across iteration, add/del queue tag-set paths that manipulate this list can deadlock waiting for the mutex."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "db339b4067ec",
+          "anchor_file": "block/blk-mq.c",
+          "anchor_lineno": 339
+        },
+        "commit": "414dd48e882c5a39e7bd01b096ee6497eb3314b0",
+        "commit_short": "414dd48e882c",
+        "commit_msg": "blk-mq: add tagset quiesce interface\n\nDrivers that have shared tagsets may need to quiesce potentially a lot\nof request ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-mq.c",
+        "display_lineno": 322,
+        "code_snippet": "commit 414dd48e882c5a39e7bd01b096ee6497eb3314b0\nAuthor: Chao Leng <lengchao@huawei.com>\nDate:   Tue Nov 1 16:00:49 2022 +0100\n\n    blk-mq: add tagset quiesce interface\n    \n    Drivers that have shared tagsets may need to quiesce potentially a lot\n    of request queues that all share a single tagset (e.g. nvme). Add an\n    interface to quiesce all the queues on a given tagset. This interface is\n    useful because it can speedup the quiesce by doing it in parallel.\n    \n    Because some queues sh",
+        "exists": true,
+        "reason": "The shown implementation clearly contains the vulnerable pattern: both new helpers iterate the shared tag list while holding the tagset mutex, e.g. `mutex_lock(&set->tag_list_lock); list_for_each_entry(q, &set->tag_list, tag_set_list) { ... }`. In particular `blk_mq_quiesce_tagset()` does `blk_mq_wait_quiesce_done(set);` before `mutex_unlock(&set->tag_list_lock);`, meaning it can wait for quiesce completion while still holding `set->tag_list_lock`, which matches the reported deadlock risk against `blk_mq_{add,del}_queue_tag_set()` needing the same mutex. There is no sign of a fix here (no unlocking before waiting, no avoidance of holding the mutex during quiesce), so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "483239c75ba7",
+          "anchor_file": "block/blk-mq.c",
+          "anchor_lineno": 322
+        },
+        "commit": "aed3ea94bdd2ac0a21ed0103d34097e202ee77f6",
+        "commit_short": "aed3ea94bdd2",
+        "commit_msg": "block: wake up waiters when a queue is marked dying\n\nIf it's dying, we can't expect new request to complete and come\nin ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-mq.c",
+        "display_lineno": 159,
+        "code_snippet": "commit aed3ea94bdd2ac0a21ed0103d34097e202ee77f6\nAuthor: Jens Axboe <axboe@kernel.dk>\nDate:   Mon Dec 22 14:04:42 2014 -0700\n\n    block: wake up waiters when a queue is marked dying\n    \n    If it's dying, we can't expect new request to complete and come\n    in an wake up other tasks waiting for requests. So after we\n    have marked it as dying, wake up everybody currently waiting\n    for a request. Once they wake, they will retry their allocation\n    and fail appropriately due to the state of th",
+        "exists": false,
+        "reason": "The shown function only contains a queue wakeup loop: `queue_for_each_hw_ctx(q, hctx, i)` followed by `if (blk_mq_hw_queue_mapped(hctx)) blk_mq_tag_wakeup_all(hctx->tags, true);`. This does not show any iteration over `set->tag_list`, any use of `set->tag_list_lock`, or any quiesce/unquiesce logic. The reported deadlock root cause is specifically about `blk_mq_quiesce_tagset()`/`blk_mq_unquiesce_tagset()` holding `set->tag_list_lock` while iterating the tag list, which is absent here. Therefore this function does not contain the vulnerable construct, and there is no evidence of the specific fix either."
+      }
+    },
+    {
+      "bic_found": "414dd48e882c5a39e7bd01b096ee6497eb3314b0",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "db339b4067ec",
+          "anchor_file": "block/blk-mq.c",
+          "anchor_lineno": 340
+        },
+        "commit": "414dd48e882c5a39e7bd01b096ee6497eb3314b0",
+        "commit_short": "414dd48e882c",
+        "commit_msg": "blk-mq: add tagset quiesce interface\n\nDrivers that have shared tagsets may need to quiesce potentially a lot\nof request ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-mq.c",
+        "display_lineno": 323,
+        "code_snippet": "commit 414dd48e882c5a39e7bd01b096ee6497eb3314b0\nAuthor: Chao Leng <lengchao@huawei.com>\nDate:   Tue Nov 1 16:00:49 2022 +0100\n\n    blk-mq: add tagset quiesce interface\n    \n    Drivers that have shared tagsets may need to quiesce potentially a lot\n    of request queues that all share a single tagset (e.g. nvme). Add an\n    interface to quiesce all the queues on a given tagset. This interface is\n    useful because it can speedup the quiesce by doing it in parallel.\n    \n    Because some queues sh",
+        "exists": true,
+        "reason": "The shown function bodies clearly implement the tagset quiesce logic that the root cause describes. In `blk_mq_quiesce_tagset()` the code does `mutex_lock(&set->tag_list_lock);` and then `list_for_each_entry(q, &set->tag_list, tag_set_list) { ... blk_mq_quiesce_queue_nowait(q); }` followed by `blk_mq_wait_quiesce_done(set);` while still holding the mutex. Likewise `blk_mq_unquiesce_tagset()` also iterates `set->tag_list` under the same lock. This matches the vulnerable construct: iterating the tag list while holding `set->tag_list_lock`, which can deadlock with tag-set add/del paths that also need that mutex while waiting for quiesce/freeze completion. No alternative deadlock-avoidance or unlock-before-wait handling is present in this snippet, so the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "483239c75ba7",
+          "anchor_file": "block/blk-mq.c",
+          "anchor_lineno": 323
+        },
+        "commit": "aed3ea94bdd2ac0a21ed0103d34097e202ee77f6",
+        "commit_short": "aed3ea94bdd2",
+        "commit_msg": "block: wake up waiters when a queue is marked dying\n\nIf it's dying, we can't expect new request to complete and come\nin ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-mq.c",
+        "display_lineno": 160,
+        "code_snippet": "commit aed3ea94bdd2ac0a21ed0103d34097e202ee77f6\nAuthor: Jens Axboe <axboe@kernel.dk>\nDate:   Mon Dec 22 14:04:42 2014 -0700\n\n    block: wake up waiters when a queue is marked dying\n    \n    If it's dying, we can't expect new request to complete and come\n    in an wake up other tasks waiting for requests. So after we\n    have marked it as dying, wake up everybody currently waiting\n    for a request. Once they wake, they will retry their allocation\n    and fail appropriately due to the state of th",
+        "exists": false,
+        "reason": "The shown function only iterates hardware contexts with `queue_for_each_hw_ctx(q, hctx, i)` and wakes tags via `blk_mq_tag_wakeup_all(hctx->tags, true)` when `blk_mq_hw_queue_mapped(hctx)` is true. It does not reference `set->tag_list`, `set->tag_list_lock`, `blk_mq_quiesce_tagset()`, or `blk_mq_unquiesce_tagset()`, which are the root cause of the deadlock. The vulnerable construct is therefore absent in this function, and no fix for that specific lock-order problem is present here."
+      }
+    },
+    {
+      "bic_found": "414dd48e882c5a39e7bd01b096ee6497eb3314b0",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "db339b4067ec",
+          "anchor_file": "block/blk-mq.c",
+          "anchor_lineno": 4341
+        },
+        "commit": "08c875cbf481d74db82d6bba2fbcf580087dee24",
+        "commit_short": "08c875cbf481",
+        "commit_msg": "block: Use non _rcu version of list functions for tag_set_list\n\ntag_set_list is only accessed under the tag_set_lock loc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-mq.c",
+        "display_lineno": 2929,
+        "code_snippet": "commit 08c875cbf481d74db82d6bba2fbcf580087dee24\nAuthor: Daniel Wagner <dwagner@suse.de>\nDate:   Tue Jul 28 15:29:51 2020 +0200\n\n    block: Use non _rcu version of list functions for tag_set_list\n    \n    tag_set_list is only accessed under the tag_set_lock lock. There is\n    no need for using the _rcu list functions.\n    \n    The _rcu list function were introduced to allow read access to the\n    tag_set_list protected under RCU, see 705cda97ee3a (\"blk-mq: Make it\n    safe to use RCU to iterate o",
+        "exists": false,
+        "reason": "The shown function already uses the non-RCU list API under the mutex: `mutex_lock(&set->tag_list_lock);` and later `list_add_tail(&q->tag_set_list, &set->tag_list);`. The commit message says the fix is to use non-_rcu list functions for `tag_set_list`, and this snippet contains that corrected pattern. The vulnerable quiesce/deadlock path described in the root cause is not present in this function body, which only adds a queue to the tag list while holding the lock."
+      }
+    },
+    {
+      "bic_found": "08c875cbf481d74db82d6bba2fbcf580087dee24",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "414dd48e882c5a39e7bd01b096ee6497eb3314b0": 2,
+        "08c875cbf481d74db82d6bba2fbcf580087dee24": 1
+      },
+      "bic_candidates": [
+        "414dd48e882c5a39e7bd01b096ee6497eb3314b0",
+        "08c875cbf481d74db82d6bba2fbcf580087dee24"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,301 @@
+{
+  "cveid": "CVE-2026-46194",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ed78aeebef05212ef7dca93bd931e4eff67c113f"
+  ],
+  "ground_truth_bic": "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343",
+  "predicted_bic": [
+    "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343",
+    "a28ef1f5aebe1068fc5fd65c4699c1c3b1e9094b"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 18,
+  "llm_tokens": 22091,
+  "root_cause": {
+    "text": "f2fs’ extent cache teardown in `__destroy_extent_node()` cleared extent nodes without first setting `FI_NO_EXTENT`, allowing concurrent writeback to repopulate the same `f2fs_extent_tree` while `node_cnt` was being drained, which races and leaves `node_cnt` nonzero at the final `f2fs_bug_on()`.",
+    "evidence": "The CVE description says `f2fs_destroy_extent_node() does not set FI_NO_EXTENT before clearing extent nodes`, and shows `__writeback_single_inode -> f2fs_update_read_extent_cache -> __update_extent_tree_range` inserting a new extent node because `FI_NO_EXTENT` was not set; the patch fixes this by adding `set_inode_flag(inode, FI_NO_EXTENT)` under `et->lock` in `__destroy_extent_node()` and by checking `FI_NO_EXTENT` for both `EX_READ` and `EX_BLOCK_AGE` in `__update_extent_tree_range()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/f2fs/extent_cache.c",
+      "lineno": 645,
+      "content": "while (atomic_read(&et->node_cnt)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/f2fs/extent_cache.c",
+      "lineno": 647,
+      "content": "node_cnt += __free_extent_tree(sbi, et, nr_shrink);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/f2fs/extent_cache.c",
+      "lineno": 689,
+      "content": "write_lock(&et->lock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "f2fs’ extent cache teardown in `__destroy_extent_node()` cleared extent nodes without first setting `FI_NO_EXTENT`, allowing concurrent writeback to repopulate the same `f2fs_extent_tree` while `node_cnt` was being drained, which races and leaves `node_cnt` nonzero at the final `f2fs_bug_on()`.",
+      "evidence_points": "The CVE description says `f2fs_destroy_extent_node() does not set FI_NO_EXTENT before clearing extent nodes`, and shows `__writeback_single_inode -> f2fs_update_read_extent_cache -> __update_extent_tree_range` inserting a new extent node because `FI_NO_EXTENT` was not set; the patch fixes this by adding `set_inode_flag(inode, FI_NO_EXTENT)` under `et->lock` in `__destroy_extent_node()` and by checking `FI_NO_EXTENT` for both `EX_READ` and `EX_BLOCK_AGE` in `__update_extent_tree_range()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/f2fs/extent_cache.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/f2fs/extent_cache.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/f2fs/extent_cache.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Move the `FI_NO_EXTENT` rejection earlier so extent trees are disabled for flagged inodes in all extent types, not just reads.",
+        "what": "In `__may_extent_tree(struct inode *inode, enum extent_type type)`, the `FI_NO_EXTENT` inode flag check was moved out of the `type == EX_READ` branch and placed earlier, immediately after `__init_may_extent_tree(inode, type)` returns true. The same `return false` behavior is preserved, but now it applies before the read-specific condition block.",
+        "how": "This changes runtime behavior so that any inode marked `FI_NO_EXTENT` is rejected for extent tree use regardless of whether the request is for read or another extent type. Previously, that flag was only checked for `EX_READ`, so non-read paths could still proceed; the new placement prevents extent tree operation more broadly for such inodes."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Set the inode’s `FI_NO_EXTENT` flag during extent tree destruction to prevent incorrect extent handling while freeing nodes.",
+        "what": "Inside the `while (atomic_read(&et->node_cnt))` loop in `__destroy_extent_node()`, two new lines were added under `write_lock(&et->lock)`: a conditional check `if (!is_inode_flag_set(inode, FI_NO_EXTENT))` followed by `set_inode_flag(inode, FI_NO_EXTENT);` before calling `__free_extent_tree(sbi, et, nr_shrink)`.",
+        "how": "At runtime, the inode is now marked with `FI_NO_EXTENT` before freeing extent tree nodes during destruction. This ensures the inode is recognized as no longer having extents while teardown is in progress, preventing later code from treating the inode as still extent-backed and avoiding inconsistent extent handling during cleanup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Skip extent-tree updates unconditionally for inodes marked `FI_NO_EXTENT` to prevent incorrect extent processing.",
+        "what": "The early return for `FI_NO_EXTENT` was moved out of the `if (type == EX_READ)` block to become an unconditional check immediately after acquiring `et->lock`; the surrounding `EX_READ`-specific logic remains unchanged.",
+        "how": "After this change, any call to `__update_extent_tree_range()` will skip extent-tree updates whenever the inode has `FI_NO_EXTENT` set, regardless of whether the operation is a read or another extent type. This prevents extent tree modification for inodes that are marked as not using extents."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Skip extent-tree updates unconditionally for inodes marked `FI_NO_EXTENT` to prevent incorrect extent processing."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Set the inode’s `FI_NO_EXTENT` flag during extent tree destruction to prevent incorrect extent handling while freeing nodes."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Disable extent-tree processing unconditionally for inodes marked `FI_NO_EXTENT` so flagged inodes never undergo incorrect extent handling.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is a race during extent-cache teardown because FI_NO_EXTENT was not set early enough, allowing extent-tree activity to continue while nodes were being destroyed. This group’s changes explicitly disable extent-tree processing for FI_NO_EXTENT inodes and skip extent-tree updates, which directly addresses the same extent-cache handling issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it sets FI_NO_EXTENT during extent tree destruction to stop concurrent repopulation of the extent tree while nodes are being freed, which is the race that leaves node_cnt nonzero."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/f2fs/extent_cache.c",
+            "lineno": 645,
+            "content": "while (atomic_read(&et->node_cnt)) {",
+            "rationale": "This loop repeatedly frees extent-tree nodes until the counter reaches zero, but before the fix there was no prior FI_NO_EXTENT gating to stop concurrent repopulation of the same tree while destruction was in progress, allowing the race described in the root cause."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/f2fs/extent_cache.c",
+            "lineno": 689,
+            "content": "write_lock(&et->lock);",
+            "rationale": "The destruction path only serializes access with a lock while freeing nodes, but does not prevent other paths from re-adding extents to the same tree; without setting FI_NO_EXTENT earlier, concurrent writeback can repopulate the tree during teardown."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/f2fs/extent_cache.c",
+            "lineno": 647,
+            "content": "node_cnt += __free_extent_tree(sbi, et, nr_shrink);",
+            "rationale": "This is the statement that drains extent nodes during teardown; because FI_NO_EXTENT was not set first, freeing nodes here raced with concurrent extent insertion, leaving node_cnt nonzero at the end."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/f2fs/extent_cache.c",
+            "lineno": 122,
+            "content": "if (type == EX_READ) {",
+            "rationale": "The FI_NO_EXTENT check was previously limited to read extent handling, meaning other extent-tree operations could still proceed during teardown; this conditional scope is the root cause of the missing unconditional disablement."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/f2fs/extent_cache.c",
+            "lineno": 123,
+            "content": "if (is_inode_flag_set(inode, FI_NO_EXTENT))",
+            "rationale": "This pre-fix check existed only inside the EX_READ branch, so inodes marked FI_NO_EXTENT were not universally protected from extent-tree processing, enabling the race during destruction."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/f2fs/extent_cache.c",
+            "stmt_text": "while (atomic_read(&et->node_cnt)) {",
+            "location": "hunk",
+            "explanation": "This teardown loop drains extent nodes without first disabling extent handling via FI_NO_EXTENT, so concurrent writeback can repopulate the same extent tree while node_cnt is being reduced."
+          },
+          {
+            "vuln_file": "fs/f2fs/extent_cache.c",
+            "stmt_text": "node_cnt += __free_extent_tree(sbi, et, nr_shrink);",
+            "location": "hunk",
+            "explanation": "This is the node-draining operation performed during destruction; because the tree was not disabled first, concurrent extent insertion could race with this freeing and leave node_cnt nonzero."
+          },
+          {
+            "vuln_file": "fs/f2fs/extent_cache.c",
+            "stmt_text": "write_lock(&et->lock);",
+            "location": "hunk",
+            "explanation": "The destruction path only uses this lock while freeing nodes, but locking alone does not prevent other paths from repopulating the extent tree during teardown when FI_NO_EXTENT has not yet been set."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2a3db1e02ce0",
+          "anchor_file": "fs/f2fs/extent_cache.c",
+          "anchor_lineno": 645
+        },
+        "commit": "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343",
+        "commit_short": "3fc5d5a182f6",
+        "commit_msg": "f2fs: fix to shrink read extent node in batches\n\nWe use rwlock to protect core structure data of extent tree during\nits ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/extent_cache.c",
+        "display_lineno": 639,
+        "code_snippet": "commit 3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343\nAuthor: Chao Yu <chao@kernel.org>\nDate:   Thu Nov 21 09:57:50 2024 +0800\n\n    f2fs: fix to shrink read extent node in batches\n    \n    We use rwlock to protect core structure data of extent tree during\n    its shrink, however, if there is a huge number of extent nodes in\n    extent tree, during shrink of extent tree, it may hold rwlock for\n    a very long time, which may trigger kernel hang issue.\n    \n    This patch fixes to shrink read extent nod",
+        "exists": false,
+        "reason": "The snippet shows the vulnerable path has already been corrected. The root cause was that extent-node teardown cleared nodes \"without first setting FI_NO_EXTENT,\" allowing repopulation during draining. In this version, `__update_extent_tree_range()` no longer does `__free_extent_tree()` directly under the old path; instead it now does `if (is_inode_flag_set(inode, FI_NO_EXTENT)) __destroy_extent_node(inode, EX_READ);` after `write_unlock(&et->lock);`. More importantly, `__drop_extent_tree()` now sets the flag before destruction: `if (type == EX_READ) { set_inode_flag(inode, FI_NO_EXTENT); ... }` and only then calls `__destroy_extent_node(inode, type);`. The new `__destroy_extent_node()` also loops while `atomic_read(&et->node_cnt)` and frees in batches under `write_lock(&et->lock)`, ending with `f2fs_bug_on(sbi, atomic_read(&et->node_cnt));`, which is the fixed behavior. Therefore the vulnerable construct is not present here, and the fix is already included."
+      }
+    },
+    {
+      "bic_found": "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2a3db1e02ce0",
+          "anchor_file": "fs/f2fs/extent_cache.c",
+          "anchor_lineno": 647
+        },
+        "commit": "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343",
+        "commit_short": "3fc5d5a182f6",
+        "commit_msg": "f2fs: fix to shrink read extent node in batches\n\nWe use rwlock to protect core structure data of extent tree during\nits ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/extent_cache.c",
+        "display_lineno": 641,
+        "code_snippet": "commit 3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343\nAuthor: Chao Yu <chao@kernel.org>\nDate:   Thu Nov 21 09:57:50 2024 +0800\n\n    f2fs: fix to shrink read extent node in batches\n    \n    We use rwlock to protect core structure data of extent tree during\n    its shrink, however, if there is a huge number of extent nodes in\n    extent tree, during shrink of extent tree, it may hold rwlock for\n    a very long time, which may trigger kernel hang issue.\n    \n    This patch fixes to shrink read extent nod",
+        "exists": false,
+        "reason": "The shown code already contains the fix for the root cause. The vulnerable pattern was clearing/freeing extent nodes without first setting FI_NO_EXTENT, which allowed repopulation during teardown. Here, in __drop_extent_tree(), the code now does `if (type == EX_READ) { set_inode_flag(inode, FI_NO_EXTENT); ... }` while holding `write_lock(&et->lock)`, and only after unlocking it calls `__destroy_extent_node(inode, type);`. That is the correct ordering to prevent concurrent writeback from re-adding nodes during destruction. The old unsafe direct call `__free_extent_tree(sbi, et);` inside __destroy_extent_node() is also replaced by batched freeing under a loop in the new `__destroy_extent_node()`, and the final bug_on remains guarded by draining logic. So the vulnerable construct is absent in this version and the fix is present."
+      }
+    },
+    {
+      "bic_found": "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2a3db1e02ce0",
+          "anchor_file": "fs/f2fs/extent_cache.c",
+          "anchor_lineno": 689
+        },
+        "commit": "a28ef1f5aebe1068fc5fd65c4699c1c3b1e9094b",
+        "commit_short": "a28ef1f5aebe",
+        "commit_msg": "f2fs: maintain extent cache in separated file\n\nThis patch moves extent cache related code from data.c into extent_cache.",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/extent_cache.c",
+        "display_lineno": 321,
+        "code_snippet": "commit a28ef1f5aebe1068fc5fd65c4699c1c3b1e9094b\nAuthor: Chao Yu <chao@kernel.org>\nDate:   Wed Jul 8 17:59:36 2015 +0800\n\n    f2fs: maintain extent cache in separated file\n    \n    This patch moves extent cache related code from data.c into extent_cache.c\n    since extent cache is independent feature, and its codes are not relate to\n    others in data.c, it's better for us to maintain them in separated place.\n    \n    There is no functionality change, but several small coding style fixes\n    incl",
+        "exists": true,
+        "reason": "The snippet contains the vulnerable teardown path and shows that it frees extent nodes and then asserts the tree is empty, but it does not set FI_NO_EXTENT before draining the cache. In `f2fs_destroy_extent_tree()`, after `node_cnt = f2fs_destroy_extent_node(inode);`, it does `atomic_dec(&et->refcount);` and then `f2fs_bug_on(sbi, atomic_read(&et->refcount) || et->count);`, so the final bug-on depends on `et->count` reaching zero. In `f2fs_destroy_extent_node()`, the code only does `write_lock(&et->lock); node_cnt = __free_extent_tree(sbi, et, true); write_unlock(&et->lock);` and there is no `set_inode_flag(..., FI_NO_EXTENT)` or similar guard to block concurrent repopulation. `f2fs_update_extent_tree()` explicitly repopulates the tree when `!is_inode_flag_set(F2FS_I(inode), FI_NO_EXTENT)` and only sets `FI_NO_EXTENT` later in the update path (`set_inode_flag(F2FS_I(inode), FI_NO_EXTENT);`), so the teardown path here lacks the fix described in the root cause."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "a28ef1f5aebe1068fc5fd65c4699c1c3b1e9094b",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343": 2,
+        "a28ef1f5aebe1068fc5fd65c4699c1c3b1e9094b": 1
+      },
+      "bic_candidates": [
+        "3fc5d5a182f6a1f8bd4dc775feb54c369dd2c343",
+        "a28ef1f5aebe1068fc5fd65c4699c1c3b1e9094b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

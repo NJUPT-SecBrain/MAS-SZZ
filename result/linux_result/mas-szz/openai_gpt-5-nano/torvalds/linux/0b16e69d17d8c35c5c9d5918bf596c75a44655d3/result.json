@@ -1,0 +1,434 @@
+{
+  "cveid": "CVE-2026-31588",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "0b16e69d17d8c35c5c9d5918bf596c75a44655d3"
+  ],
+  "ground_truth_bic": "f78146b0f9230765c6315b2e14f56112513389ad",
+  "predicted_bic": [
+    "f78146b0f9230765c6315b2e14f56112513389ad",
+    "716d51abff06f48425cef15d78ca6f36093f6dbf"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 29,
+  "llm_tokens": 36527,
+  "root_cause": {
+    "text": "KVM x86 stored `kvm_mmio_fragment.data` as a direct pointer to the emulator’s source buffer for split MMIO writes, so when a page-crossing write used an on-stack local value and the second fragment was completed on a later `KVM_RUN`, `complete_emulated_mmio()` dereferenced a stale stack pointer and triggered a use-after-free.",
+    "evidence": "The patch changes `emulator_read_write_onepage()` from `frag->data = val;` to copying small write values into a new per-fragment `u64 val` scratch field (`frag->data = &frag->val; memcpy(&frag->val, val, bytes);`), and the commit message explicitly says the bug occurs when “the emulator initiates a write using an on-stack, local variable as the source,” the access “splits a page boundary,” and KVM later “reference[s] the on-stack variable” on the second userspace MMIO exit.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/x86/kvm/x86.c",
+      "lineno": 8228,
+      "content": "frag->data = val;",
+      "confidence": 1.0
+    },
+    {
+      "file": "include/linux/kvm_host.h",
+      "lineno": 320,
+      "content": "void *data;",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kvm/x86.c",
+      "lineno": 11850,
+      "content": "frag->data += len;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "KVM x86 stored `kvm_mmio_fragment.data` as a direct pointer to the emulator’s source buffer for split MMIO writes, so when a page-crossing write used an on-stack local value and the second fragment was completed on a later `KVM_RUN`, `complete_emulated_mmio()` dereferenced a stale stack pointer and triggered a use-after-free.",
+      "evidence_points": "The patch changes `emulator_read_write_onepage()` from `frag->data = val;` to copying small write values into a new per-fragment `u64 val` scratch field (`frag->data = &frag->val; memcpy(&frag->val, val, bytes);`), and the commit message explicitly says the bug occurs when “the emulator initiates a write using an on-stack, local variable as the source,” the access “splits a page boundary,” and KVM later “reference[s] the on-stack variable” on the second userspace MMIO exit."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/x86/kvm/x86.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "arch/x86/kvm/x86.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "arch/x86/kvm/x86.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "include/linux/kvm_host.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Copy small MMIO write values into the fragment's internal storage so deferred processing does not depend on the original caller buffer.",
+        "what": "The code that initializes a new MMIO fragment in emulator_read_write_onepage() was changed so that instead of always assigning frag->data = val, it now checks if the operation is a write and the transfer size is 8 bytes or less; in that case it zero-initializes frag->val, points frag->data to &frag->val, and copies the input bytes from val into frag->val with memcpy(), otherwise it keeps using frag->data = val. The assignments to frag->gpa and frag->len remain unchanged.",
+        "how": "At runtime, small MMIO write fragments no longer reference the caller-provided buffer directly and instead store a private copy of the write value inside the fragment itself. This preserves the write data beyond the lifetime or mutability of the original val pointer, preventing incorrect MMIO write behavior for writes of up to 8 bytes while leaving reads and larger writes unchanged."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a one-time warning and early bailout in emulator_read_write() to reject unsafe stack-backed buffers for oversized or no-write callback cases.",
+        "what": "A new early check was added at the start of emulator_read_write() that calls WARN_ON_ONCE when either bytes is greater than 8 or ops->write is absent and the val pointer refers to stack memory via object_is_on_stack(val); if that condition is true, the function immediately returns X86EMUL_UNHANDLEABLE.",
+        "how": "This prevents the function from proceeding in cases where a stack-based buffer is passed for situations that may be unsafe or unsupported, specifically oversized accesses or paths without a write callback. At runtime it emits a one-time warning and aborts emulation for that request instead of continuing with potentially invalid memory handling."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add a warning-backed sanity check to stop MMIO fragment advancement when frag->data points to the inline value buffer, returning -EIO on invalid state.",
+        "what": "An error check was added in the else branch of complete_emulated_mmio(): if WARN_ON_ONCE(frag->data == &frag->val) evaluates true, the function now returns -EIO before advancing frag->data and frag->gpa.",
+        "how": "At runtime, this prevents pointer arithmetic from being performed on the inline value buffer represented by frag->val, detects an unexpected fragment state once, emits a warning, and aborts MMIO completion with an I/O error instead of continuing with invalid state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Add a 64-bit inline value field to kvm_mmio_fragment and make the length type explicit to support MMIO fragment value storage.",
+        "what": "In struct kvm_mmio_fragment, the field 'unsigned len' was changed to 'unsigned int len', and a new field 'u64 val' was inserted before it.",
+        "how": "This extends each MMIO fragment with inline 64-bit value storage while keeping a length field, which can support handling MMIO data without relying solely on the data pointer; changing 'unsigned' to 'unsigned int' does not alter runtime behavior."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Copy small MMIO write values into the fragment's internal storage so deferred processing does not depend on the original caller buffer."
+        },
+        {
+          "group_id": 1,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a one-time warning and early bailout in emulator_read_write() to reject unsafe stack-backed buffers for oversized or no-write callback cases."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a warning-backed sanity check to stop MMIO fragment advancement when frag->data points to the inline value buffer, returning -EIO on invalid state."
+        },
+        {
+          "group_id": 3,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a 64-bit inline value field to kvm_mmio_fragment and make the length type explicit to support MMIO fragment value storage."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by avoiding storage of a direct pointer to the caller/emulator buffer for deferred split MMIO writes, preventing later dereference of a stale stack pointer in complete_emulated_mmio()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly targets the unsafe use of stack-backed buffers in emulator_read_write(), which is the core cause of the stale pointer/use-after-free in split MMIO handling. By warning and bailing out on unsafe stack-backed cases, it addresses the vulnerability mechanism."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The added sanity check directly targets the invalid MMIO fragment data-pointer state central to the bug: stale or inappropriate frag->data usage during split MMIO completion. Even though it is defensive detection rather than the full storage fix, it addresses the vulnerable condition caused by the root issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "Adding an inline 64-bit value field to kvm_mmio_fragment directly addresses the root cause: MMIO fragments were previously keeping a pointer to emulator source data, which could become stale across KVM_RUN boundaries. Storing the fragment value in the struct instead of relying on an external buffer is the core fix for the use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kvm/x86.c",
+            "lineno": 8228,
+            "content": "frag->data = val;",
+            "rationale": "This directly stores the caller/emulator buffer pointer into the MMIO fragment. For deferred completion of split MMIO writes, that pointer can refer to stack-backed storage that is no longer valid on a later KVM_RUN, causing the use-after-free."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "include/linux/kvm_host.h",
+            "lineno": 320,
+            "content": "void *data;",
+            "rationale": "The fragment stores only an external pointer, with no inline value storage. This design allows deferred MMIO handling to depend on the lifetime of the original caller buffer, enabling the stale stack-pointer dereference described in the root cause."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "arch/x86/kvm/x86.c",
+            "lineno": 11850,
+            "content": "frag->data += len;",
+            "rationale": "Deferred MMIO completion advances and later dereferences frag->data as if it were a persistent backing buffer. When frag->data was originally set to a stack-backed source pointer, this propagation helps turn the stale pointer into an actual invalid access."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/x86/kvm/x86.c",
+            "stmt_text": "frag->data = val;",
+            "location": "hunk",
+            "explanation": "This assignment stores the caller/emulator buffer pointer directly in the MMIO fragment for later completion. If the source buffer is stack-backed and the split MMIO write completes on a later KVM_RUN, the saved pointer becomes stale and is dereferenced, causing the use-after-free described in the root cause."
+          },
+          {
+            "vuln_file": "include/linux/kvm_host.h",
+            "stmt_text": "void *data;",
+            "location": "hunk",
+            "explanation": "This fragment field design stores only an external pointer and provides no inline storage for small MMIO write values. That allows deferred MMIO completion to depend on the original buffer's lifetime, enabling the stale stack-pointer dereference."
+          },
+          {
+            "vuln_file": "arch/x86/kvm/x86.c",
+            "stmt_text": "frag->data += len;",
+            "location": "hunk",
+            "explanation": "This advances the saved fragment data pointer across deferred MMIO processing. When the pointer was originally captured from a transient stack-backed buffer, this propagation contributes to later dereferencing invalid memory during completion."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "11439c4635ed",
+          "anchor_file": "arch/x86/kvm/x86.c",
+          "anchor_lineno": 8228
+        },
+        "commit": "87da7e66a40532b743cd50972fcf85a1f15b14ea",
+        "commit_short": "87da7e66a405",
+        "commit_msg": "KVM: x86: fix vcpu->mmio_fragments overflow\n\nAfter commit b3356bf0dbb349 (KVM: emulator: optimize \"rep ins\" handling),\nt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/x86.c",
+        "display_lineno": 3838,
+        "code_snippet": "commit 87da7e66a40532b743cd50972fcf85a1f15b14ea\nAuthor: Xiao Guangrong <xiaoguangrong@linux.vnet.ibm.com>\nDate:   Wed Oct 24 14:07:59 2012 +0800\n\n    KVM: x86: fix vcpu->mmio_fragments overflow\n    \n    After commit b3356bf0dbb349 (KVM: emulator: optimize \"rep ins\" handling),\n    the pieces of io data can be collected and write them to the guest memory\n    or MMIO together\n    \n    Unfortunately, kvm splits the mmio access into 8 bytes and store them to\n    vcpu->mmio_fragments. If the guest use",
+        "exists": true,
+        "reason": "The root cause is storing `kvm_mmio_fragment.data` as a direct pointer to the emulator buffer and later dereferencing it across a later `KVM_RUN`. This function version still does exactly that. In `emulator_read_write_onepage()`, the fragment is populated with `frag->data = val;` and `frag->len = bytes;`, i.e. it keeps a raw pointer to the caller-provided buffer rather than copying the data. In `complete_emulated_mmio()`, that stored pointer is later dereferenced: for reads, `memcpy(frag->data, run->mmio.data, len);`, and for writes, the code advances and reuses the same pointer with `frag->data += len;` and later `memcpy(run->mmio.data, frag->data, min(8u, frag->len));`. That means if `val` originally pointed to an on-stack emulator local and completion happens on a later run, the stale pointer is used, matching the described UAF condition. The changes in this commit only address fragment overflow / chunking (`min(8u, frag->len)`, collapsing many 8-byte fragments into one large fragment and walking it in pieces), but they do not replace the unsafe pointer storage with a safe copied buffer. Therefore the vulnerable construct is present and the fix for this UAF is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "35fd3dc58da6",
+          "anchor_file": "arch/x86/kvm/x86.c",
+          "anchor_lineno": 3838
+        },
+        "commit": "f78146b0f9230765c6315b2e14f56112513389ad",
+        "commit_short": "f78146b0f923",
+        "commit_msg": "KVM: Fix page-crossing MMIO\n\nMMIO that are split across a page boundary are currently broken - the\ncode does not expect ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/x86.c",
+        "display_lineno": 3816,
+        "code_snippet": "commit f78146b0f9230765c6315b2e14f56112513389ad\nAuthor: Avi Kivity <avi@redhat.com>\nDate:   Wed Apr 18 19:22:47 2012 +0300\n\n    KVM: Fix page-crossing MMIO\n    \n    MMIO that are split across a page boundary are currently broken - the\n    code does not expect to be aborted by the exit to userspace for the\n    first MMIO fragment.\n    \n    This patch fixes the problem by generalizing the current code for handling\n    16-byte MMIOs to handle a number of \"fragments\", and changes the MMIO\n    code t",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the exact MMIO fragment handling logic and how fragment data pointers are stored and later consumed. The vulnerable construct is present: in `emulator_read_write_onepage()`, each fragment is recorded with `frag->data = val;` and `frag->len = now;`. This stores a direct pointer to the caller/emulator buffer instead of copying the bytes into persistent storage. That matches the root cause for split MMIO writes crossing a page boundary. The later completion path in `complete_mmio()` dereferences that stored pointer across exits: for writes, when initiating the next fragment it does `memcpy(run->mmio.data, frag->data, frag->len);`, and for reads it does `memcpy(frag->data, run->mmio.data, frag->len);`. Because MMIO completion can happen on a later `KVM_RUN`, `frag->data` may refer to a stale stack/local emulator buffer, creating the use-after-free condition described. The code does add fragment state machinery (`mmio_nr_fragments`, `mmio_cur_fragment`) to handle page-crossing MMIO sequencing, but it does not contain the fix for the lifetime issue, because it still stores raw pointers (`frag->data = val`) instead of copying write data into durable storage owned by KVM. Therefore the function contains the bug and is not yet fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "eac0556750e7",
+          "anchor_file": "arch/x86/kvm/x86.c",
+          "anchor_lineno": 3816
+        },
+        "commit": "bbd9b64e37aff5aa715ec5e168425790f5983bf1",
+        "commit_short": "bbd9b64e37af",
+        "commit_msg": "KVM: Portability: Move x86 emulation and mmio device hook to x86.c\n\nThis patch moves the following functions to from kvm",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/x86.c",
+        "display_lineno": 1137,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet only shows the local-MMIO fast path: `mmio_dev = vcpu_find_mmio_dev(vcpu, gpa); if (mmio_dev) { kvm_iodevice_write(mmio_dev, gpa, bytes, val); return X86EMUL_CONTINUE; }`. The root cause is specifically about split MMIO writes storing `kvm_mmio_fragment.data` as a direct pointer to the emulator source buffer and later dereferencing it in `complete_emulated_mmio()`. None of that fragment setup, the `kvm_mmio_fragment.data` assignment, or the completion path is shown here. Therefore the snippet is insufficient to determine whether the vulnerable construct is present or whether the fix is already applied."
+      }
+    },
+    {
+      "bic_found": "f78146b0f9230765c6315b2e14f56112513389ad",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "11439c4635ed",
+          "anchor_file": "include/linux/kvm_host.h",
+          "anchor_lineno": 320
+        },
+        "commit": "f78146b0f9230765c6315b2e14f56112513389ad",
+        "commit_short": "f78146b0f923",
+        "commit_msg": "KVM: Fix page-crossing MMIO\n\nMMIO that are split across a page boundary are currently broken - the\ncode does not expect ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/linux/kvm_host.h",
+        "display_lineno": 140,
+        "code_snippet": "commit f78146b0f9230765c6315b2e14f56112513389ad\nAuthor: Avi Kivity <avi@redhat.com>\nDate:   Wed Apr 18 19:22:47 2012 +0300\n\n    KVM: Fix page-crossing MMIO\n    \n    MMIO that are split across a page boundary are currently broken - the\n    code does not expect to be aborted by the exit to userspace for the\n    first MMIO fragment.\n    \n    This patch fixes the problem by generalizing the current code for handling\n    16-byte MMIOs to handle a number of \"fragments\", and changes the MMIO\n    code t",
+        "exists": true,
+        "reason": "The provided snippet is sufficient because the root cause is specifically about the type and semantics of the `kvm_mmio_fragment.data` field. In this commit, the struct is defined as `struct kvm_mmio_fragment { gpa_t gpa; void *data; unsigned len; };`. The vulnerable construct is present: `data` is still a raw pointer (`void *data;`), which matches the described bug of storing a direct pointer to the emulator source buffer for split MMIO writes. The fix would require not keeping a borrowed pointer across runs, e.g. embedding/copying the fragment data instead of storing it as a pointer. Since this definition still uses `void *data`, the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "eac0556750e7",
+          "anchor_file": "include/linux/kvm_host.h",
+          "anchor_lineno": 140
+        },
+        "commit": "d17fbbf7384d3b639f3c3299b5248ec4c4404556",
+        "commit_short": "d17fbbf7384d",
+        "commit_msg": "KVM: Portability: Expand the KVM_VCPU_COMM in kvm_vcpu structure.\n\nThis patches removes KVM_COMM macro, original it is h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/linux/kvm_host.h",
+        "display_lineno": 104,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet only shows the `struct kvm_vcpu` fields, not the function or logic that implements split MMIO writes or stores `kvm_mmio_fragment.data`. The root cause is specifically about `kvm_mmio_fragment.data` being kept as a direct pointer to an emulator source buffer and later dereferenced by `complete_emulated_mmio()`. This snippet does not show any `kvm_mmio_fragment`, no assignment to a `.data` pointer, and no `complete_emulated_mmio()` logic. The only related context is that `struct kvm_vcpu` contains `mmio_needed`, `mmio_read_completed`, `mmio_is_write`, `mmio_size`, `unsigned char mmio_data[8]`, and `mmio_phys_addr` (lines 108-113), but that is insufficient to determine whether the vulnerable pointer-based fragment handling is present or whether a fix has been applied. Because the vulnerable statement/function is absent from the snippet, `has_bug` is false, but overall the snippet is not sufficient to judge the commit's vulnerability state."
+      }
+    },
+    {
+      "bic_found": "f78146b0f9230765c6315b2e14f56112513389ad",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "11439c4635ed",
+          "anchor_file": "arch/x86/kvm/x86.c",
+          "anchor_lineno": 11850
+        },
+        "commit": "87da7e66a40532b743cd50972fcf85a1f15b14ea",
+        "commit_short": "87da7e66a405",
+        "commit_msg": "KVM: x86: fix vcpu->mmio_fragments overflow\n\nAfter commit b3356bf0dbb349 (KVM: emulator: optimize \"rep ins\" handling),\nt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/x86.c",
+        "display_lineno": 5551,
+        "code_snippet": "commit 87da7e66a40532b743cd50972fcf85a1f15b14ea\nAuthor: Xiao Guangrong <xiaoguangrong@linux.vnet.ibm.com>\nDate:   Wed Oct 24 14:07:59 2012 +0800\n\n    KVM: x86: fix vcpu->mmio_fragments overflow\n    \n    After commit b3356bf0dbb349 (KVM: emulator: optimize \"rep ins\" handling),\n    the pieces of io data can be collected and write them to the guest memory\n    or MMIO together\n    \n    Unfortunately, kvm splits the mmio access into 8 bytes and store them to\n    vcpu->mmio_fragments. If the guest use",
+        "exists": true,
+        "reason": "The root cause is storing `kvm_mmio_fragment.data` as a direct pointer to the emulator buffer and later dereferencing it across `KVM_RUN`. This function set still clearly shows that behavior. In `emulator_read_write_onepage()`, the fragment is populated with `frag->data = val;` and `frag->len = bytes;`, i.e. it stores the caller-provided buffer pointer directly instead of copying the data into persistent storage. In `complete_emulated_mmio()`, that stored pointer is later dereferenced via `memcpy(frag->data, run->mmio.data, len);` for reads and `memcpy(run->mmio.data, frag->data, min(8u, frag->len));` for writes, meaning the fragment pointer is used after the MMIO exit/resume boundary. The commit changes only how large MMIO accesses are chunked (`min(8u, frag->len)`, decrementing `frag->len`, advancing `frag->data += len`) to fix fragment overflow, but it still relies on the same saved pointer. In fact, the added `frag->data += len;` continues mutating and reusing that external buffer pointer across later completions. There is no code here that copies write data into durable fragment-owned storage before returning to userspace, so the stale-pointer/UAF condition remains possible for split/page-crossing MMIO writes. Therefore the vulnerable construct is present and the fix for this UAF is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "35fd3dc58da6",
+          "anchor_file": "arch/x86/kvm/x86.c",
+          "anchor_lineno": 5551
+        },
+        "commit": "716d51abff06f48425cef15d78ca6f36093f6dbf",
+        "commit_short": "716d51abff06",
+        "commit_msg": "KVM: Provide userspace IO exit completion callback\n\nCurrent code assumes that IO exit was due to instruction emulation\na",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/x86.c",
+        "display_lineno": 5534,
+        "code_snippet": "commit 716d51abff06f48425cef15d78ca6f36093f6dbf\nAuthor: Gleb Natapov <gleb@redhat.com>\nDate:   Mon Sep 3 15:24:26 2012 +0300\n\n    KVM: Provide userspace IO exit completion callback\n    \n    Current code assumes that IO exit was due to instruction emulation\n    and handles execution back to emulator directly. This patch adds new\n    userspace IO exit completion callback that can be set by any other code\n    that caused IO exit to userspace.\n    \n    Signed-off-by: Gleb Natapov <gleb@redhat.com>\n ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full MMIO completion path and how split MMIO fragments are carried across userspace exits. In `complete_emulated_mmio()`, the next fragment for a write is prepared with `memcpy(run->mmio.data, frag->data, frag->len);`. This means each fragment stores its payload in `frag->data` and later dereferences that pointer on a subsequent `KVM_RUN`. The root cause vulnerability is specifically that `kvm_mmio_fragment.data` was stored as a direct pointer to the emulator's source buffer for split MMIO writes, causing a stale stack pointer/UAF when the second fragment completes later. Nothing in this code copies write data into storage owned by the fragment or otherwise ensures `frag->data` remains valid across exits; instead, the callback mechanism explicitly preserves MMIO state across runs via `vcpu->arch.complete_userspace_io = complete_emulated_mmio;` and later resumes it in `kvm_arch_vcpu_ioctl_run()`. Thus the vulnerable construct is present: deferred split-MMIO write completion still relies on `frag->data` as a persisted pointer. The fix is not present here because there is no change to fragment data ownership/lifetime, only a refactoring to use `complete_userspace_io` callbacks."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "3b4dc3a03111",
+          "anchor_file": "arch/x86/kvm/x86.c",
+          "anchor_lineno": 5534
+        },
+        "commit": "5287f194bf0d7062d6d99b725366202556f03e28",
+        "commit_short": "5287f194bf0d",
+        "commit_msg": "KVM: Split mmio completion into a function\n\nMake room for sse mmio completions.\n\nSigned-off-by: Avi Kivity <avi@redhat.c",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/x86.c",
+        "display_lineno": 5463,
+        "code_snippet": "commit 5287f194bf0d7062d6d99b725366202556f03e28\nAuthor: Avi Kivity <avi@redhat.com>\nDate:   Tue Jan 19 14:20:10 2010 +0200\n\n    KVM: Split mmio completion into a function\n    \n    Make room for sse mmio completions.\n    \n    Signed-off-by: Avi Kivity <avi@redhat.com>\n\ndiff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c\nindex 3b234c18b635..bb6b9d3f5e93 100644\n--- a/arch/x86/kvm/x86.c\n+++ b/arch/x86/kvm/x86.c\n@@ -5441,6 +5441,27 @@ static int __vcpu_run(struct kvm_vcpu *vcpu)\n \treturn r;\n }\n \n+st",
+        "exists": false,
+        "reason": "The provided snippet does not include the function body at all—only the signature `int kvm_arch_vcpu_ioctl_run(struct kvm_vcpu *vcpu, struct kvm_run *kvm_run)` is shown, with no statements from inside the function. The root cause depends on whether this code stores `kvm_mmio_fragment.data` as a direct pointer to an emulator buffer and later completes MMIO via stale pointer dereference, but none of that logic is visible here. Because the relevant logic is not shown, there is not enough context to determine whether the vulnerable construct is present or whether a fix already exists."
+      }
+    },
+    {
+      "bic_found": "716d51abff06f48425cef15d78ca6f36093f6dbf",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "f78146b0f9230765c6315b2e14f56112513389ad": 2,
+        "716d51abff06f48425cef15d78ca6f36093f6dbf": 1
+      },
+      "bic_candidates": [
+        "f78146b0f9230765c6315b2e14f56112513389ad",
+        "716d51abff06f48425cef15d78ca6f36093f6dbf"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

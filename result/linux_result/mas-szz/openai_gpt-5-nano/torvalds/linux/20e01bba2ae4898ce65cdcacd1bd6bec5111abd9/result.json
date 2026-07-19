@@ -1,0 +1,303 @@
+{
+  "cveid": "CVE-2026-23153",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "20e01bba2ae4898ce65cdcacd1bd6bec5111abd9"
+  ],
+  "ground_truth_bic": "b5725cfa4120a4d234ab112aad151d731531d093",
+  "predicted_bic": [
+    "410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e",
+    "d320bac904f9e3a0d1af0c314b768fb1f545704e"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 16832,
+  "root_cause": {
+    "text": "A race in the FireWire core transaction subsystem was caused by `start_split_transaction_timeout()` accessing the shared `card->transactions` linked list (`list_empty(&t->link)`) and updating transaction state without holding `card->transactions.lock`, allowing concurrent AR response and AT request completion handlers to enumerate/modify the transaction list unsafely.",
+    "evidence": "The CVE/commit explicitly states “The list of transaction is enumerated without acquiring card lock when processing AR response event” and the patch changes `start_split_transaction_timeout()` to require that “`card->transactions.lock should be acquired in advance for the linked list`,” moving its invocation under `scoped_guard(spinlock_irqsave, &card->transactions.lock)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/firewire/core-transaction.c",
+      "lineno": 181,
+      "content": "if (list_empty(&t->link) || WARN_ON(t->is_split_transaction))",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/firewire/core-transaction.c",
+      "lineno": 184,
+      "content": "t->is_split_transaction = true;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/firewire/core-transaction.c",
+      "lineno": 216,
+      "content": "start_split_transaction_timeout(t, card);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the FireWire core transaction subsystem was caused by `start_split_transaction_timeout()` accessing the shared `card->transactions` linked list (`list_empty(&t->link)`) and updating transaction state without holding `card->transactions.lock`, allowing concurrent AR response and AT request completion handlers to enumerate/modify the transaction list unsafely.",
+      "evidence_points": "The CVE/commit explicitly states “The list of transaction is enumerated without acquiring card lock when processing AR response event” and the patch changes `start_split_transaction_timeout()` to require that “`card->transactions.lock should be acquired in advance for the linked list`,” moving its invocation under `scoped_guard(spinlock_irqsave, &card->transactions.lock)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/firewire/core-transaction.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/firewire/core-transaction.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Refactor split transaction timeout setup to accept a precomputed timeout value from the caller instead of reading it under an internal card lock.",
+        "what": "The function start_split_transaction_timeout() was changed to take an unsigned int delta parameter instead of a struct fw_card *card, the local variable unsigned long delta was removed, the spinlock-protected read of card->split_timeout.jiffies was deleted, and a comment was added stating that card->transactions.lock should already be held for the linked list.",
+        "how": "At runtime, the timeout value is now supplied by the caller rather than fetched inside the function under card->split_timeout.lock, so the function no longer acquires that lock and simply arms the timer with the provided delta after validating the transaction state. This shifts synchronization and timeout retrieval responsibility to the caller and avoids lock-taking within this helper."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix ACK_PENDING split transaction timeout setup by capturing the timeout delta under the split-timeout lock and starting the timeout under the transactions lock.",
+        "what": "In the ACK_PENDING case of transmit_complete_callback(), the code adds a new local variable `unsigned int delta`, stores `card->split_timeout.jiffies` into it while holding `card->split_timeout.lock`, removes the old call `start_split_transaction_timeout(t, card)`, and replaces it with `start_split_transaction_timeout(t, delta)` executed while holding `card->transactions.lock` under a new `scoped_guard(spinlock_irqsave, &card->transactions.lock)`.",
+        "how": "At runtime, the split-timeout timestamp and its associated jiffies delta are now captured atomically under the split-timeout lock, and the timeout setup is then performed under the transactions lock using the captured value instead of the whole card object. This changes the locking context for starting the split transaction timeout, helping synchronize timeout scheduling with transaction state and reducing the chance of races or inconsistent timeout initialization."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor split transaction timeout setup to accept a precomputed timeout value from the caller instead of reading it under an internal card lock."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix ACK_PENDING split transaction timeout setup by capturing the timeout delta under the split-timeout lock and starting the timeout under the transactions lock."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change alters split transaction timeout setup in the same code path as the race root cause. By moving timeout computation to the caller, it is part of restructuring `start_split_transaction_timeout()` behavior around locking and shared transaction state access, rather than an unrelated refactor."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly targets split transaction timeout setup and specifically moves timeout start/state handling to occur under the transactions lock, addressing the race caused by accessing and updating shared transaction list/state without holding card->transactions.lock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/firewire/core-transaction.c",
+            "lineno": 181,
+            "content": "if (list_empty(&t->link) || WARN_ON(t->is_split_transaction))",
+            "rationale": "This checks membership/state of the shared transactions list without holding card->transactions.lock, which is the race described in the root cause."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/firewire/core-transaction.c",
+            "lineno": 184,
+            "content": "t->is_split_transaction = true;",
+            "rationale": "This updates transaction state in the same helper without holding card->transactions.lock, allowing concurrent completion handlers to observe or modify inconsistent state."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/firewire/core-transaction.c",
+            "lineno": 216,
+            "content": "start_split_transaction_timeout(t, card);",
+            "rationale": "This call invokes the unsafe helper from the ACK_PENDING path without the transactions lock held, directly enabling the race against concurrent transaction list traversal/modification."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/firewire/core-transaction.c",
+            "stmt_text": "if (list_empty(&t->link) || WARN_ON(t->is_split_transaction))",
+            "location": "hunk",
+            "explanation": "This statement reads shared transaction-list state via list_empty(&t->link) inside start_split_transaction_timeout() without holding card->transactions.lock, matching the root cause of unsafe concurrent access to card->transactions during AR/AT completion handling."
+          },
+          {
+            "vuln_file": "drivers/firewire/core-transaction.c",
+            "stmt_text": "t->is_split_transaction = true;",
+            "location": "hunk",
+            "explanation": "This statement updates transaction state in the same helper while not holding card->transactions.lock, allowing concurrent handlers traversing or modifying the shared transaction list to observe inconsistent split-transaction state."
+          },
+          {
+            "vuln_file": "drivers/firewire/core-transaction.c",
+            "stmt_text": "start_split_transaction_timeout(t, card);",
+            "location": "hunk",
+            "explanation": "This call site invokes the unsafe helper from the ACK_PENDING path without the transactions lock held, enabling the unlocked access and state update on the shared card->transactions list described in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63804fed149a",
+          "anchor_file": "drivers/firewire/core-transaction.c",
+          "anchor_lineno": 181
+        },
+        "commit": "d320bac904f9e3a0d1af0c314b768fb1f545704e",
+        "commit_short": "d320bac904f9",
+        "commit_msg": "firewire: core: use guard macro to maintain list of asynchronous transaction\n\nThe core function maintains pending asynch",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/firewire/core-transaction.c",
+        "display_lineno": 141,
+        "code_snippet": "commit d320bac904f9e3a0d1af0c314b768fb1f545704e\nAuthor: Takashi Sakamoto <o-takashi@sakamocchi.jp>\nDate:   Mon Aug 5 17:54:04 2024 +0900\n\n    firewire: core: use guard macro to maintain list of asynchronous transaction\n    \n    The core function maintains pending asynchronous transactions by list in\n    the instance of fw_card. The concurrent access to the list is protected\n    by spinlock in the instance.\n    \n    This commit uses guard macro to maintain the spinlock.\n    \n    Link: https://lor",
+        "exists": false,
+        "reason": "The snippet is sufficient because it includes the exact function implicated by the root cause, `start_split_transaction_timeout()`, and also shows related transaction-list handling. In this commit version, `start_split_transaction_timeout()` begins with `guard(spinlock_irqsave)(&card->lock);`, so access to the shared transaction list and transaction state is performed while holding `card->lock`. The relevant check and update are then done under that lock: `if (list_empty(&t->link) || WARN_ON(t->is_split_transaction)) return;` followed by `t->is_split_transaction = true;` and `mod_timer(...)`. This directly addresses the stated root cause that the function previously accessed `list_empty(&t->link)` and updated transaction state without holding the lock. Therefore the vulnerable construct is absent in this version, and the fix is present."
+      }
+    },
+    {
+      "bic_found": "d320bac904f9e3a0d1af0c314b768fb1f545704e",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63804fed149a",
+          "anchor_file": "drivers/firewire/core-transaction.c",
+          "anchor_lineno": 184
+        },
+        "commit": "410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e",
+        "commit_short": "410cf2bd3dc6",
+        "commit_msg": "firewire: use split transaction timeout only for split transactions\n\nInstead of starting the split transaction timeout t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/firewire/core-transaction.c",
+        "display_lineno": 168,
+        "code_snippet": "commit 410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e\nAuthor: Clemens Ladisch <clemens@ladisch.de>\nDate:   Mon Dec 13 14:56:02 2010 +0100\n\n    firewire: use split transaction timeout only for split transactions\n    \n    Instead of starting the split transaction timeout timer when any request\n    is submitted, start it only when the destination's ACK_PENDING has been\n    received.  This prevents us from using a timeout that is too short, and,\n    if the controller's AT queue is emptying very slowly, fr",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full implementation of the relevant function `start_split_transaction_timeout()` and its call site in `transmit_complete_callback()`. The vulnerable root cause is unsynchronized access to the transaction list and transaction state unless `card->transactions.lock` is held. In this commit, `start_split_transaction_timeout()` does take a lock, but it is `spin_lock_irqsave(&card->lock, flags);`, and then performs `if (list_empty(&t->link) || WARN_ON(t->is_split_transaction))` and updates `t->is_split_transaction = true;` before `mod_timer(...)`. Thus the function still accesses `t->link` / transaction-list state and transaction state under `card->lock`, not under the transaction-list lock described in the root cause. The vulnerable construct is therefore present: `list_empty(&t->link)` and state updates are done without the required transactions-list lock. There is no indication in this snippet that the later fix—protecting this logic with the proper transaction-list lock—is present. Therefore this version still has the bug and is not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "693a50b51181",
+          "anchor_file": "drivers/firewire/core-transaction.c",
+          "anchor_lineno": 168
+        },
+        "commit": "3038e353cfaf548eb94f02b172b9dbe412abd24c",
+        "commit_short": "3038e353cfaf",
+        "commit_msg": "firewire: Add core firewire stack.\n\nSigned-off-by: Kristian Høgsberg <krh@redhat.com>\nSigned-off-by: Stefan Richter <ste",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/firewire/core-transaction.c",
+        "display_lineno": 90,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet is not the function identified in the root cause. The vulnerability is specifically about `start_split_transaction_timeout()` accessing `card->transactions` and checking `list_empty(&t->link)` / updating transaction state without holding `card->transactions.lock`. The shown function only switches on `status` and calls `close_transaction()` or sets `t->timestamp` (`case ACK_PENDING: t->timestamp = packet->timestamp;`). It does not show `start_split_transaction_timeout()`, any `card->transactions` list access, any `list_empty(&t->link)` check, or any locking around that shared list. Therefore the relevant vulnerable construct is absent from this snippet, and there is not enough context here to determine whether the commit version contains or fixes the race in the actual vulnerable function."
+      }
+    },
+    {
+      "bic_found": "410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63804fed149a",
+          "anchor_file": "drivers/firewire/core-transaction.c",
+          "anchor_lineno": 216
+        },
+        "commit": "410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e",
+        "commit_short": "410cf2bd3dc6",
+        "commit_msg": "firewire: use split transaction timeout only for split transactions\n\nInstead of starting the split transaction timeout t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/firewire/core-transaction.c",
+        "display_lineno": 186,
+        "code_snippet": "commit 410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e\nAuthor: Clemens Ladisch <clemens@ladisch.de>\nDate:   Mon Dec 13 14:56:02 2010 +0100\n\n    firewire: use split transaction timeout only for split transactions\n    \n    Instead of starting the split transaction timeout timer when any request\n    is submitted, start it only when the destination's ACK_PENDING has been\n    received.  This prevents us from using a timeout that is too short, and,\n    if the controller's AT queue is emptying very slowly, fr",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full implementation of the relevant function `start_split_transaction_timeout()` and its call site in `transmit_complete_callback()`. The root cause is unsynchronized access to the shared transaction list and transaction state without holding the transaction-list lock. In this commit, `start_split_transaction_timeout()` does `spin_lock_irqsave(&card->lock, flags);` and then checks `if (list_empty(&t->link) || WARN_ON(t->is_split_transaction))` before setting `t->is_split_transaction = true;` and calling `mod_timer(...)`. This means the vulnerable construct is present: it accesses `list_empty(&t->link)` and updates transaction state in this helper while holding only `card->lock`, not a dedicated `card->transactions.lock` as described in the root cause. The commit message and diff are about when to start the timeout (`ACK_PENDING`) rather than introducing proper synchronization for transaction-list access. There is no evidence here of the later fix that protects this logic with the transaction-list lock; instead the code still enumerates and manipulates `card->transaction_list` elsewhere under `card->lock` (e.g. `list_for_each_entry(t, &card->transaction_list, link)` in `close_transaction()` and `fw_core_handle_response()`). Therefore the vulnerable logic is present and the fix is not yet included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "693a50b51181",
+          "anchor_file": "drivers/firewire/core-transaction.c",
+          "anchor_lineno": 186
+        },
+        "commit": "3038e353cfaf548eb94f02b172b9dbe412abd24c",
+        "commit_short": "3038e353cfaf",
+        "commit_msg": "firewire: Add core firewire stack.\n\nSigned-off-by: Kristian Høgsberg <krh@redhat.com>\nSigned-off-by: Stefan Richter <ste",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/firewire/core-transaction.c",
+        "display_lineno": 106,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet only shows the start of an unrelated function, `fw_fill_packet(...)`, at lines 108-112, and does not include `start_split_transaction_timeout()` or any access to `card->transactions`, `list_empty(&t->link)`, or transaction-list locking. Since the vulnerability root cause is specifically about `start_split_transaction_timeout()` accessing and updating the shared transaction list without holding `card->transactions.lock`, this snippet does not contain the relevant logic needed to determine whether the vulnerable construct is present or fixed."
+      }
+    },
+    {
+      "bic_found": "410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "d320bac904f9e3a0d1af0c314b768fb1f545704e": 1,
+        "410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e": 2
+      },
+      "bic_candidates": [
+        "410cf2bd3dc6ec1ed9e1b36b25b9d7aa927ed14e",
+        "d320bac904f9e3a0d1af0c314b768fb1f545704e"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

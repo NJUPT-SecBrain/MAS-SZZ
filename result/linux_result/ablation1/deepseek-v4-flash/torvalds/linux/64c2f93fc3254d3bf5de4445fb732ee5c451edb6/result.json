@@ -1,0 +1,423 @@
+{
+  "cveid": "CVE-2026-53033",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "64c2f93fc3254d3bf5de4445fb732ee5c451edb6"
+  ],
+  "ground_truth_bic": "2c860a43dd77f969bb959336a2f743d7103a8f63",
+  "predicted_bic": [
+    "855d8e77ffb05be6e54c34dababccb20318aec00",
+    "2c860a43dd77f969bb959336a2f743d7103a8f63"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 83375,
+  "root_cause": {
+    "text": "Missing `unix_state_lock` protection around the socket peer pointer access in `bpf_iter_unix_seq_show` (called via `unix_prog_seq_show`), allowing a concurrent `unix_release_sock` to free the peer socket (use-after-free) when a BPF iterator program updates a sockmap during a state transition.",
+    "evidence": "The commit message explicitly states: \"When a BPF iterator program updates a sockmap, there is a race condition in `unix_stream_bpf_update_proto()` where the `peer` pointer can become stale during a state transition TCP_ESTABLISHED -> TCP_CLOSE.\" The race sequence is detailed: CPU0 reads `sk_pair = unix_peer(sk)` without lock, then CPU1 sets `unix_peer(sk) = NULL` and calls `sock_put(skpair)`, after which CPU0 calls `sock_hold(sk_pair)` on a freed socket, causing a KASAN slab-use-after-free. The patch adds `unix_state_lock(sk)` before and `unix_state_unlock(sk)` after the iterator's socket display logic to synchronize with `unix_release_sock`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3743,
+      "content": "lock_sock(sk);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3745,
+      "content": "if (unlikely(sock_flag(sk, SOCK_DEAD))) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3746,
+      "content": "ret = SEQ_SKIP;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3753,
+      "content": "ret = unix_prog_seq_show(prog, &meta, v, uid);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3755,
+      "content": "release_sock(sk);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Missing `unix_state_lock` protection around the socket peer pointer access in `bpf_iter_unix_seq_show` (called via `unix_prog_seq_show`), allowing a concurrent `unix_release_sock` to free the peer socket (use-after-free) when a BPF iterator program updates a sockmap during a state transition.",
+      "evidence_points": "The commit message explicitly states: \"When a BPF iterator program updates a sockmap, there is a race condition in `unix_stream_bpf_update_proto()` where the `peer` pointer can become stale during a state transition TCP_ESTABLISHED -> TCP_CLOSE.\" The race sequence is detailed: CPU0 reads `sk_pair = unix_peer(sk)` without lock, then CPU1 sets `unix_peer(sk) = NULL` and calls `sock_put(skpair)`, after which CPU0 calls `sock_hold(sk_pair)` on a freed socket, causing a KASAN slab-use-after-free. The patch adds `unix_state_lock(sk)` before and `unix_state_unlock(sk)` after the iterator's socket display logic to synchronize with `unix_release_sock`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3743,
+            "content": "lock_sock(sk);",
+            "rationale": "This statement acquires the socket lock (lock_sock) instead of the required unix_state_lock, which is insufficient to prevent concurrent unix_release_sock from freeing the peer socket."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3753,
+            "content": "ret = unix_prog_seq_show(prog, &meta, v, uid);",
+            "rationale": "This call invokes the BPF iterator program (via unix_prog_seq_show) which accesses the peer socket pointer while only lock_sock is held, missing the unix_state_lock that would serialize with peer freeing."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3755,
+            "content": "release_sock(sk);",
+            "rationale": "This statement releases the insufficient lock_sock, but the peer pointer may have already been freed concurrently during the previous unix_prog_seq_show call."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3745,
+            "content": "if (unlikely(sock_flag(sk, SOCK_DEAD))) {",
+            "rationale": "This check attempts to skip dead sockets but does not protect against peer dereference in the iterator program; the peer may still be accessed after this check if the state changes."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3746,
+            "content": "ret = SEQ_SKIP;",
+            "rationale": "This returns early for dead sockets, but the peer pointer access in unix_prog_seq_show is not guarded by any peer-specific lock, leaving it vulnerable to use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "lock_sock(sk);",
+            "location": "hunk",
+            "explanation": "Acquires only lock_sock instead of the required unix_state_lock, which fails to serialize with concurrent unix_release_sock that frees the peer socket."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "if (unlikely(sock_flag(sk, SOCK_DEAD))) {",
+            "location": "hunk",
+            "explanation": "Checks for dead socket but does not protect against peer dereference; the peer pointer can still be accessed by the BPF iterator program after this check if the socket state changes concurrently."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "ret = SEQ_SKIP;",
+            "location": "hunk",
+            "explanation": "Early return for dead sockets, but the peer pointer access in unix_prog_seq_show is not guarded by any peer‑specific lock, leaving it vulnerable to use‑after‑free."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "ret = unix_prog_seq_show(prog, &meta, v, uid);",
+            "location": "hunk",
+            "explanation": "This call invokes the BPF iterator program (via unix_prog_seq_show) which accesses the peer socket pointer while only lock_sock is held, missing the unix_state_lock that would serialize with peer freeing."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "release_sock(sk);",
+            "location": "hunk",
+            "explanation": "Releases the insufficient lock_sock, but the peer pointer may have already been freed concurrently during the previous unix_prog_seq_show call."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dca38b7734d2",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3743
+        },
+        "commit": "4d328dd695383224aa750ddee6b4ad40c0f8d205",
+        "commit_short": "4d328dd69538",
+        "commit_msg": "bpf, sockmap: Fix af_unix iter deadlock\n\nbpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\npath",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3743,
+        "code_snippet": "commit 4d328dd695383224aa750ddee6b4ad40c0f8d205\nAuthor: Michal Luczaj <mhal@rbox.co>\nDate:   Tue Apr 14 16:13:16 2026 +0200\n\n    bpf, sockmap: Fix af_unix iter deadlock\n    \n    bpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\n    path and the iter prog attempts to update a sockmap. Which ends up spinning\n    at sock_map_update_elem()'s bh_lock_sock():\n    \n    WARNING: possible recursive locking detected\n    test_progs/1393 is trying to acquire lock:\n    ffff88811ec25f",
+        "exists": true,
+        "reason": "The function `bpf_iter_unix_seq_show` calls `unix_prog_seq_show` without first acquiring `unix_state_lock` on the peer socket. According to the root cause, this missing lock allows a concurrent `unix_release_sock` to free the peer socket, leading to a use-after-free. The code shown (lines 3743-3756) only takes `lock_sock(sk)` on the current socket and holds no protection over the peer. No fix (e.g., adding `unix_state_lock` around the call) is present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a25566084e39",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3743
+        },
+        "commit": "2c860a43dd77f969bb959336a2f743d7103a8f63",
+        "commit_short": "2c860a43dd77",
+        "commit_msg": "bpf: af_unix: Implement BPF iterator for UNIX domain socket.\n\nThis patch implements the BPF iterator for the UNIX domain",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3176,
+        "code_snippet": "commit 2c860a43dd77f969bb959336a2f743d7103a8f63\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Sat Aug 14 10:57:15 2021 +0900\n\n    bpf: af_unix: Implement BPF iterator for UNIX domain socket.\n    \n    This patch implements the BPF iterator for the UNIX domain socket.\n    \n    Currently, the batch optimisation introduced for the TCP iterator in the\n    commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_sock\") is not\n    used for the UNIX domain socket.  It will require replacing th",
+        "exists": true,
+        "reason": "The `bpf_iter_unix_seq_show` function (lines 3157-3173) accesses the socket pointer `v` and calls `sock_i_uid(sk)` and passes `v` to `unix_prog_seq_show` without acquiring `unix_state_lock`. This missing lock protection allows a concurrent `unix_release_sock` to free the peer socket, leading to a use-after-free when the BPF iterator program runs. The commit adds no synchronization, so the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "d1bf7c4d5dea",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3176
+        },
+        "commit": "097e66c578459f79e3a2128c54e9df5194e1419a",
+        "commit_short": "097e66c57845",
+        "commit_msg": "[NET]: Make AF_UNIX per network namespace safe [v2]\n\nBecause of the global nature of garbage collection, and because of ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2175,
+        "code_snippet": "commit 097e66c578459f79e3a2128c54e9df5194e1419a\nAuthor: Denis V. Lunev <den@openvz.org>\nDate:   Mon Nov 19 22:29:30 2007 -0800\n\n    [NET]: Make AF_UNIX per network namespace safe [v2]\n    \n    Because of the global nature of garbage collection, and because of the\n    cost of per namespace hash tables unix_socket_table has been kept\n    global.  With a filter added on lookups so we don't see sockets from\n    the wrong namespace.\n    \n    Currently I don't fold the namesapce into the hash so multi",
+        "exists": false,
+        "reason": "The commit is from 2007 and introduces per-network namespace support for AF_UNIX. The vulnerable function `bpf_iter_unix_seq_show` (and `unix_prog_seq_show`) does not exist in this code. The root cause involves missing `unix_state_lock` protection in BPF iterator code, which was added years later. Therefore, the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "2c860a43dd77f969bb959336a2f743d7103a8f63",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dca38b7734d2",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3745
+        },
+        "commit": "4d328dd695383224aa750ddee6b4ad40c0f8d205",
+        "commit_short": "4d328dd69538",
+        "commit_msg": "bpf, sockmap: Fix af_unix iter deadlock\n\nbpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\npath",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3745,
+        "code_snippet": "commit 4d328dd695383224aa750ddee6b4ad40c0f8d205\nAuthor: Michal Luczaj <mhal@rbox.co>\nDate:   Tue Apr 14 16:13:16 2026 +0200\n\n    bpf, sockmap: Fix af_unix iter deadlock\n    \n    bpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\n    path and the iter prog attempts to update a sockmap. Which ends up spinning\n    at sock_map_update_elem()'s bh_lock_sock():\n    \n    WARNING: possible recursive locking detected\n    test_progs/1393 is trying to acquire lock:\n    ffff88811ec25f",
+        "exists": true,
+        "reason": "The function `bpf_iter_unix_seq_show` calls `unix_prog_seq_show` which, according to the vulnerability root cause, accesses the peer socket pointer without `unix_state_lock` protection, allowing a use-after-free. This commit only changes `lock_sock_fast` to `lock_sock` and the check from `sk_unhashed` to `sock_flag(sk, SOCK_DEAD)` to fix a deadlock, but does not add any locking around the peer pointer access. Therefore, the vulnerable construct (missing lock) is still present and not fixed in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a25566084e39",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3745
+        },
+        "commit": "855d8e77ffb05be6e54c34dababccb20318aec00",
+        "commit_short": "855d8e77ffb0",
+        "commit_msg": "bpf: af_unix: Use batching algorithm in bpf unix iter.\n\nThe commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3518,
+        "code_snippet": "commit 855d8e77ffb05be6e54c34dababccb20318aec00\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Thu Jan 13 09:28:46 2022 +0900\n\n    bpf: af_unix: Use batching algorithm in bpf unix iter.\n    \n    The commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_sock\")\n    introduces the batching algorithm to iterate TCP sockets with more\n    consistency.\n    \n    This patch uses the same algorithm to iterate AF_UNIX sockets.\n    \n    Signed-off-by: Kuniyuki Iwashima <kuniyu@amazon.co.jp>\n    ",
+        "exists": true,
+        "reason": "The commit modifies `bpf_iter_unix_seq_show` to acquire `lock_sock_fast(sk)` and check `sk_unhashed(sk)`, but does not add `unix_state_lock` protection around the peer pointer access via `unix_prog_seq_show`. The root cause specifically requires `unix_state_lock` to prevent use-after-free of the peer socket; the added socket lock is insufficient. Therefore, the vulnerable construct remains present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "4408d55a6467",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3518
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2087,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided code is the initial Unix domain socket implementation and does not include any BPF iterator functions such as `bpf_iter_unix_seq_show` or `unix_prog_seq_show`. The vulnerability concerns missing locking in those iterator functions, which are entirely absent here. Therefore, the vulnerable construct is not present."
+      }
+    },
+    {
+      "bic_found": "855d8e77ffb05be6e54c34dababccb20318aec00",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dca38b7734d2",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3746
+        },
+        "commit": "855d8e77ffb05be6e54c34dababccb20318aec00",
+        "commit_short": "855d8e77ffb0",
+        "commit_msg": "bpf: af_unix: Use batching algorithm in bpf unix iter.\n\nThe commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3520,
+        "code_snippet": "commit 855d8e77ffb05be6e54c34dababccb20318aec00\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Thu Jan 13 09:28:46 2022 +0900\n\n    bpf: af_unix: Use batching algorithm in bpf unix iter.\n    \n    The commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_sock\")\n    introduces the batching algorithm to iterate TCP sockets with more\n    consistency.\n    \n    This patch uses the same algorithm to iterate AF_UNIX sockets.\n    \n    Signed-off-by: Kuniyuki Iwashima <kuniyu@amazon.co.jp>\n    ",
+        "exists": true,
+        "reason": "The commit adds `lock_sock_fast` around the `unix_prog_seq_show` call in `bpf_iter_unix_seq_show` but does not add `unix_state_lock` protection for the peer pointer access. According to the root cause, the vulnerability requires `unix_state_lock` to protect `sk->sk_peer` from being freed by a concurrent `unix_release_sock`. The lock_sock on the current socket does not prevent the peer socket's release from modifying the current socket's peer pointer under `unix_state_lock`. Therefore, the vulnerable construct (peer pointer access without `unix_state_lock`) is still present, and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "4408d55a6467",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3520
+        },
+        "commit": "94531cfcbe79c3598acf96806627b2137ca32eb9",
+        "commit_short": "94531cfcbe79",
+        "commit_msg": "af_unix: Add unix_stream_proto for sockmap\n\nPreviously, sockmap for AF_UNIX protocol only supports\ndgram type. This patc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3369,
+        "code_snippet": "commit 94531cfcbe79c3598acf96806627b2137ca32eb9\nAuthor: Jiang Wang <jiang.wang@bytedance.com>\nDate:   Mon Aug 16 19:03:21 2021 +0000\n\n    af_unix: Add unix_stream_proto for sockmap\n    \n    Previously, sockmap for AF_UNIX protocol only supports\n    dgram type. This patch add unix stream type support, which\n    is similar to unix_dgram_proto. To support sockmap, dgram\n    and stream cannot share the same unix_proto anymore, because\n    they have different implementations, such as unhash for strea",
+        "exists": false,
+        "reason": "The commit only adds `unix_stream_proto` for sockmap and modifies related socket creation, receive, and shutdown paths. It does not touch `bpf_iter_unix_seq_show` or any locking around peer pointer access. The vulnerable construct (missing `unix_state_lock` protection) is absent from this diff."
+      }
+    },
+    {
+      "bic_found": "855d8e77ffb05be6e54c34dababccb20318aec00",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dca38b7734d2",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3753
+        },
+        "commit": "855d8e77ffb05be6e54c34dababccb20318aec00",
+        "commit_short": "855d8e77ffb0",
+        "commit_msg": "bpf: af_unix: Use batching algorithm in bpf unix iter.\n\nThe commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3527,
+        "code_snippet": "commit 855d8e77ffb05be6e54c34dababccb20318aec00\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Thu Jan 13 09:28:46 2022 +0900\n\n    bpf: af_unix: Use batching algorithm in bpf unix iter.\n    \n    The commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_sock\")\n    introduces the batching algorithm to iterate TCP sockets with more\n    consistency.\n    \n    This patch uses the same algorithm to iterate AF_UNIX sockets.\n    \n    Signed-off-by: Kuniyuki Iwashima <kuniyu@amazon.co.jp>\n    ",
+        "exists": true,
+        "reason": "The commit introduces `bpf_iter_unix_seq_show` which calls `unix_prog_seq_show` while holding only `lock_sock_fast(sk)`. The vulnerable peer pointer access in `unix_prog_seq_show` requires `unix_state_lock` protection, which is absent. No addition of `unix_state_lock` is present in this commit, so the vulnerable construct exists and is not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "4408d55a6467",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3527
+        },
+        "commit": "3d36696024499aef19dbf24a781e91a24fbbe4af",
+        "commit_short": "3d3669602449",
+        "commit_msg": "[AF_UNIX] Initialise UNIX sockets before general device initcalls\n\nWhen drivers call request_module(), it tries to do so",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2198,
+        "code_snippet": "commit 3d36696024499aef19dbf24a781e91a24fbbe4af\nAuthor: David Woodhouse <dwmw2@infradead.org>\nDate:   Thu Apr 24 00:59:25 2008 -0700\n\n    [AF_UNIX] Initialise UNIX sockets before general device initcalls\n    \n    When drivers call request_module(), it tries to do something with UNIX\n    sockets and triggers a 'runaway loop modprobe net-pf-1' warning. Avoid\n    this by initialising AF_UNIX support earlier.\n    \n    Signed-off-by: David Woodhouse <dwmw2@infradead.org>\n    Signed-off-by: David S. M",
+        "exists": false,
+        "reason": "The provided code snippet only shows the module initialization and exit functions, not the vulnerable bpf_iter_unix_seq_show function or any related peer pointer access. The vulnerability context is completely missing."
+      }
+    },
+    {
+      "bic_found": "855d8e77ffb05be6e54c34dababccb20318aec00",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dca38b7734d2",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3755
+        },
+        "commit": "4d328dd695383224aa750ddee6b4ad40c0f8d205",
+        "commit_short": "4d328dd69538",
+        "commit_msg": "bpf, sockmap: Fix af_unix iter deadlock\n\nbpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\npath",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3755,
+        "code_snippet": "commit 4d328dd695383224aa750ddee6b4ad40c0f8d205\nAuthor: Michal Luczaj <mhal@rbox.co>\nDate:   Tue Apr 14 16:13:16 2026 +0200\n\n    bpf, sockmap: Fix af_unix iter deadlock\n    \n    bpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\n    path and the iter prog attempts to update a sockmap. Which ends up spinning\n    at sock_map_update_elem()'s bh_lock_sock():\n    \n    WARNING: possible recursive locking detected\n    test_progs/1393 is trying to acquire lock:\n    ffff88811ec25f",
+        "exists": true,
+        "reason": "The function bpf_iter_unix_seq_show after this commit still lacks unix_state_lock protection around the call to unix_prog_seq_show. The root cause identifies missing synchronization on the socket peer pointer, and the only change in this commit is replacing lock_sock_fast/unlock_sock_fast with lock_sock/release_sock (lines 3738-3755). No unix_state_lock is added, so the vulnerable construct remains unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a25566084e39",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3755
+        },
+        "commit": "855d8e77ffb05be6e54c34dababccb20318aec00",
+        "commit_short": "855d8e77ffb0",
+        "commit_msg": "bpf: af_unix: Use batching algorithm in bpf unix iter.\n\nThe commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3528,
+        "code_snippet": "commit 855d8e77ffb05be6e54c34dababccb20318aec00\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Thu Jan 13 09:28:46 2022 +0900\n\n    bpf: af_unix: Use batching algorithm in bpf unix iter.\n    \n    The commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_sock\")\n    introduces the batching algorithm to iterate TCP sockets with more\n    consistency.\n    \n    This patch uses the same algorithm to iterate AF_UNIX sockets.\n    \n    Signed-off-by: Kuniyuki Iwashima <kuniyu@amazon.co.jp>\n    ",
+        "exists": true,
+        "reason": "The commit introduces `bpf_iter_unix_seq_show` which calls `unix_prog_seq_show` after acquiring `lock_sock_fast`, but does not add the required `unix_state_lock` protection around the socket peer pointer access. The root cause explicitly states that missing `unix_state_lock` leads to use-after-free. Since the vulnerable call path is present and the fix (unix_state_lock) is not added, the function contains the vulnerable construct and is not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "4408d55a6467",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3528
+        },
+        "commit": "3d36696024499aef19dbf24a781e91a24fbbe4af",
+        "commit_short": "3d3669602449",
+        "commit_msg": "[AF_UNIX] Initialise UNIX sockets before general device initcalls\n\nWhen drivers call request_module(), it tries to do so",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2199,
+        "code_snippet": "commit 3d36696024499aef19dbf24a781e91a24fbbe4af\nAuthor: David Woodhouse <dwmw2@infradead.org>\nDate:   Thu Apr 24 00:59:25 2008 -0700\n\n    [AF_UNIX] Initialise UNIX sockets before general device initcalls\n    \n    When drivers call request_module(), it tries to do something with UNIX\n    sockets and triggers a 'runaway loop modprobe net-pf-1' warning. Avoid\n    this by initialising AF_UNIX support earlier.\n    \n    Signed-off-by: David Woodhouse <dwmw2@infradead.org>\n    Signed-off-by: David S. M",
+        "exists": false,
+        "reason": "The provided snippet only shows the end of af_unix.c (fs_initcall, module_exit, MODULE_*) and does not include the vulnerable function bpf_iter_unix_seq_show or any peer pointer access with unix_state_lock. The vulnerable construct is absent from this code fragment, but the snippet is insufficient to assess the entire commit's effect on the vulnerability."
+      }
+    },
+    {
+      "bic_found": "855d8e77ffb05be6e54c34dababccb20318aec00",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "2c860a43dd77f969bb959336a2f743d7103a8f63": 1,
+        "855d8e77ffb05be6e54c34dababccb20318aec00": 4
+      },
+      "bic_candidates": [
+        "855d8e77ffb05be6e54c34dababccb20318aec00",
+        "2c860a43dd77f969bb959336a2f743d7103a8f63"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

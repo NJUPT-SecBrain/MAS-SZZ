@@ -1,0 +1,269 @@
+{
+  "cveid": "CVE-2026-53141",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6bf7e2affc6e62da7add393d7f352d4040f5bc27"
+  ],
+  "ground_truth_bic": "c6eabbab359c156669e10d5dec3e71e80ff09bd2",
+  "predicted_bic": [
+    "c6eabbab359c156669e10d5dec3e71e80ff09bd2"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 15,
+  "llm_tokens": 17132,
+  "root_cause": {
+    "text": "The drm/v3d global perfmon ioctl path mishandled `v3d_perfmon_find()`’s refcounted return value and the `v3d->global_perfmon` lifetime, so `SET_GLOBAL`, `CLEAR_GLOBAL`, and perfmon destruction failed to `put` the extra references on error/clear/destroy paths, causing reference leaks in `v3d_perfmon_set_global_ioctl()` and `v3d_perfmon_delete()`.",
+    "evidence": "The patch explicitly says `v3d_perfmon_find()` “bumps the reference count” and that `v3d_perfmon_set_global_ioctl()`/`v3d_perfmon_delete()` “fail to release that reference on several paths”; the diff adds missing `v3d_perfmon_put(perfmon)` on `-EBUSY` and CLEAR_GLOBAL error paths, adds `v3d_perfmon_put(old)` after `xchg(&v3d->global_perfmon, NULL)`, and in `v3d_perfmon_delete()` releases the stashed global reference when `cmpxchg(&v3d->global_perfmon, perfmon, NULL) == perfmon`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+      "lineno": 313,
+      "content": "cmpxchg(&v3d->global_perfmon, perfmon, NULL);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+      "lineno": 467,
+      "content": "xchg(&v3d->global_perfmon, NULL);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+      "lineno": 472,
+      "content": "if (cmpxchg(&v3d->global_perfmon, NULL, perfmon))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The drm/v3d global perfmon ioctl path mishandled `v3d_perfmon_find()`’s refcounted return value and the `v3d->global_perfmon` lifetime, so `SET_GLOBAL`, `CLEAR_GLOBAL`, and perfmon destruction failed to `put` the extra references on error/clear/destroy paths, causing reference leaks in `v3d_perfmon_set_global_ioctl()` and `v3d_perfmon_delete()`.",
+      "evidence_points": "The patch explicitly says `v3d_perfmon_find()` “bumps the reference count” and that `v3d_perfmon_set_global_ioctl()`/`v3d_perfmon_delete()` “fail to release that reference on several paths”; the diff adds missing `v3d_perfmon_put(perfmon)` on `-EBUSY` and CLEAR_GLOBAL error paths, adds `v3d_perfmon_put(old)` after `xchg(&v3d->global_perfmon, NULL)`, and in `v3d_perfmon_delete()` releases the stashed global reference when `cmpxchg(&v3d->global_perfmon, perfmon, NULL) == perfmon`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix reference counting when deleting the global perfmon by releasing the extra set-global reference after clearing the global pointer.",
+        "what": "The code in `v3d_perfmon_delete()` changed from an unconditional `cmpxchg(&v3d->global_perfmon, perfmon, NULL);` with a comment about setting the global perfmon to NULL, to an `if` statement that checks whether the `cmpxchg()` succeeded and, only on success, calls `v3d_perfmon_put(perfmon);` before the existing unconditional `v3d_perfmon_put(perfmon);` at the end.",
+        "how": "At runtime, when the deleted perfmon is the one currently stored as `v3d->global_perfmon`, the code now explicitly drops the extra reference that was taken when the global perfmon was set. This prevents the global perfmon object from retaining a stale reference after destruction, fixing a reference count imbalance and avoiding a leak. If the perfmon was not the global one, behavior is unchanged aside from the failed compare-exchange being ignored."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix reference counting in global perfmon set/clear handling to prevent leaks and correctly release replaced monitors.",
+        "what": "In `v3d_perfmon_set_global_ioctl()`, the CLEAR_GLOBAL path now drops the current `perfmon` reference immediately, uses `xchg()` to clear `v3d->global_perfmon` into a local `old` pointer, returns `-EINVAL` if there was no global perfmon, and calls `v3d_perfmon_put(old)` on the removed object. The non-clear path now wraps the `cmpxchg()` failure case in a block and calls `v3d_perfmon_put(perfmon)` before returning `-EBUSY`.",
+        "how": "This changes reference management around global performance monitor updates. On successful clear, the old global monitor is explicitly released, and the caller-provided `perfmon` is no longer kept alive unnecessarily. On failed set, the newly acquired `perfmon` reference is dropped before reporting `-EBUSY`, preventing a leak. Behaviorally, clearing a missing global monitor still returns `-EINVAL`, and setting remains exclusive."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix reference counting in global perfmon set/clear handling to prevent leaks and correctly release replaced monitors."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix reference counting in global perfmon set/clear handling to prevent leaks and correctly release replaced monitors.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the reported bug: it fixes refcount handling for global perfmon set/clear and deletion, including releasing extra references on clear/destroy paths to prevent leaks."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+            "lineno": 467,
+            "content": "xchg(&v3d->global_perfmon, NULL);",
+            "rationale": "This clears the global perfmon pointer without dropping the reference held by v3d->global_perfmon, which matches the leak in the CLEAR_GLOBAL path."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+            "lineno": 472,
+            "content": "if (cmpxchg(&v3d->global_perfmon, NULL, perfmon))",
+            "rationale": "This is the SET_GLOBAL store path that installs a refcounted perfmon as global; the pre-fix code failed to release the extra reference on error/replacement paths, causing leaks."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+            "lineno": 313,
+            "content": "cmpxchg(&v3d->global_perfmon, perfmon, NULL);",
+            "rationale": "During destruction, this removes the global pointer but does not itself release the monitor reference acquired when it was set global, contributing to the leak in perfmon deletion."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+            "stmt_text": "cmpxchg(&v3d->global_perfmon, perfmon, NULL);",
+            "location": "hunk",
+            "explanation": "In the perfmon destruction path, this clears v3d->global_perfmon but does not drop the reference associated with the global perfmon, matching the leak described for v3d_perfmon_delete()."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+            "stmt_text": "xchg(&v3d->global_perfmon, NULL);",
+            "location": "hunk",
+            "explanation": "This clears the global perfmon pointer in the CLEAR_GLOBAL path without releasing the held reference, which is the reference leak in v3d_perfmon_set_global_ioctl()."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+            "stmt_text": "if (cmpxchg(&v3d->global_perfmon, NULL, perfmon))",
+            "location": "hunk",
+            "explanation": "This SET_GLOBAL store path installs a refcounted perfmon as the global perfmon but, in the pre-fix code, failed to ensure the extra reference was dropped on error/replacement handling, causing a leak in v3d_perfmon_set_global_ioctl()."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "30252e6f71ba",
+          "anchor_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+          "anchor_lineno": 313
+        },
+        "commit": "c6eabbab359c156669e10d5dec3e71e80ff09bd2",
+        "commit_short": "c6eabbab359c",
+        "commit_msg": "drm/v3d: Add DRM_IOCTL_V3D_PERFMON_SET_GLOBAL\n\nAdd a new ioctl, DRM_IOCTL_V3D_PERFMON_SET_GLOBAL, to allow\nconfiguration",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+        "display_lineno": 317,
+        "code_snippet": "commit c6eabbab359c156669e10d5dec3e71e80ff09bd2\nAuthor: Christian Gmeiner <cgmeiner@igalia.com>\nDate:   Mon Dec 2 15:06:13 2024 +0100\n\n    drm/v3d: Add DRM_IOCTL_V3D_PERFMON_SET_GLOBAL\n    \n    Add a new ioctl, DRM_IOCTL_V3D_PERFMON_SET_GLOBAL, to allow\n    configuration of a global performance monitor (perfmon).\n    Use the global perfmon for all jobs to ensure consistent\n    performance tracking across submissions. This feature is\n    needed to implement a Perfetto datasources in user-space.\n ",
+        "exists": true,
+        "reason": "The snippet contains the vulnerable global-perfmon ioctl logic and the lifetime/refcount handling is clearly visible. In `v3d_perfmon_set_global_ioctl()`, `perfmon = v3d_perfmon_find(v3d_priv, req->id);` returns a refcounted object, but on the clear path the code does `xchg(&v3d->global_perfmon, NULL); return 0;` without any `v3d_perfmon_put(perfmon)`, and on the set path `if (cmpxchg(&v3d->global_perfmon, NULL, perfmon)) return -EBUSY;` also returns without dropping the reference on the failure case. The destroy paths show the same lifetime issue pattern: they added `cmpxchg(&v3d->global_perfmon, perfmon, NULL);` before `v3d_perfmon_put(perfmon);`, but the snippet does not show any extra put for the global reference being removed, which matches the stated leak. Because the problematic ioctl and missing put/cleanup handling are present, this commit version contains the bug and does not already contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "f3c03be182ef",
+          "anchor_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+          "anchor_lineno": 317
+        },
+        "commit": "26a4dc29b74a137f45665089f6d3d633fcc9b662",
+        "commit_short": "26a4dc29b74a",
+        "commit_msg": "drm/v3d: Expose performance counters to userspace\n\nThe V3D engine has several hardware performance counters that can of\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+        "display_lineno": 105,
+        "code_snippet": "commit 26a4dc29b74a137f45665089f6d3d633fcc9b662\nAuthor: Juan A. Suarez Romero <jasuarez@igalia.com>\nDate:   Tue Jun 8 13:15:41 2021 +0200\n\n    drm/v3d: Expose performance counters to userspace\n    \n    The V3D engine has several hardware performance counters that can of\n    interest for userspace performance analysis tools.\n    \n    This exposes new ioctls to create and destroy performance monitor\n    objects, as well as to query the counter values.\n    \n    Each created performance monitor obje",
+        "exists": false,
+        "reason": "The shown file does not contain the vulnerable global perfmon ioctl path described in the root cause. This commit only implements basic perfmon object handling: `v3d_perfmon_create_ioctl()`, `v3d_perfmon_destroy_ioctl()`, `v3d_perfmon_get_values_ioctl()`, and helper reference counting (`v3d_perfmon_get/put/find`). There is no `SET_GLOBAL`, `CLEAR_GLOBAL`, `v3d->global_perfmon`, or `v3d_perfmon_set_global_ioctl()` / `v3d_perfmon_delete()` logic in this snippet. For example, `v3d_perfmon_destroy_ioctl()` correctly does `perfmon = idr_remove(...); ... v3d_perfmon_put(perfmon);`, and `v3d_perfmon_get_values_ioctl()` does `v3d_perfmon_get(perfmon);` followed by `v3d_perfmon_put(perfmon);`. Since the vulnerable construct is absent, `has_bug` is false, and there is no evidence of the later fix here either."
+      }
+    },
+    {
+      "bic_found": "c6eabbab359c156669e10d5dec3e71e80ff09bd2",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "30252e6f71ba",
+          "anchor_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+          "anchor_lineno": 467
+        },
+        "commit": "c6eabbab359c156669e10d5dec3e71e80ff09bd2",
+        "commit_short": "c6eabbab359c",
+        "commit_msg": "drm/v3d: Add DRM_IOCTL_V3D_PERFMON_SET_GLOBAL\n\nAdd a new ioctl, DRM_IOCTL_V3D_PERFMON_SET_GLOBAL, to allow\nconfiguration",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+        "display_lineno": 487,
+        "code_snippet": "commit c6eabbab359c156669e10d5dec3e71e80ff09bd2\nAuthor: Christian Gmeiner <cgmeiner@igalia.com>\nDate:   Mon Dec 2 15:06:13 2024 +0100\n\n    drm/v3d: Add DRM_IOCTL_V3D_PERFMON_SET_GLOBAL\n    \n    Add a new ioctl, DRM_IOCTL_V3D_PERFMON_SET_GLOBAL, to allow\n    configuration of a global performance monitor (perfmon).\n    Use the global perfmon for all jobs to ensure consistent\n    performance tracking across submissions. This feature is\n    needed to implement a Perfetto datasources in user-space.\n ",
+        "exists": true,
+        "reason": "The shown function `v3d_perfmon_set_global_ioctl()` contains the vulnerable refcount-handling logic. It calls `perfmon = v3d_perfmon_find(v3d_priv, req->id);` and then, on the CLEAR_GLOBAL path, does `if (!v3d->global_perfmon) return -EINVAL;` followed by `xchg(&v3d->global_perfmon, NULL); return 0;` without dropping the reference returned by `v3d_perfmon_find()`. Likewise, on the set path it does `if (cmpxchg(&v3d->global_perfmon, NULL, perfmon)) return -EBUSY; return 0;` and again never calls `v3d_perfmon_put(perfmon)` after acquiring the ref from `find()`, so the extra reference is leaked. The destroy-side fix is present elsewhere in the diff (`cmpxchg(&v3d->global_perfmon, perfmon, NULL);` before `v3d_perfmon_put(perfmon);`), but this ioctl body itself still lacks the necessary put-on-error/clear handling described in the root cause."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "c6eabbab359c156669e10d5dec3e71e80ff09bd2",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "30252e6f71ba",
+          "anchor_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+          "anchor_lineno": 472
+        },
+        "commit": "c6eabbab359c156669e10d5dec3e71e80ff09bd2",
+        "commit_short": "c6eabbab359c",
+        "commit_msg": "drm/v3d: Add DRM_IOCTL_V3D_PERFMON_SET_GLOBAL\n\nAdd a new ioctl, DRM_IOCTL_V3D_PERFMON_SET_GLOBAL, to allow\nconfiguration",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/v3d/v3d_perfmon.c",
+        "display_lineno": 492,
+        "code_snippet": "commit c6eabbab359c156669e10d5dec3e71e80ff09bd2\nAuthor: Christian Gmeiner <cgmeiner@igalia.com>\nDate:   Mon Dec 2 15:06:13 2024 +0100\n\n    drm/v3d: Add DRM_IOCTL_V3D_PERFMON_SET_GLOBAL\n    \n    Add a new ioctl, DRM_IOCTL_V3D_PERFMON_SET_GLOBAL, to allow\n    configuration of a global performance monitor (perfmon).\n    Use the global perfmon for all jobs to ensure consistent\n    performance tracking across submissions. This feature is\n    needed to implement a Perfetto datasources in user-space.\n ",
+        "exists": true,
+        "reason": "Yes, the snippet shows the full SET_GLOBAL ioctl and the relevant destroy path changes. The vulnerable construct is present: `perfmon = v3d_perfmon_find(v3d_priv, req->id);` returns a refcounted perfmon, but on the CLEAR_GLOBAL path the code does `xchg(&v3d->global_perfmon, NULL);` and immediately `return 0;` without any `v3d_perfmon_put(perfmon)`. Likewise, on the normal set path it does `if (cmpxchg(&v3d->global_perfmon, NULL, perfmon)) return -EBUSY;` but on the `-EBUSY` error path it also returns without dropping the reference. The destroy path in this commit also sets `v3d->global_perfmon` to NULL via `cmpxchg(&v3d->global_perfmon, perfmon, NULL);` and then calls `v3d_perfmon_put(perfmon);`, so the global-perfmon lifetime handling is only partially addressed here, not fully fixed. Therefore the reference leak described in the root cause is present and the fix is not yet present in this commit version."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "c6eabbab359c156669e10d5dec3e71e80ff09bd2",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "c6eabbab359c156669e10d5dec3e71e80ff09bd2": 3
+      },
+      "bic_candidates": [
+        "c6eabbab359c156669e10d5dec3e71e80ff09bd2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

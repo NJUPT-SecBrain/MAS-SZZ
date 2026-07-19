@@ -1,0 +1,450 @@
+{
+  "cveid": "CVE-2026-31444",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "48623ec358c1c600fa1e38368746f933e0f1a617"
+  ],
+  "ground_truth_bic": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+  "predicted_bic": [
+    "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 27500,
+  "root_cause": {
+    "text": "In `smb_grant_oplock()`, the `opinfo` structure is published on both the `ci->m_op_list` (via `opinfo_add`) and the global lease list (via `add_lease_global_list`) before `opinfo->o_fp` is assigned and before ensuring that `add_lease_global_list()` cannot fail after publication, leading to a use-after-free when a failure occurs after `opinfo_add` and a NULL pointer dereference when a concurrent reader accesses `opinfo->o_fp` after lease list publication but before assignment.",
+    "evidence": "The CVE description states: \"1) opinfo is linked into ci->m_op_list (via opinfo_add) before add_lease_global_list() is called. If add_lease_global_list() fails (kmalloc returns NULL), the error path frees the opinfo via __free_opinfo() while it is still linked in ci->m_op_list. Concurrent m_op_list readers ... dereference the freed node.\" and \"2) opinfo->o_fp is assigned after add_lease_global_list() publishes the opinfo on the global lease list. A concurrent find_same_lease_key() can walk the lease list and dereference opinfo->o_fp->f_ci while o_fp is still NULL.\" The patch fixes this by moving the assignment of `opinfo->o_fp` before any list publication and by preallocating the lease table to make `add_lease_global_list()` infallible.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1295,
+      "content": "opinfo_add(opinfo, fp);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1298,
+      "content": "err = add_lease_global_list(opinfo);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1304,
+      "content": "opinfo->o_fp = fp;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1308,
+      "content": "__free_opinfo(opinfo);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1063,
+      "content": "return -ENOMEM;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In `smb_grant_oplock()`, the `opinfo` structure is published on both the `ci->m_op_list` (via `opinfo_add`) and the global lease list (via `add_lease_global_list`) before `opinfo->o_fp` is assigned and before ensuring that `add_lease_global_list()` cannot fail after publication, leading to a use-after-free when a failure occurs after `opinfo_add` and a NULL pointer dereference when a concurrent reader accesses `opinfo->o_fp` after lease list publication but before assignment.",
+      "evidence_points": "The CVE description states: \"1) opinfo is linked into ci->m_op_list (via opinfo_add) before add_lease_global_list() is called. If add_lease_global_list() fails (kmalloc returns NULL), the error path frees the opinfo via __free_opinfo() while it is still linked in ci->m_op_list. Concurrent m_op_list readers ... dereference the freed node.\" and \"2) opinfo->o_fp is assigned after add_lease_global_list() publishes the opinfo on the global lease list. A concurrent find_same_lease_key() can walk the lease list and dereference opinfo->o_fp->f_ci while o_fp is still NULL.\" The patch fixes this by moving the assignment of `opinfo->o_fp` before any list publication and by preallocating the lease table to make `add_lease_global_list()` infallible."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Refactor lease table handling by separating allocation and initialization from list insertion into a dedicated allocator function.",
+        "what": "Replaced the `lb_add` function, which added an existing lease table to `lease_table_list`, with a new `alloc_lease_table` function that allocates a `struct lease_table`, copies the client GUID from `opinfo`, initializes list head and spinlock, and returns the allocated structure (or NULL on allocation failure).",
+        "how": "The change shifts from adding a pre-initialized lease table to a list to allocating and initializing a new lease table based on the oplock info. The new function does not add to the list; that responsibility is now external. It also adds memory allocation and initialization steps that were missing previously."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Refactor add_lease_global_list to move allocation responsibility to caller, making the function always succeed and updating locking accordingly.",
+        "what": "Changed return type from int to void, added parameter 'struct lease_table *new_lb', replaced read_lock with write_lock, removed internal allocation of lease_table, and now frees new_lb if match found or adds it to list if not.",
+        "how": "The caller must now allocate and pass a lease_table; if an existing matching table is found, the passed-in table is freed; otherwise it's used directly. The function no longer returns an error code; lock is upgraded to write lock to protect list modifications."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add and initialize a new local variable `new_lb` to NULL for storing a lease table pointer, serving as a safety guard.",
+        "what": "Added a local variable declaration `struct lease_table *new_lb = NULL;` inside the function `smb_grant_oplock` after existing local variable declarations.",
+        "how": "This change introduces a new pointer variable `new_lb` initialized to NULL. It does not immediately alter runtime behavior but prepares for future code that will assign and use this variable, preventing potential use of an uninitialized pointer."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition and error handling in smb_grant_oplock by setting o_fp before publication and preallocating lease table.",
+        "what": "Moved assignment of opinfo->o_fp to before opinfo_count_inc and opinfo_add, added preallocation of lease table (new_lb) before add_lease_global_list, changed error path from __free_opinfo to kfree(new_lb) and opinfo_put, and updated add_lease_global_list to accept the new_lb parameter.",
+        "how": "This prevents concurrent readers from dereferencing a NULL opinfo->o_fp by setting it before publication, and ensures that no memory allocation can fail after the opinfo is added to lists, avoiding inconsistent state; error handling now properly frees the preallocated lease table and decrements the opinfo reference count."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 2,
+          "intent": "Refactor add_lease_global_list to move allocation responsibility to caller, making the function always succeed and updating locking accordingly."
+        },
+        {
+          "group_id": 1,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add and initialize a new local variable `new_lb` to NULL for storing a lease table pointer, serving as a safety guard."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix race condition and error handling in smb_grant_oplock by setting o_fp before publication and preallocating lease table."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Refactor add_lease_global_list to move allocation responsibility to caller, making the function always succeed and updating locking accordingly.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The refactoring ensures add_lease_global_list never fails, directly addressing the vulnerability where a failure after publication leads to use-after-free. The locking updates also affect the correct ordering of operations related to the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The addition and initialization of 'new_lb' as a safety guard directly addresses the vulnerability's NULL pointer dereference issue by ensuring the lease table pointer is properly initialized before potential use, which is a key element of the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group's intent directly matches the root cause: fixing the race condition by setting o_fp before publication and preallocating the lease table to prevent errors after publication, which addresses the use-after-free and NULL pointer dereference vulnerabilities."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1295,
+            "content": "opinfo_add(opinfo, fp);",
+            "rationale": "Publishes opinfo on ci->m_op_list before o_fp is assigned and before ensuring add_lease_global_list cannot fail, leading to use-after-free if failure occurs."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1298,
+            "content": "err = add_lease_global_list(opinfo);",
+            "rationale": "Calls add_lease_global_list which can fail (e.g., ENOMEM) without preallocation, causing use-after-free when failure path frees opinfo that is already published."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1304,
+            "content": "opinfo->o_fp = fp;",
+            "rationale": "Assignment of o_fp occurs after both publications, allowing concurrent access to NULL o_fp leading to NULL pointer dereference."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1308,
+            "content": "__free_opinfo(opinfo);",
+            "rationale": "Frees opinfo while it is still in ci->m_op_list, causing use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1063,
+            "content": "return -ENOMEM;",
+            "rationale": "This return statement allows add_lease_global_list to fail after the caller has already published opinfo, leading to use-after-free when caller frees opinfo on error."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "opinfo_add(opinfo, fp);",
+            "location": "hunk",
+            "explanation": "Publishes opinfo on ci->m_op_list before opinfo->o_fp is assigned, allowing concurrent access to NULL o_fp and enabling use-after-free if a later failure frees opinfo."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "err = add_lease_global_list(opinfo);",
+            "location": "hunk",
+            "explanation": "Adds opinfo to the global lease list, which can fail (e.g., ENOMEM) after publication on ci->m_op_list. Failure triggers cleanup that frees opinfo while it is still reachable, causing use-after-free."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "opinfo->o_fp = fp;",
+            "location": "hunk",
+            "explanation": "Assigns opinfo->o_fp after both lists have already been published. A concurrent reader accessing opinfo->o_fp before this line sees a NULL pointer, leading to NULL pointer dereference."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "__free_opinfo(opinfo);",
+            "location": "hunk",
+            "explanation": "Frees opinfo while it remains on ci->m_op_list, causing a use-after-free when other code traverses the list and accesses the freed opinfo."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "return -ENOMEM;",
+            "location": "hunk",
+            "explanation": "Allows add_lease_global_list to fail (e.g., with ENOMEM) after the caller has already published opinfo. The caller then frees opinfo on error, but the leaked reference in the list leads to use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1295
+        },
+        "commit": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+        "commit_short": "1dfd062caa16",
+        "commit_msg": "ksmbd: fix use-after-free by using call_rcu() for oplock_info\n\nksmbd currently frees oplock_info immediately using kfree",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1293
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "40955015fae4",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1293
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1220
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1298
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1213
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1304
+        },
+        "commit": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+        "commit_short": "1dfd062caa16",
+        "commit_msg": "ksmbd: fix use-after-free by using call_rcu() for oplock_info\n\nksmbd currently frees oplock_info immediately using kfree",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1302
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "40955015fae4",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1302
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1229
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1308
+        },
+        "commit": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+        "commit_short": "1dfd062caa16",
+        "commit_msg": "ksmbd: fix use-after-free by using call_rcu() for oplock_info\n\nksmbd currently frees oplock_info immediately using kfree",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1306
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "40955015fae4",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1306
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1233
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1063
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1056
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9": 5
+      },
+      "bic_candidates": [
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

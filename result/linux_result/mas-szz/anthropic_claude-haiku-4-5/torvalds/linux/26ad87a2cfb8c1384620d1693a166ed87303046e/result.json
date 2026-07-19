@@ -1,0 +1,244 @@
+{
+  "cveid": "CVE-2026-31538",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "26ad87a2cfb8c1384620d1693a166ed87303046e"
+  ],
+  "ground_truth_bic": "89b021a72663c4d96d8a8b85272bb42d991a1c6f",
+  "predicted_bic": [
+    "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 23307,
+  "root_cause": {
+    "text": "The recv credit management logic used indirect calculation based on posted recv_io count and granted credits, creating a race condition where credits could be granted between hardware packet reception and completion processing, allowing the peer to consume credits that hadn't actually been posted yet.",
+    "evidence": "The patch explicitly states \"the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist.\" The fix introduces a dedicated `recv_io.credits.available` counter that is incremented when recv buffers are posted and decremented when credits are granted, eliminating the race window. The old logic calculated `new_credits = atomic_read(&sc->recv_io.posted.count) - atomic_read(&sc->recv_io.credits.count)`, which was vulnerable to timing issues between hardware reception and software completion handling. The new logic uses `available = atomic_xchg(&sc->recv_io.credits.available, 0)` to atomically track only credits that have actually been posted and are safe to grant.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/transport_rdma.c",
+      "lineno": 1082,
+      "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/transport_rdma.c",
+      "lineno": 1086,
+      "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/transport_rdma.c",
+      "lineno": 1090,
+      "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The recv credit management logic used indirect calculation based on posted recv_io count and granted credits, creating a race condition where credits could be granted between hardware packet reception and completion processing, allowing the peer to consume credits that hadn't actually been posted yet.",
+      "evidence_points": "The patch explicitly states \"the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist.\" The fix introduces a dedicated `recv_io.credits.available` counter that is incremented when recv buffers are posted and decremented when credits are granted, eliminating the race window. The old logic calculated `new_credits = atomic_read(&sc->recv_io.posted.count) - atomic_read(&sc->recv_io.credits.count)`, which was vulnerable to timing issues between hardware reception and software completion handling. The new logic uses `available = atomic_xchg(&sc->recv_io.credits.available, 0)` to atomically track only credits that have actually been posted and are safe to grant."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/transport_rdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/transport_rdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add missing atomic increment of available credits to synchronize the calculated credits value with the tracked credits counter before queuing idle work.",
+        "what": "Added a line that atomically increments the available credits counter by the calculated credits value before the existing conditional check that queues work if credits is non-zero.",
+        "how": "This change ensures that the recv_io.credits.available counter is updated with the newly calculated credits before the idle work is queued. Previously, the credits were calculated but not explicitly added to the available credits counter at this point, potentially causing a mismatch between calculated credits and the tracked available credits state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix credit management logic to prevent credit loss and over-granting by explicitly tracking missing and available credits, and returning ungrantable credits to the available pool.",
+        "what": "Replaced the credit calculation logic with a new algorithm that explicitly tracks missing credits, available credits, and uses min3() to compute new_credits. Added logic to handle partial credit grants by re-adding unused available credits back to the pool, with accompanying comments explaining the credit management flow.",
+        "how": "The original code calculated new_credits by subtracting current count from posted count, which could result in negative values. The new code explicitly computes missing credits needed (target - current), atomically exchanges available credits, and grants only the minimum of the three values (U16_MAX, missing, available). If credits remain ungrantable or partially granted, they are returned to the available pool via atomic_add, ensuring no credits are lost and preventing over-granting."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix credit management logic to prevent credit loss and over-granting by explicitly tracking missing and available credits, and returning ungrantable credits to the available pool."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix credit management logic to prevent credit loss and over-granting by ensuring proper synchronization and tracking of available and missing credits.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by fixing the indirect credit calculation logic. Hunk 0 adds atomic synchronization of available credits to prevent race conditions between hardware packet reception and completion processing. Hunk 1 explicitly tracks missing and available credits instead of relying on indirect calculation, eliminating the race condition where credits could be granted before packets were actually posted. These changes directly resolve the synchronization issue described in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/transport_rdma.c",
+            "lineno": 1082,
+            "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "rationale": "This line performs an indirect calculation of available credits based solely on posted recv_io count without accounting for credits already granted. This creates a race condition where credits can be granted between the time packets are posted and when they are actually received and processed, allowing the peer to consume credits that haven't been posted yet."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/transport_rdma.c",
+            "lineno": 1086,
+            "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "rationale": "This line calculates new credits by subtracting already-granted credits from posted count, but this indirect calculation is vulnerable to race conditions. Between reading posted count and reading granted credits, the hardware may receive packets and the peer may consume credits, leading to over-granting of credits that haven't actually been posted yet."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/transport_rdma.c",
+            "lineno": 1090,
+            "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "rationale": "This line grants credits based on the vulnerable indirect calculation without proper synchronization. The calculated new_credits value may not accurately reflect truly available credits due to the race condition in the calculation logic, leading to granting of credits that exceed actually posted recv buffers."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/transport_rdma.c",
+            "stmt_text": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "location": "hunk",
+            "explanation": "This statement initiates the vulnerable indirect credit calculation by reading only the posted count without accounting for already-granted credits or synchronizing with concurrent hardware packet reception. This is the root of the race condition."
+          },
+          {
+            "vuln_file": "fs/smb/server/transport_rdma.c",
+            "stmt_text": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "This statement completes the vulnerable indirect calculation by subtracting granted credits from posted count. The race condition window between the two atomic_read operations allows hardware to receive packets and the peer to consume credits between these reads, causing new_credits to be calculated incorrectly and leading to over-granting."
+          },
+          {
+            "vuln_file": "fs/smb/server/transport_rdma.c",
+            "stmt_text": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "This statement grants credits based on the vulnerable indirect calculation. Since new_credits was computed through a racy calculation that doesn't properly account for the actual state of posted buffers, this grants credits that may exceed the number of actually available posted recv buffers, allowing the peer to consume credits that haven't been posted yet."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e94268b21c8",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 1082
+        },
+        "commit": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+        "commit_short": "e8bc71986cbd",
+        "commit_msg": "smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 823,
+        "code_snippet": "commit e8bc71986cbd2d2d5991a2fc6afbac0311ff3769\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:33:30 2025 +0200\n\n    smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Namjae Jeon <linkinjeon@kernel.org>\n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Sig",
+        "exists": false,
+        "reason": "This commit refactors the recv credit management by moving from local fields (t->recv_credits, t->recv_posted, t->recv_credit_target) to centralized fields in the smbdirect_socket structure (sc->recv_io.credits.count, sc->recv_io.posted.count, sc->recv_io.credits.target). The vulnerable construct described in the root cause - indirect calculation based on posted recv_io count and granted credits creating a race condition - is NOT present in this code. The commit shows proper atomic operations on sc->recv_io.credits.count and sc->recv_io.posted.count with appropriate synchronization through work queue management (sc->recv_io.posted.refill_work). The manage_credits_prior_sending() function correctly calculates new_credits by subtracting current credits from posted count, and the smb_direct_post_recv_credits() function properly checks if credits are below target before posting new receives. The refactoring itself does not introduce the vulnerability; it merely reorganizes the data structures while maintaining the same logic flow. The fix for the race condition would need to be in a separate commit that changes the actual credit management algorithm, not just the data structure locations."
+      }
+    },
+    {
+      "bic_found": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e94268b21c8",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 1086
+        },
+        "commit": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+        "commit_short": "e8bc71986cbd",
+        "commit_msg": "smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 827,
+        "code_snippet": "commit e8bc71986cbd2d2d5991a2fc6afbac0311ff3769\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:33:30 2025 +0200\n\n    smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Namjae Jeon <linkinjeon@kernel.org>\n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Sig",
+        "exists": false,
+        "reason": "This commit refactors the recv credit management by moving fields from `smb_direct_transport` to `smbdirect_socket.recv_io` structure. The vulnerable construct described in the root cause - indirect calculation based on posted recv_io count and granted credits creating a race condition - is NOT present in this code. The commit shows proper use of atomic operations: `atomic_dec(&sc->recv_io.posted.count)` and `atomic_dec(&sc->recv_io.credits.count)` in recv_done(), and `atomic_read(&sc->recv_io.credits.count)` compared against `sc->recv_io.credits.target` in manage_credits_prior_sending(). The refactoring consolidates related fields into a single structure, which actually improves clarity and reduces the likelihood of race conditions by keeping related state together. The fix is already present: credits are properly tracked via atomic operations and the target is checked before posting new credits in smb_direct_post_recv_credits()."
+      }
+    },
+    {
+      "bic_found": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e94268b21c8",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 1090
+        },
+        "commit": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+        "commit_short": "e8bc71986cbd",
+        "commit_msg": "smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 831,
+        "code_snippet": "commit e8bc71986cbd2d2d5991a2fc6afbac0311ff3769\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:33:30 2025 +0200\n\n    smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Namjae Jeon <linkinjeon@kernel.org>\n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Sig",
+        "exists": false,
+        "reason": "This commit refactors the recv credit management by moving from local fields (t->recv_credits, t->recv_posted, t->recv_credit_target) to structured fields within smbdirect_socket (sc->recv_io.credits.count, sc->recv_io.posted.count, sc->recv_io.credits.target). The vulnerable construct described in the root cause - indirect calculation based on posted recv_io count and granted credits creating a race condition - is NOT present in this code. The commit shows proper use of atomic operations (atomic_read, atomic_dec, atomic_inc, atomic_add) on the relocated fields. The critical logic in manage_credits_prior_sending() at lines 814-831 correctly calculates new_credits by subtracting current credits from posted count, and the comparison logic properly checks if credits are below target before posting more. The refactoring itself doesn't introduce the vulnerability; it merely reorganizes existing code into a more structured format. The atomic operations and the logic flow remain sound - there is no window where credits are granted before packets are actually posted."
+      }
+    },
+    {
+      "bic_found": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769": 3
+      },
+      "bic_candidates": [
+        "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

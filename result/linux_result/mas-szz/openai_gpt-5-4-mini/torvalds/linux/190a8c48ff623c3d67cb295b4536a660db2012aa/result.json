@@ -1,0 +1,305 @@
+{
+  "cveid": "CVE-2026-23415",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "190a8c48ff623c3d67cb295b4536a660db2012aa"
+  ],
+  "ground_truth_bic": "c042c505210dc3453f378df432c10fff3d471bc5",
+  "predicted_bic": [
+    "c36f6e6dff4d32ec8b6da8f553933727a57a7a4a",
+    "c042c505210dc3453f378df432c10fff3d471bc5"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 24,
+  "llm_tokens": 22642,
+  "root_cause": {
+    "text": "The futex/mempolicy code freed `vma->vm_policy` immediately in `__mpol_put()` while `__futex_key_to_node()` could still read it via speculative `mmap_lock`/RCU access, creating a race that allowed a use-after-free dereference of `mpol->mode`.",
+    "evidence": "The patch states that `futex_key_to_node_opt()` reads `vma->vm_policy` under “speculative mmap lock and RCU” while `mbind()`/`vma_replace_policy()` “frees the old mempolicy immediately via kmem_cache_free()”; the fix changes `__mpol_put()` from `kmem_cache_free(policy_cache, pol)` to `kfree_rcu(pol, rcu)`, and `__futex_key_to_node()` now uses `READ_ONCE(vma->vm_policy)`, confirming the bug was premature freeing of a policy pointer still reachable by lockless readers.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/mempolicy.c",
+      "lineno": 490,
+      "content": "kmem_cache_free(policy_cache, pol);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/futex/core.c",
+      "lineno": 345,
+      "content": "mpol = vma_policy(vma);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The futex/mempolicy code freed `vma->vm_policy` immediately in `__mpol_put()` while `__futex_key_to_node()` could still read it via speculative `mmap_lock`/RCU access, creating a race that allowed a use-after-free dereference of `mpol->mode`.",
+      "evidence_points": "The patch states that `futex_key_to_node_opt()` reads `vma->vm_policy` under “speculative mmap lock and RCU” while `mbind()`/`vma_replace_policy()` “frees the old mempolicy immediately via kmem_cache_free()”; the fix changes `__mpol_put()` from `kmem_cache_free(policy_cache, pol)` to `kfree_rcu(pol, rcu)`, and `__futex_key_to_node()` now uses `READ_ONCE(vma->vm_policy)`, confirming the bug was premature freeing of a policy pointer still reachable by lockless readers."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/linux/mempolicy.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/futex/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "mm/mempolicy.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "mm/mempolicy.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add RCU bookkeeping to mempolicy so it can be safely freed after concurrent access.",
+        "what": "A new `struct rcu_head rcu;` field was added to `struct mempolicy`.",
+        "how": "This extends the mempolicy object with RCU callback metadata, allowing instances to be deferred for safe reclamation after readers have finished accessing them."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Read the VMA policy directly with READ_ONCE in futex node lookup to use the current policy safely under concurrency.",
+        "what": "In __futex_key_to_node(), the code that retrieves the VMA policy was changed from calling vma_policy(vma) to directly reading vma->vm_policy with READ_ONCE().",
+        "how": "At runtime, this makes futex node selection read the VMA policy field directly and atomically with respect to concurrent updates, instead of going through the helper accessor. It preserves the existing fallback behavior when no policy is present, while avoiding any additional logic hidden in vma_policy()."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Switch mempolicy destruction to RCU freeing to prevent races with speculative mmap_lock readers.",
+        "what": "In __mpol_put(), the final object release path was changed from kmem_cache_free(policy_cache, pol) to kfree_rcu(pol, rcu), and a comment was added explaining that the mempolicy object must be freed with RCU because of speculative mmap_lock access paths such as futex_key_to_node_opt().",
+        "how": "When the last reference to a mempolicy is dropped, the object is no longer immediately returned to the slab cache; instead, it is freed after an RCU grace period. This prevents use-after-free races with speculative readers that can access the policy outside normal mmap_lock boundaries, while still relying on mmap_lock serialization for regular accesses."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Use WRITE_ONCE when updating vm_policy to ensure the policy pointer is stored safely and consistently under concurrent access.",
+        "what": "The assignment to vma->vm_policy was changed from a plain store to WRITE_ONCE(vma->vm_policy, new), while keeping the existing comment that it is protected by mmap_lock.",
+        "how": "At runtime, the policy pointer write is now performed with an explicit single-copy atomic access semantics, which prevents the compiler from splitting, reordering, or optimizing away the store in ways that could be problematic for concurrent readers observing vm_policy under lockless or weakly ordered access patterns."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Switch mempolicy destruction to RCU freeing to prevent races with speculative mmap_lock readers."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Read the VMA policy directly with READ_ONCE in futex node lookup to use the current policy safely under concurrency."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use WRITE_ONCE when updating vm_policy to ensure the policy pointer is stored safely and consistently under concurrent access."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add RCU-based mempolicy teardown so mempolicy objects can be safely freed after concurrent access.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the reported race: they change mempolicy teardown to RCU-based freeing so readers like __futex_key_to_node() can safely access vma->vm_policy without use-after-free."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the reported race/UAF by making futex node lookup read vma->vm_policy with READ_ONCE, which is intended to safely access the policy under concurrent updates instead of racing with __mpol_put() freeing it."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause is a race involving concurrent access to vma->vm_policy leading to use-after-free. Updating vm_policy with WRITE_ONCE directly relates to making the pointer update safe under concurrent access and is part of addressing that race."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 490,
+            "content": "kmem_cache_free(policy_cache, pol);",
+            "rationale": "This directly frees the mempolicy object immediately after the refcount drops, which is the root cause of the race: futex code may still speculatively access vma->vm_policy and dereference mpol->mode after the object has been freed."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 1023,
+            "content": "vma->vm_policy = new; /* protected by mmap_lock */",
+            "rationale": "This assignment updates the VMA policy pointer in a way that was not paired with safe concurrent publication/teardown semantics, allowing readers that rely on mmap_lock/RCU-style access to observe a pointer that can be freed too early."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/futex/core.c",
+            "lineno": 345,
+            "content": "mpol = vma_policy(vma);",
+            "rationale": "This is the futex-side read of the VMA policy that can race with immediate freeing in __mpol_put(), leading to a use-after-free when the returned mpol is dereferenced."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/mempolicy.c",
+            "stmt_text": "kmem_cache_free(policy_cache, pol);",
+            "location": "hunk",
+            "explanation": "This immediately frees the mempolicy object after refcount drop, enabling a race where futex code can still speculatively access vma->vm_policy and dereference mpol->mode after the object has been freed."
+          },
+          {
+            "vuln_file": "kernel/futex/core.c",
+            "stmt_text": "mpol = vma_policy(vma);",
+            "location": "hunk",
+            "explanation": "This futex-side read obtains the VMA policy that can race with immediate freeing in __mpol_put(), and the returned pointer may be dereferenced after the object has already been freed."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 490
+        },
+        "commit": "c36f6e6dff4d32ec8b6da8f553933727a57a7a4a",
+        "commit_short": "c36f6e6dff4d",
+        "commit_msg": "mempolicy trivia: slightly more consistent naming\n\nBefore getting down to work, do a little cleanup, mainly of inconsist",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 311,
+        "code_snippet": "commit c36f6e6dff4d32ec8b6da8f553933727a57a7a4a\nAuthor: Hugh Dickins <hughd@google.com>\nDate:   Tue Oct 3 02:20:14 2023 -0700\n\n    mempolicy trivia: slightly more consistent naming\n    \n    Before getting down to work, do a little cleanup, mainly of inconsistent\n    variable naming.  I gave up trying to rationalize mpol versus pol versus\n    policy, and node versus nid, but let's avoid p and nd.  Remove a few\n    superfluous blank lines, but add one; and here prefer vma->vm_policy to\n    vma_pol",
+        "exists": true,
+        "reason": "The shown function is the policy destructor path: `if (!atomic_dec_and_test(&pol->refcnt)) return; kmem_cache_free(policy_cache, pol);`. This immediately frees the mempolicy object once the refcount drops to zero, and the vulnerability root cause says `vma->vm_policy` could still be read later via speculative `mmap_lock`/RCU access in `__futex_key_to_node()`, leading to use-after-free of `mpol->mode`. There is no additional grace period, RCU deferral, or other protection here, so the vulnerable construct is present and the fix is not present in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7f1ee4e20708",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 311
+        },
+        "commit": "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+        "commit_short": "52cd3b074050",
+        "commit_msg": "mempolicy: rework mempolicy Reference Counting [yet again]\n\nAfter further discussion with Christoph Lameter, it has beco",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 251,
+        "code_snippet": "commit 52cd3b074050dd664380b5e8cfc85d4a6ed8ad48\nAuthor: Lee Schermerhorn <lee.schermerhorn@hp.com>\nDate:   Mon Apr 28 02:13:16 2008 -0700\n\n    mempolicy: rework mempolicy Reference Counting [yet again]\n    \n    After further discussion with Christoph Lameter, it has become clear that my\n    earlier attempts to clean up the mempolicy reference counting were a bit of\n    overkill in some areas, resulting in superflous ref/unref in what are usually\n    fast paths.  In other areas, further inspectio",
+        "exists": false,
+        "reason": "The shown code has already been reworked to avoid the vulnerable immediate-free pattern. The root cause was that `__mpol_put()` could free `vma->vm_policy` while other code still read it via speculative mmap_lock/RCU access. In this commit, `get_vma_policy()` no longer blindly returns an extra-refcounted VMA policy; instead it says non-shared VMA policies are \"protected by the task's mmap_sem\" and only shared policies need extra refcounting. The allocation paths also use `mpol_cond_put(pol)` and `__mpol_cond_copy()` to preserve shared-policy lifetime, e.g. `if (unlikely(mpol_needs_cond_ref(pol))) { ... __mpol_put(pol); }`, and `show_numa_map()` ends with `mpol_cond_put(pol);`. This indicates the fix is already present in the snippet, and the vulnerable construct is not present here."
+      }
+    },
+    {
+      "bic_found": "c36f6e6dff4d32ec8b6da8f553933727a57a7a4a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "kernel/futex/core.c",
+          "anchor_lineno": 345
+        },
+        "commit": "c042c505210dc3453f378df432c10fff3d471bc5",
+        "commit_short": "c042c505210d",
+        "commit_msg": "futex: Implement FUTEX2_MPOL\n\nExtend the futex2 interface to be aware of mempolicy.\n\nWhen FUTEX2_MPOL is specified and t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/futex/core.c",
+        "display_lineno": 344,
+        "code_snippet": "commit c042c505210dc3453f378df432c10fff3d471bc5\nAuthor: Peter Zijlstra <peterz@infradead.org>\nDate:   Wed Apr 16 18:29:17 2025 +0200\n\n    futex: Implement FUTEX2_MPOL\n    \n    Extend the futex2 interface to be aware of mempolicy.\n    \n    When FUTEX2_MPOL is specified and there is a MPOL_PREFERRED or\n    home_node specified covering the futex address, use that hash-map.\n    \n    Notably, in this case the futex will go to the global node hashtable,\n    even if it is a PRIVATE futex.\n    \n    When",
+        "exists": false,
+        "reason": "The vulnerability root cause is a use-after-free on vma->vm_policy / mpol->mode due to premature freeing in __mpol_put() while __futex_key_to_node() reads the policy under speculative RCU/mmap-lock access. In this snippet, the relevant code is present in the new FUTEX2_MPOL path: `mpol = vma_policy(vma);` followed by `switch (mpol->mode) { ... }`. However, this code does not show any direct freeing of the policy, and it already uses the intended speculative access pattern with `guard(rcu)();`, `mmap_lock_speculate_try_begin(mm, &seq)`, and retry logic in `futex_key_to_node_opt()`, plus a fallback under `guard(mmap_read_lock)(mm);`. Since the root-cause freeing bug is not in this function body and the fix/bug state cannot be established from this snippet alone, the vulnerable construct itself is absent here."
+      }
+    },
+    {
+      "bic_found": "c042c505210dc3453f378df432c10fff3d471bc5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "c36f6e6dff4d32ec8b6da8f553933727a57a7a4a": 1,
+        "c042c505210dc3453f378df432c10fff3d471bc5": 1
+      },
+      "bic_candidates": [
+        "c36f6e6dff4d32ec8b6da8f553933727a57a7a4a",
+        "c042c505210dc3453f378df432c10fff3d471bc5"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

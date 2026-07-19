@@ -1,0 +1,250 @@
+{
+  "cveid": "CVE-2026-52991",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a5b98009f16d8a5fb4a8ff9a193f5735515c38fa"
+  ],
+  "ground_truth_bic": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+  "predicted_bic": [
+    "0d2b5955b36250a9428c832664f2079cbf723bec",
+    "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+    "a06247c6804f1a7c86a2e5398a4c1f1db1471848"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 20101,
+  "root_cause": {
+    "text": "`sched/psi`’s `pressure_write()` in `kernel/cgroup/cgroup.c` read and used `kernfs_open_file->priv` (`struct cgroup_file_ctx *ctx`) outside the protection of `cgroup_kn_lock_live()`/`cgroup_mutex`, allowing `cgroup_file_release()` during cgroup removal to free and NULL that pointer concurrently, leading to use-after-free or NULL dereference.",
+    "evidence": "The patch moves `ctx = of->priv;` to after `cgroup_kn_lock_live(of->kn, false)` and adds a NULL check, while the CVE description shows `cgroup_file_release()` doing `kfree(ctx); of->priv = NULL;` concurrently with `pressure_write()` later using `ctx->psi.trigger`, and the reported bug is a KASAN slab-use-after-free in `pressure_write+0xa4/0x210`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/cgroup/cgroup.c",
+      "lineno": 3937,
+      "content": "struct cgroup_file_ctx *ctx = of->priv;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/cgroup/cgroup.c",
+      "lineno": 3936,
+      "content": "if (ctx->psi.trigger) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/cgroup/cgroup.c",
+      "lineno": 3962,
+      "content": "smp_store_release(&ctx->psi.trigger, new);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`sched/psi`’s `pressure_write()` in `kernel/cgroup/cgroup.c` read and used `kernfs_open_file->priv` (`struct cgroup_file_ctx *ctx`) outside the protection of `cgroup_kn_lock_live()`/`cgroup_mutex`, allowing `cgroup_file_release()` during cgroup removal to free and NULL that pointer concurrently, leading to use-after-free or NULL dereference.",
+      "evidence_points": "The patch moves `ctx = of->priv;` to after `cgroup_kn_lock_live(of->kn, false)` and adds a NULL check, while the CVE description shows `cgroup_file_release()` doing `kfree(ctx); of->priv = NULL;` concurrently with `pressure_write()` later using `ctx->psi.trigger`, and the reported bug is a KASAN slab-use-after-free in `pressure_write+0xa4/0x210`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/cgroup/cgroup.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Refactor pressure_write() to use a single unlock path and add a null-context check to avoid invalid access and ensure proper cleanup on all exits.",
+        "what": "The function `pressure_write()` was changed to stop storing `of->priv` immediately into `ctx` and instead declare `ctx` separately, add a new `ssize_t ret = 0`, and defer unlocking/return handling through a shared `out_unlock` label. The explicit `cgroup_get(cgrp)` and `cgroup_put(cgrp)` calls were removed, `cgroup_kn_unlock(of->kn)` was moved to a common exit path, and error returns for missing `ctx`, an existing trigger, or `psi_trigger_create()` failure now set `ret` and jump to the shared unlock path.",
+        "how": "Runtime behavior is functionally the same on success, but cleanup is now centralized so the kernfs lock is always released before returning. The code also now checks whether `of->priv` is NULL and returns `-ENODEV` in that case, preventing dereference of a missing file context. Errors from an existing trigger or trigger creation failure still abort the write, but they now exit through the same unlock path instead of manually dropping the cgroup reference."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Refactor pressure_write() to use a single unlock path and add a null-context check to avoid invalid access and ensure proper cleanup on all exits."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change targets pressure_write() and adds a null-context check plus cleanup restructuring, which directly relates to the reported race/use-after-free risk from accessing ctx outside cgroup lock protection."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/cgroup/cgroup.c",
+            "lineno": 3937,
+            "content": "struct cgroup_file_ctx *ctx = of->priv;",
+            "rationale": "This reads kernfs_open_file->priv into ctx before any cgroup_kn_lock_live()/cgroup_mutex protection. If cgroup removal races with pressure_write(), cgroup_file_release() can free or NULL this object concurrently, making later dereferences of ctx vulnerable to use-after-free or NULL dereference."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/cgroup/cgroup.c",
+            "lineno": 3936,
+            "content": "if (ctx->psi.trigger) {",
+            "rationale": "This dereferences ctx after it was obtained without the required lifetime protection. If cgroup_file_release() runs concurrently, ctx may already be freed or cleared, directly triggering UAF or NULL dereference."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/cgroup/cgroup.c",
+            "lineno": 3962,
+            "content": "smp_store_release(&ctx->psi.trigger, new);",
+            "rationale": "This writes through ctx without first ensuring the context remains valid under the proper lock. The root cause is unsafe access to of->priv outside cgroup lifetime protection, and this store can fault if ctx was concurrently released."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/cgroup/cgroup.c",
+            "stmt_text": "struct cgroup_file_ctx *ctx = of->priv;",
+            "location": "hunk",
+            "explanation": "This reads the kernfs open file private pointer into ctx before any cgroup lifetime protection is held. If cgroup removal races with pressure_write(), cgroup_file_release() can free or NULL this pointer concurrently, creating the use-after-free or NULL dereference condition."
+          },
+          {
+            "vuln_file": "kernel/cgroup/cgroup.c",
+            "stmt_text": "if (ctx->psi.trigger) {",
+            "location": "hunk",
+            "explanation": "This dereferences ctx after it was acquired without cgroup_kn_lock_live() or cgroup_mutex protection. If the pointer was concurrently freed or cleared by cgroup_file_release(), this access can trigger a use-after-free or NULL dereference."
+          },
+          {
+            "vuln_file": "kernel/cgroup/cgroup.c",
+            "stmt_text": "smp_store_release(&ctx->psi.trigger, new);",
+            "location": "hunk",
+            "explanation": "This writes through ctx without first ensuring the object is still valid under the required cgroup lifetime locking. Because ctx may have been concurrently released, this store is vulnerable to use-after-free or a fault."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d730905bc3c0",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3937
+        },
+        "commit": "0d2b5955b36250a9428c832664f2079cbf723bec",
+        "commit_short": "0d2b5955b362",
+        "commit_msg": "cgroup: Allocate cgroup_file_ctx for kernfs_open_file->priv\n\nof->priv is currently used by each interface file implement",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3633,
+        "code_snippet": "commit 0d2b5955b36250a9428c832664f2079cbf723bec\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Thu Jan 6 11:02:29 2022 -1000\n\n    cgroup: Allocate cgroup_file_ctx for kernfs_open_file->priv\n    \n    of->priv is currently used by each interface file implementation to store\n    private information. This patch collects the current two private data usages\n    into struct cgroup_file_ctx which is allocated and freed by the common path.\n    This allows generic private data which applies to multiple files, ",
+        "exists": false,
+        "reason": "The vulnerability root cause was that `pressure_write()` read and used `kernfs_open_file->priv` directly, outside the `cgroup_kn_lock_live()`/`cgroup_mutex` protection, so `cgroup_file_release()` could free or NULL it concurrently. In this commit, `cgroup_pressure_write()` no longer uses `of->priv` as the trigger storage; it first does `struct cgroup_file_ctx *ctx = of->priv;` and then uses `&ctx->psi.trigger` in `psi_trigger_replace(&ctx->psi.trigger, new);`. The corresponding poll/release paths also dereference the same per-file context (`ctx = of->priv; return psi_trigger_poll(&ctx->psi.trigger, ...)` and `psi_trigger_replace(&ctx->psi.trigger, NULL);`). More importantly, `cgroup_file_open()` now allocates a dedicated `struct cgroup_file_ctx` and assigns `of->priv = ctx`, and `cgroup_file_release()` retrieves the context and `kfree(ctx)`. This shows the bug-avoidance fix is present in this version rather than the vulnerable direct reuse of `of->priv`."
+      }
+    },
+    {
+      "bic_found": "0d2b5955b36250a9428c832664f2079cbf723bec",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d730905bc3c0",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3936
+        },
+        "commit": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+        "commit_short": "0e94682b73bf",
+        "commit_msg": "psi: introduce psi monitor\n\nPsi monitor aims to provide a low-latency short-term pressure detection\nmechanism configurab",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3556,
+        "code_snippet": "commit 0e94682b73bfa6c44c98af7a26771c9c08c055d5\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Tue May 14 15:41:15 2019 -0700\n\n    psi: introduce psi monitor\n    \n    Psi monitor aims to provide a low-latency short-term pressure detection\n    mechanism configurable by users.  It allows users to monitor psi metrics\n    growth and trigger events whenever a metric raises above user-defined\n    threshold within user-defined time window.\n    \n    Time window and threshold are both expressed i",
+        "exists": false,
+        "reason": "The shown code already uses the protecting lookup before touching the cgroup state: `cgrp = cgroup_kn_lock_live(of->kn, false); if (!cgrp) return -ENODEV;` followed by `cgroup_get(cgrp); cgroup_kn_unlock(of->kn);` and only then `new = psi_trigger_create(&cgrp->psi, buf, nbytes, res);`. This means the `kernfs_open_file->priv`-related psi trigger setup is not performed by reading an unprotected `of->priv` as described in the root cause. The release path also explicitly clears the trigger with `psi_trigger_replace(&of->priv, NULL);`, which indicates the file-private trigger is managed through replacement rather than unsafe direct use. Since the vulnerable construct (unprotected use of `of->priv` / `ctx`) is absent here, `has_bug` is false, and the code already contains the relevant locking/ownership handling, so `is_fixed` is true."
+      }
+    },
+    {
+      "bic_found": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d730905bc3c0",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3962
+        },
+        "commit": "a06247c6804f1a7c86a2e5398a4c1f1db1471848",
+        "commit_short": "a06247c6804f",
+        "commit_msg": "psi: Fix uaf issue when psi trigger is destroyed while being polled\n\nWith write operation on psi files replacing old tri",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3659,
+        "code_snippet": "commit a06247c6804f1a7c86a2e5398a4c1f1db1471848\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Tue Jan 11 15:23:09 2022 -0800\n\n    psi: Fix uaf issue when psi trigger is destroyed while being polled\n    \n    With write operation on psi files replacing old trigger with a new one,\n    the lifetime of its waitqueue is totally arbitrary. Overwriting an\n    existing trigger causes its waitqueue to be freed and pending poll()\n    will stumble on trigger->event_wait which was destroyed.\n    Fix",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": false,\n  \"is_fixed\": true,\n  \"reason\": \"The vulnerable construct described in the root cause is not present in this snippet. The shown `cgroup_pressure_write()` al"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "fb3b0673b7d5",
+          "anchor_file": "kernel/cgroup/cgroup.c",
+          "anchor_lineno": 3659
+        },
+        "commit": "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+        "commit_short": "0e94682b73bf",
+        "commit_msg": "psi: introduce psi monitor\n\nPsi monitor aims to provide a low-latency short-term pressure detection\nmechanism configurab",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cgroup.c",
+        "display_lineno": 3579,
+        "code_snippet": "commit 0e94682b73bfa6c44c98af7a26771c9c08c055d5\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Tue May 14 15:41:15 2019 -0700\n\n    psi: introduce psi monitor\n    \n    Psi monitor aims to provide a low-latency short-term pressure detection\n    mechanism configurable by users.  It allows users to monitor psi metrics\n    growth and trigger events whenever a metric raises above user-defined\n    threshold within user-defined time window.\n    \n    Time window and threshold are both expressed i",
+        "exists": false,
+        "reason": "The shown commit adds the PSI pressure write path, and it already protects access to the cgroup via `cgroup_kn_lock_live()` before creating/replacing the trigger: `cgrp = cgroup_kn_lock_live(of->kn, false); if (!cgrp) return -ENODEV; ... cgroup_get(cgrp); cgroup_kn_unlock(of->kn);`. The vulnerable root cause described is a later bug where `pressure_write()` reads and uses `of->priv` / `ctx` outside `cgroup_kn_lock_live()`/`cgroup_mutex`, but that specific buggy construct is not present here. Instead, the code uses `psi_trigger_replace(&of->priv, new);` only after successfully pinning the cgroup, and it also provides `cgroup_pressure_release()` to clear the trigger with `psi_trigger_replace(&of->priv, NULL);`. So the vulnerable construct is absent in this snippet, and the code already reflects the intended fix pattern rather than the bug."
+      }
+    },
+    {
+      "bic_found": "a06247c6804f1a7c86a2e5398a4c1f1db1471848",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "0d2b5955b36250a9428c832664f2079cbf723bec": 1,
+        "0e94682b73bfa6c44c98af7a26771c9c08c055d5": 1,
+        "a06247c6804f1a7c86a2e5398a4c1f1db1471848": 1
+      },
+      "bic_candidates": [
+        "0d2b5955b36250a9428c832664f2079cbf723bec",
+        "0e94682b73bfa6c44c98af7a26771c9c08c055d5",
+        "a06247c6804f1a7c86a2e5398a4c1f1db1471848"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,312 @@
+{
+  "cveid": "CVE-2026-31706",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "3e4e2ea2a781018ed5d75f969e3e5606beb66e48"
+  ],
+  "ground_truth_bic": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+  "predicted_bic": [
+    "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+    "8f0541186e9ad1b62accc9519cc2b7a7240272a7"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 40038,
+  "root_cause": {
+    "text": "The `smb_inherit_dacl()` function trusts an untrusted u16 `num_aces` value read from the parent directory's on-disk DACL xattr without validating it against the declared `pdacl_size`, allowing an attacker to trigger an oversized heap allocation and incomplete buffer population.",
+    "evidence": "The patch adds validation that was missing: `if (num_aces > aces_size / (offsetof(struct smb_ace, sid) + offsetof(struct smb_sid, sub_auth) + sizeof(__le16)))` before the allocation. The CVE description shows that without this check, a tampered `num_aces = 0xFFFF` with minimal actual ACE data causes `kmalloc(sizeof(struct smb_ace) * num_aces * 2, ...)` to allocate ~8 MB, and the subsequent loop only partially populates it. Additionally, the loop's minimum size check was using the weaker `offsetof(struct smb_ace, access_req)` instead of the correct minimum valid ACE size `offsetof(struct smb_ace, sid) + CIFS_SID_BASE_SIZE`, and did not reject under-sized ACEs.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/smbacl.c",
+      "lineno": 1109,
+      "content": "aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2,",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/smbacl.c",
+      "lineno": 1124,
+      "content": "for (i = 0; i < num_aces; i++) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/smbacl.c",
+      "lineno": 1130,
+      "content": "pace_size = le16_to_cpu(parent_aces->size);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `smb_inherit_dacl()` function trusts an untrusted u16 `num_aces` value read from the parent directory's on-disk DACL xattr without validating it against the declared `pdacl_size`, allowing an attacker to trigger an oversized heap allocation and incomplete buffer population.",
+      "evidence_points": "The patch adds validation that was missing: `if (num_aces > aces_size / (offsetof(struct smb_ace, sid) + offsetof(struct smb_sid, sub_auth) + sizeof(__le16)))` before the allocation. The CVE description shows that without this check, a tampered `num_aces = 0xFFFF` with minimal actual ACE data causes `kmalloc(sizeof(struct smb_ace) * num_aces * 2, ...)` to allocate ~8 MB, and the subsequent loop only partially populates it. Additionally, the loop's minimum size check was using the weaker `offsetof(struct smb_ace, access_req)` instead of the correct minimum valid ACE size `offsetof(struct smb_ace, sid) + CIFS_SID_BASE_SIZE`, and did not reject under-sized ACEs."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/smbacl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/smbacl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/smb/server/smbacl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add bounds validation for num_aces against DACL payload and use safer kmalloc_array to prevent integer overflow and out-of-bounds access.",
+        "what": "Added validation check for num_aces against DACL payload size before allocation, and replaced kmalloc with kmalloc_array for the aces_base allocation.",
+        "how": "The change prevents potential integer overflow and out-of-bounds memory access by validating that num_aces does not exceed the available DACL payload divided by the minimum ACE size. The kmalloc_array function is safer than kmalloc for array allocations as it checks for multiplication overflow. This ensures the subsequent memory allocation and ACE parsing operations work with validated bounds."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Remove unused variable assignment that calculates ACE size but is never referenced in the function.",
+        "what": "Removed the line `aces_size = acl_len - sizeof(struct smb_acl);` which was calculating the size of ACEs (Access Control Entries) by subtracting the ACL header size from the total ACL length.",
+        "how": "This removes an unused variable assignment. The `aces_size` variable was being calculated but never subsequently used in the function logic, so removing it eliminates dead code and reduces unnecessary computation."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Strengthen ACE structure validation by checking for minimum required SID size in addition to buffer bounds, preventing processing of incomplete or malformed access control entries.",
+        "what": "Modified two boundary check conditions in the ACE (Access Control Entry) validation loop: (1) replaced the check `offsetof(struct smb_ace, access_req) > aces_size` with `aces_size < offsetof(struct smb_ace, sid) + CIFS_SID_BASE_SIZE`, and (2) expanded the check `pace_size > aces_size` to also validate `pace_size < offsetof(struct smb_ace, sid) + CIFS_SID_BASE_SIZE`.",
+        "how": "These changes enforce stricter validation of ACE structure sizes before processing. The original checks only verified that the buffer had enough space for the access_req field, but the new checks ensure the buffer contains at least the minimum required size for a complete SID (Security Identifier) within the ACE structure. This prevents potential buffer over-reads or processing of incomplete/malformed ACE entries by validating both the remaining buffer size and the individual ACE entry size against the minimum required structure size."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Strengthen ACE structure validation by checking for minimum required SID size in addition to buffer bounds, preventing processing of incomplete or malformed access control entries."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove unused variable assignment that calculates ACE size but is never referenced in the function."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Strengthen validation of ACE (Access Control Entry) structures by adding bounds checking and size validation to prevent processing of malformed or incomplete entries.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by adding validation of the untrusted `num_aces` value against the DACL payload size (Hunk 0) and strengthening ACE structure validation with bounds checking (Hunk 2). These changes prevent the oversized heap allocation and incomplete buffer population issues that the vulnerability exploits."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group removes an unused variable assignment for ACE size calculation. This is a code cleanup/refactoring change that does not address the core vulnerability: the lack of validation of the untrusted `num_aces` value against `pdacl_size`. The vulnerability requires adding validation logic, not removing unused variables."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/smb/server/smbacl.c",
+            "lineno": 1109,
+            "content": "aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2,",
+            "rationale": "This line allocates heap memory based on untrusted num_aces value without prior validation against pdacl_size. The allocation size is computed directly from num_aces without bounds checking, allowing an attacker to trigger oversized allocations."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/server/smbacl.c",
+            "lineno": 1124,
+            "content": "for (i = 0; i < num_aces; i++) {",
+            "rationale": "This loop iterates num_aces times without validating that num_aces is consistent with the actual DACL payload size (aces_size). The loop condition trusts the untrusted num_aces value, allowing processing of more ACEs than the buffer actually contains."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/server/smbacl.c",
+            "lineno": 1130,
+            "content": "pace_size = le16_to_cpu(parent_aces->size);",
+            "rationale": "This line reads pace_size from parent_aces without first validating that parent_aces points to valid data within the aces_size bounds. Since num_aces was not validated against pdacl_size, parent_aces may point beyond the allocated buffer."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/smbacl.c",
+            "stmt_text": "aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2,",
+            "location": "hunk",
+            "explanation": "This statement allocates heap memory based on the untrusted u16 num_aces value read from the parent directory's on-disk DACL xattr without any validation against pdacl_size. The allocation size is computed directly from num_aces without bounds checking, allowing an attacker to trigger oversized heap allocations that exceed the actual DACL payload size."
+          },
+          {
+            "vuln_file": "fs/smb/server/smbacl.c",
+            "stmt_text": "for (i = 0; i < num_aces; i++) {",
+            "location": "hunk",
+            "explanation": "This loop iterates num_aces times without validating that num_aces is consistent with the actual DACL payload size (aces_size). The loop condition trusts the untrusted num_aces value, allowing the loop to iterate more times than the buffer actually contains, leading to out-of-bounds access when processing ACE structures."
+          },
+          {
+            "vuln_file": "fs/smb/server/smbacl.c",
+            "stmt_text": "pace_size = le16_to_cpu(parent_aces->size);",
+            "location": "hunk",
+            "explanation": "This statement reads pace_size from parent_aces without first validating that parent_aces points to valid data within the aces_size bounds. Since num_aces was not validated against pdacl_size, parent_aces may point beyond the allocated buffer, resulting in reading from uninitialized or out-of-bounds memory."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ce23158bfe58",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1109
+        },
+        "commit": "0066f623bce8f98b69b752ee03d46a5047c281b8",
+        "commit_short": "0066f623bce8",
+        "commit_msg": "ksmbd: use __GFP_RETRY_MAYFAIL\n\nPrefer to report ENOMEM rather than incur the oom for allocations in\nksmbd. __GFP_NORETR",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 1035,
+        "code_snippet": "commit 0066f623bce8f98b69b752ee03d46a5047c281b8\nAuthor: Namjae Jeon <linkinjeon@kernel.org>\nDate:   Fri Nov 22 16:33:25 2024 +0900\n\n    ksmbd: use __GFP_RETRY_MAYFAIL\n    \n    Prefer to report ENOMEM rather than incur the oom for allocations in\n    ksmbd. __GFP_NORETRY could not achieve that, It would fail the allocations\n    just too easily. __GFP_RETRY_MAYFAIL will keep retrying the allocation\n    until there is no more progress and fail the allocation instead go OOM\n    and let the caller to ",
+        "exists": true,
+        "reason": "The vulnerability is present at line 1035-1036 where `kmalloc(sizeof(struct smb_ace) * num_aces * 2, KSMBD_DEFAULT_GFP)` allocates memory based on the untrusted `num_aces` value read from the parent directory's DACL xattr at line 1026: `num_aces = le32_to_cpu(parent_pdacl->num_aces)`. While there is validation of `pdacl_size` against `acl_len` at lines 1030-1033, there is NO validation that `num_aces` is consistent with the actual available space in the DACL structure. The loop at line 1050 iterates `num_aces` times and reads ACE entries from `parent_aces`, but if `num_aces` is maliciously large compared to the actual data available (determined by `aces_size` which is calculated at line 1045), the allocation at line 1035 will be oversized while the buffer population in the loop may be incomplete or read beyond valid bounds. The vulnerability root cause condition exists: an untrusted u16 `num_aces` is used for allocation without validation against `pdacl_size`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "d6eb09fb4670",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1035
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 978,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The vulnerable construct is present at line 975: `num_aces = le32_to_cpu(parent_pdacl->num_aces);` where an untrusted u32 value is read from the parent directory's on-disk DACL xattr without validation. This untrusted value is then used directly at line 978 in `kmalloc(sizeof(struct smb_ace) * num_aces * 2, GFP_KERNEL)` to allocate heap memory, and subsequently in the loop condition at line 989: `for (i = 0; i < num_aces; i++)`. There is no validation that `num_aces` is consistent with the declared `pdacl_size` (obtained from `acl_len` at line 967). An attacker can craft a malicious parent directory with a DACL xattr containing an inflated `num_aces` value, causing an oversized heap allocation and incomplete buffer population when the loop iterates based on this untrusted count. The code lacks any bounds checking between the declared DACL size and the number of ACEs claimed in the structure."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ce23158bfe58",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1124
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 989,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The vulnerable construct is clearly present. At line 975, `num_aces` is read from the untrusted parent DACL xattr without validation: `num_aces = le32_to_cpu(parent_pdacl->num_aces);`. This value is then used directly at line 978 to allocate heap memory: `aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2, GFP_KERNEL);`. The vulnerability exists because there is no validation that `num_aces` is consistent with the actual size of the parent DACL structure (`pdacl_size`). An attacker can craft a malicious xattr with an inflated `num_aces` value, causing an oversized heap allocation. Subsequently, the loop at line 989 iterates `num_aces` times, potentially reading beyond the bounds of the actual parent ACE data, leading to incomplete buffer population and heap corruption. The code lacks any bounds checking between the declared `num_aces` and the actual DACL buffer size."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ce23158bfe58",
+          "anchor_file": "fs/smb/server/smbacl.c",
+          "anchor_lineno": 1130
+        },
+        "commit": "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+        "commit_short": "8f0541186e9a",
+        "commit_msg": "ksmbd: fix heap-based overflow in set_ntacl_dacl()\n\nThe testcase use SMB2_SET_INFO_HE command to set a malformed file at",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/smbacl.c",
+        "display_lineno": 1050,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The vulnerability exists at line 1021 where `num_aces = le32_to_cpu(parent_pdacl->num_aces)` reads an untrusted u32 value from the parent directory's on-disk DACL xattr. This value is then used at line 1030 to allocate heap memory: `aces_base = kmalloc(sizeof(struct smb_ace) * num_aces * 2, GFP_KERNEL)`. Although there is validation at lines 1025-1028 checking that `pdacl_size` is within bounds, there is NO validation that `num_aces` is consistent with `pdacl_size`. An attacker can craft a malformed DACL with a large `num_aces` value but small `pdacl_size`, causing an oversized heap allocation. The loop at lines 1044-1101 then iterates based on `num_aces` but may not populate the entire allocated buffer if the actual ACE data in the parent DACL is smaller than expected, leading to incomplete buffer population and potential heap overflow when the buffer is later used."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "8f0541186e9ad1b62accc9519cc2b7a7240272a7",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9": 2,
+        "8f0541186e9ad1b62accc9519cc2b7a7240272a7": 1
+      },
+      "bic_candidates": [
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "8f0541186e9ad1b62accc9519cc2b7a7240272a7"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

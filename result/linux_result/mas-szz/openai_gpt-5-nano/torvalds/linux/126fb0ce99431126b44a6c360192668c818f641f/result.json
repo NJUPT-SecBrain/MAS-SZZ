@@ -1,0 +1,204 @@
+{
+  "cveid": "CVE-2025-71271",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "126fb0ce99431126b44a6c360192668c818f641f"
+  ],
+  "ground_truth_bic": "432f7c78cb000a3151fa0d39585b000312f50d7e",
+  "predicted_bic": [
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 18,
+  "llm_tokens": 16437,
+  "root_cause": {
+    "text": "The hfsplus new mount API conversion introduced an ownership/lifetime bug where `sb->s_fs_info` (`struct hfsplus_sb_info`) was allocated before `hfsplus_fill_super()` but only freed in `put_super`, so failures in `setup_bdev_super()/sget_fc()` before `fill_super` completed left `sb->s_fs_info` leaked.",
+    "evidence": "The CVE/commit explicitly says that after the new mount API conversion, if `setup_bdev_super()` fails after `sget_fc()` allocates a new superblock but before `hfsplus_fill_super()` takes ownership of the filesystem-specific `s_fs_info`, it is leaked; correspondingly, the patch removes `kfree(sbi)` from the `hfsplus_fill_super()` error path and moves final cleanup from `hfsplus_put_super()` into a new `hfsplus_kill_super()` that calls `kill_block_super(sb)` and then `call_rcu(&sbi->rcu, delayed_free)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/hfsplus/super.c",
+      "lineno": 715,
+      "content": ".kill_sb\t= kill_block_super,",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The hfsplus new mount API conversion introduced an ownership/lifetime bug where `sb->s_fs_info` (`struct hfsplus_sb_info`) was allocated before `hfsplus_fill_super()` but only freed in `put_super`, so failures in `setup_bdev_super()/sget_fc()` before `fill_super` completed left `sb->s_fs_info` leaked.",
+      "evidence_points": "The CVE/commit explicitly says that after the new mount API conversion, if `setup_bdev_super()` fails after `sget_fc()` allocates a new superblock but before `hfsplus_fill_super()` takes ownership of the filesystem-specific `s_fs_info`, it is leaked; correspondingly, the patch removes `kfree(sbi)` from the `hfsplus_fill_super()` error path and moves final cleanup from `hfsplus_put_super()` into a new `hfsplus_kill_super()` that calls `kill_block_super(sb)` and then `call_rcu(&sbi->rcu, delayed_free)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/hfsplus/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/hfsplus/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/hfsplus/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove the deferred RCU free from hfsplus_put_super() to avoid incorrect asynchronous cleanup during superblock teardown.",
+        "what": "The call to call_rcu(&sbi->rcu, delayed_free); was removed from hfsplus_put_super(), leaving the function to close the extents tree, free s_vhdr_buf, free s_backup_vhdr_buf, and then return.",
+        "how": "At runtime, unmount cleanup in hfsplus_put_super() no longer schedules deferred RCU-based freeing via delayed_free for the hfsplus superblock info object. This stops that asynchronous free path from being invoked during this teardown sequence, avoiding that extra deferred deallocation step."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove the explicit kfree(sbi) from hfsplus_fill_super() error cleanup to avoid freeing sbi twice or outside its proper ownership path.",
+        "what": "The error path labeled out_unload_nls in hfsplus_fill_super() was changed by removing the call to kfree(sbi) before returning err.",
+        "how": "On this failure path, the function no longer frees the sbi allocation explicitly, which avoids releasing that memory at this point and prevents a potential invalid or duplicate free if cleanup is handled elsewhere."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add an HFS+-specific kill_sb handler that defers superblock-private cleanup with RCU to avoid teardown-time use-after-free issues.",
+        "what": "A new static function, hfsplus_kill_super(struct super_block *sb), was added; it retrieves the hfsplus_sb_info via HFSPLUS_SB(sb), calls kill_block_super(sb), and then schedules delayed_free on sbi->rcu using call_rcu(). The file_system_type definition was updated to replace .kill_sb = kill_block_super with .kill_sb = hfsplus_kill_super.",
+        "how": "At unmount or superblock teardown, the filesystem now performs the normal block superblock destruction and then defers freeing the HFS+ superblock-private data through an RCU callback instead of using the generic kill_block_super directly. This ensures the private structure remains valid until after any RCU readers are done, preventing premature cleanup and potential use-after-free during teardown."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove the deferred RCU free from hfsplus_put_super() to avoid incorrect asynchronous cleanup during superblock teardown."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add an HFS+-specific kill_sb handler that defers superblock-private cleanup with RCU to avoid teardown-time use-after-free issues."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix HFS+ superblock teardown and error-cleanup ownership so superblock-private data is freed only through the correct deferred kill_sb path, avoiding use-after-free and double-free issues.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The root cause is an allocation/lifetime leak of sb->s_fs_info on mount/setup failure before fill_super completes. This change only removes deferred RCU freeing in hfsplus_put_super() during normal superblock teardown, which does not address the pre-fill_super failure leak path."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly affect ownership and lifetime of hfsplus superblock private data (sb->s_fs_info/hfsplus_sb_info), which is the root cause area. Adjusting error cleanup to stop freeing sbi in fill_super and moving cleanup into the filesystem-specific kill_sb path addresses the same superblock teardown/cleanup ownership bug introduced by the new mount API conversion."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "fs/hfsplus/super.c",
+            "lineno": 715,
+            "content": ".kill_sb\t= kill_block_super,",
+            "rationale": "Using the generic kill_block_super meant HFS+ lacked filesystem-specific teardown to free sb->s_fs_info on superblock setup/failure paths handled by sget_fc()/setup_bdev_super(), causing the leaked hfsplus_sb_info ownership/lifetime bug."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/hfsplus/super.c",
+            "lineno": 653,
+            "content": "kfree(sbi);",
+            "rationale": "This explicit free in hfsplus_fill_super() reflects incorrect ownership of sb->s_fs_info during error handling; it was removed because superblock-private data should be released via the proper superblock teardown path, and this misownership is directly tied to the mount API lifetime bug."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/hfsplus/super.c",
+            "stmt_text": ".kill_sb\t= kill_block_super,",
+            "location": "hunk",
+            "explanation": "Using the generic kill_block_super omitted HFS+-specific superblock-private cleanup for sb->s_fs_info. With the new mount API, failures before hfsplus_fill_super() completed could leave the allocated struct hfsplus_sb_info attached to the superblock and leaked because the generic kill path did not provide the required filesystem-specific lifetime handling."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "05ce49a902be",
+          "anchor_file": "fs/hfsplus/super.c",
+          "anchor_lineno": 715
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/hfsplus/super.c",
+        "display_lineno": 467,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided snippet only shows the file_system_type registration: `.get_sb = hfsplus_get_sb` and `.kill_sb = kill_block_super`. The root cause concerns allocation and cleanup of `sb->s_fs_info` around mount-time failure paths (`setup_bdev_super()/sget_fc()` before `hfsplus_fill_super()` completes), but this function body does not show any allocation of `struct hfsplus_sb_info`, any assignment to `sb->s_fs_info`, or any error-path cleanup logic. Since the relevant mount/fill-super code is not present, there is not enough context to determine whether the vulnerable construct exists or whether a fix is present."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 1
+      },
+      "bic_candidates": [
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

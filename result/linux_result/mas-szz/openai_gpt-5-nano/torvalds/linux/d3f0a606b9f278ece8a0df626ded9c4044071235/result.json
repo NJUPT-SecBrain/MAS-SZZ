@@ -1,0 +1,181 @@
+{
+  "cveid": "CVE-2026-53265",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "d3f0a606b9f278ece8a0df626ded9c4044071235"
+  ],
+  "ground_truth_bic": "2d1f7b65f5deedd2e6b09fdc6ea27f8375f24b45",
+  "predicted_bic": [
+    "b29d4986d0da1a27cd35917cdb433672f5c95d7f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 10,
+  "llm_tokens": 22059,
+  "root_cause": {
+    "text": "A check-then-act race in `dm-cache-policy-smq`'s `smq_invalidate_mapping()` left the `entry->allocated` state check outside `mq->lock`, allowing concurrent invalidations to act on a stale allocation state and double-remove/free the same SMQ entry.",
+    "evidence": "The patch moves `if (!e->allocated) return -ENODATA;` from before `spin_lock_irqsave(&mq->lock, flags);` to inside the locked section, and the CVE/commit message explicitly states that two concurrent invalidators could both see `e->allocated` as true, after which one frees the entry and the other proceeds with the stale unchecked result, corrupting queues/hash state or triggering a double free path in `free_entry()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/md/dm-cache-policy-smq.c",
+      "lineno": 1594,
+      "content": "if (!e->allocated)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A check-then-act race in `dm-cache-policy-smq`'s `smq_invalidate_mapping()` left the `entry->allocated` state check outside `mq->lock`, allowing concurrent invalidations to act on a stale allocation state and double-remove/free the same SMQ entry.",
+      "evidence_points": "The patch moves `if (!e->allocated) return -ENODATA;` from before `spin_lock_irqsave(&mq->lock, flags);` to inside the locked section, and the CVE/commit message explicitly states that two concurrent invalidators could both see `e->allocated` as true, after which one frees the entry and the other proceeds with the stale unchecked result, corrupting queues/hash state or triggering a double free path in `free_entry()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/md/dm-cache-policy-smq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix smq_invalidate_mapping() to check allocation state under the lock and correctly return -ENODATA when no mapping exists.",
+        "what": "The function smq_invalidate_mapping() was changed to introduce a local return variable `r` initialized to 0, move the `!e->allocated` check inside the `spin_lock_irqsave()`/`spin_unlock_irqrestore()` critical section, set `r = -ENODATA` and jump to a new `out:` label when the entry is not allocated, and return `r` instead of always returning 0.",
+        "how": "At runtime, the allocation-state check is now performed while holding `mq->lock`, so the function no longer inspects or acts on `e->allocated` outside the protected region. This ensures the lock is always properly paired before returning and allows the function to correctly return `-ENODATA` when the mapping is already absent, while still freeing and removing the entry and returning success otherwise."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix smq_invalidate_mapping() to check allocation state under the lock and correctly return -ENODATA when no mapping exists."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the race root cause by moving the allocation-state check in smq_invalidate_mapping() under mq->lock, preventing stale entry->allocated observations and ensuring correct handling (-ENODATA) when no mapping exists."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/dm-cache-policy-smq.c",
+            "lineno": 1594,
+            "content": "if (!e->allocated)",
+            "rationale": "This allocation-state check is performed before taking mq->lock, creating the check-then-act race. Another thread can change or free the entry after this check, causing stale state to be used by the subsequent removal/free operations."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/dm-cache-policy-smq.c",
+            "lineno": 1595,
+            "content": "return -ENODATA;",
+            "rationale": "This return is part of the unsynchronized pre-lock allocation-state test. It embodies the incorrect act based on a racy observation of e->allocated."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/dm-cache-policy-smq.c",
+            "lineno": 1599,
+            "content": "del_queue(mq, e);",
+            "rationale": "This destructive operation can run on an entry whose allocation state was checked outside the lock, enabling double removal when concurrent invalidations act on the same stale entry state."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/dm-cache-policy-smq.c",
+            "lineno": 1601,
+            "content": "free_entry(&mq->cache_alloc, e);",
+            "rationale": "This frees the entry after relying on the racy pre-lock e->allocated check, making double-free possible if another thread invalidated and freed the same entry concurrently."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/md/dm-cache-policy-smq.c",
+            "stmt_text": "if (!e->allocated)",
+            "location": "hunk",
+            "explanation": "This is the root vulnerable statement because it checks the entry allocation state before taking mq->lock, creating the check-then-act race. Concurrent invalidation can change or free the entry after this test, so later destructive operations may act on stale state."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fb7415f2ab0e",
+          "anchor_file": "drivers/md/dm-cache-policy-smq.c",
+          "anchor_lineno": 1594
+        },
+        "commit": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+        "commit_short": "b29d4986d0da",
+        "commit_msg": "dm cache: significant rework to leverage dm-bio-prison-v2\n\nThe cache policy interfaces have been updated to work well wi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-policy-smq.c",
+        "display_lineno": 1559,
+        "code_snippet": "commit b29d4986d0da1a27cd35917cdb433672f5c95d7f\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Thu Dec 15 04:57:31 2016 -0500\n\n    dm cache: significant rework to leverage dm-bio-prison-v2\n    \n    The cache policy interfaces have been updated to work well with the new\n    bio-prison v2 interface's ability to queue work immediately (promotion,\n    demotion, etc) -- overriding benefit being reduced latency on processing\n    IO through the cache.  Previously such work would be left for the DM\n    c",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in `smq_invalidate_mapping()`. The function does `struct entry *e = get_entry(&mq->cache_alloc, from_cblock(cblock));` and then immediately checks `if (!e->allocated) return -ENODATA;` before any locking is taken. There is no `spin_lock_irqsave(&mq->lock, ...)` in this function at all. After that unchecked state observation, it performs the destructive actions `del_queue(mq, e); h_remove(&mq->table, e); free_entry(&mq->cache_alloc, e);`. This matches the root cause exactly: a check-then-act race on `e->allocated`, with the allocation-state check outside `mq->lock`, allowing concurrent invalidations to observe stale allocated state and both proceed to remove/free the same entry. The code even contains `// FIXME: what if this block has pending background work?`, indicating missing synchronization/handling. Because the needed protection around the allocated-state test and subsequent removal is absent, the vulnerable construct is present and the fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "742c8fdc31e8",
+          "anchor_file": "drivers/md/dm-cache-policy-smq.c",
+          "anchor_lineno": 1559
+        },
+        "commit": "9ed84698fdda63de93c68150c4f63673cc3d7b54",
+        "commit_short": "9ed84698fdda",
+        "commit_msg": "dm cache: make the 'mq' policy an alias for 'smq'\n\nsmq seems to be performing better than the old mq policy in all\nsitua",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-policy-smq.c",
+        "display_lineno": 1580,
+        "code_snippet": "commit 9ed84698fdda63de93c68150c4f63673cc3d7b54\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Wed Feb 10 10:18:10 2016 +0000\n\n    dm cache: make the 'mq' policy an alias for 'smq'\n    \n    smq seems to be performing better than the old mq policy in all\n    situations, as well as using a quarter of the memory.\n    \n    Make 'mq' an alias for 'smq' when choosing a cache policy.  The tunables\n    that were present for the old mq are faked, and have no effect.  mq\n    should be considered deprecated",
+        "exists": false,
+        "reason": "The provided function body is not the vulnerable logic described in the root cause. The root cause concerns a race in `smq_invalidate_mapping()` where `entry->allocated` was checked outside `mq->lock`. This snippet instead parses a tunable value with `kstrtoul()` and handles deprecated keys via `strcasecmp()` and `DMWARN`, ending with `return -EINVAL;`. There is no `smq_invalidate_mapping()`, no `entry->allocated` check, no `mq->lock`, and no invalidate/remove/free logic shown. Therefore the vulnerable construct is absent from this function body, and the snippet is insufficient to determine whether the commit's actual `smq_invalidate_mapping()` contains the bug or the fix."
+      }
+    },
+    {
+      "bic_found": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "b29d4986d0da1a27cd35917cdb433672f5c95d7f": 1
+      },
+      "bic_candidates": [
+        "b29d4986d0da1a27cd35917cdb433672f5c95d7f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

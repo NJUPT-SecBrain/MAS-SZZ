@@ -1,0 +1,497 @@
+{
+  "cveid": "CVE-2026-31535",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "9911b1ed187a770a43950bf51f340ad4b7beecba"
+  ],
+  "ground_truth_bic": "5fb9b459b3686e366640edd4e62805ef7b4de927",
+  "predicted_bic": [
+    "c7316ec2d542e27ea717a0d7493902098329f908",
+    "f198186aa9bbd60fae7a2061f4feec614d880299",
+    "5fb9b459b3686e366640edd4e62805ef7b4de927",
+    "869bb7284fb2976b59ad29455cddd44bce0976f7"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 24,
+  "llm_tokens": 60187,
+  "root_cause": {
+    "text": "The receive credit management in the smbdirect client used a racy calculation based on the count of posted recv_io messages and granted credits, creating a window between hardware reception and completion processing where credits already consumed by the peer could be mistakenly granted again.",
+    "evidence": "The commit message explicitly states: \"The logic off managing recv credits by counting posted recv_io and granted credits is racy. That's because the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist.\" The patch fixes this by introducing a dedicated `credits.available` counter that is incremented when recv buffers are posted (in `smbd_post_send_credits`) and drained only when credits are actually granted (in `manage_credits_prior_sending`), thereby eliminating the race.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1041,
+      "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1045,
+      "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1038,
+      "content": "if (atomic_read(&sc->recv_io.credits.count) >= sc->recv_io.credits.target)",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1049,
+      "content": "return new_credits;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1219,
+      "content": "new_credits = manage_credits_prior_sending(sc);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1220,
+      "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 642,
+      "content": "atomic_inc(&sc->recv_io.posted.count);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The receive credit management in the smbdirect client used a racy calculation based on the count of posted recv_io messages and granted credits, creating a window between hardware reception and completion processing where credits already consumed by the peer could be mistakenly granted again.",
+      "evidence_points": "The commit message explicitly states: \"The logic off managing recv credits by counting posted recv_io and granted credits is racy. That's because the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist.\" The patch fixes this by introducing a dedicated `credits.available` counter that is incremented when recv buffers are posted (in `smbd_post_send_credits`) and drained only when credits are actually granted (in `manage_credits_prior_sending`), thereby eliminating the race."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1041,
+            "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "rationale": "Reads the count of posted receive I/O messages without any lock, creating a race window with completion processing that may change this count concurrently."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1045,
+            "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "rationale": "Reads the current granted credit count and subtracts it from the posted count, a non-atomic two-step operation that can interleave with updates from hardware completions or peer messages, leading to incorrect credit grant decisions."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1038,
+            "content": "if (atomic_read(&sc->recv_io.credits.count) >= sc->recv_io.credits.target)",
+            "rationale": "Performs an early check on credits count that is part of the racy logic; this read may see a stale value due to lack of synchronization, affecting the credit grant path."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1049,
+            "content": "return new_credits;",
+            "rationale": "Returns a computed value that is based on racy reads of posted count and credits count, thus propagating a potentially incorrect credit grant amount to the caller."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1219,
+            "content": "new_credits = manage_credits_prior_sending(sc);",
+            "rationale": "Invokes the racy credit calculation, making the vulnerability actionable at the point of sending a packet where credits are added and granted."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1220,
+            "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "rationale": "Atomically adds the potentially incorrect credit amount to the credits count, but the addition itself does not fix the race; the value added is the result of racy calculations, causing credits to be granted even if already consumed."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 642,
+            "content": "atomic_inc(&sc->recv_io.posted.count);",
+            "rationale": "Increments the posted count after a receive completes, but this update is not synchronized with the credit calculation in manage_credits_prior_sending, leading to the window where credits already consumed by the peer can be mistakenly granted again."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "location": "hunk",
+            "explanation": "Reads the posted count without synchronization, creating a race window with completion processing that can change this count concurrently. This non-atomic read is the foundation of the racy credit calculation."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "Subtracts the current credit count from the posted count using a separate atomic_read, resulting in a non-atomic two-step operation. This can interleave with updates from completions or peer messages, leading to an incorrect credit calculation."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "if (atomic_read(&sc->recv_io.credits.count) >= sc->recv_io.credits.target)",
+            "location": "hunk",
+            "explanation": "Performs an early check on the credits count without any lock. This read may see a stale value due to lack of synchronization, causing the function to skip credit grant or affect the control flow in a racy manner."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "return new_credits;",
+            "location": "hunk",
+            "explanation": "Returns the computed credit amount that is based on racy reads of posted count and credits count. This propagates a potentially incorrect credit grant value to the caller, making the vulnerability actionable."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "new_credits = manage_credits_prior_sending(sc);",
+            "location": "hunk",
+            "explanation": "Invokes the racy credit calculation function just before sending, allowing the incorrect credit value to be obtained and subsequently used to grant credits that may have already been consumed by the peer."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "Atomically adds the potentially incorrect credit amount to the credits count. Although the addition itself is atomic, the value added is the result of racy calculations, causing credits to be mistakenly granted even if already consumed by the peer."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "atomic_inc(&sc->recv_io.posted.count);",
+            "location": "hunk",
+            "explanation": "Increments the posted count after a receive completion, but this update is not synchronized with the credit calculation in manage_credits_prior_sending. This creates the race window where credits already consumed by the peer can be mistakenly granted again."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1041
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 966,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": true,
+        "reason": "The commit refactors receive credit fields into `struct smbdirect_socket`, but retains the same racy logic in `manage_credits_prior_sending()` and `smbd_post_send_iter()`. Specifically, lines like `new_credits = atomic_read(&sc->recv_io.posted.count); new_credits -= atomic_read(&sc->recv_io.credits.count);` and then `atomic_add(new_credits, &sc->recv_io.credits.count);` exhibit a TOCTOU race between reading posted/credits and granting credits. No fix is applied; the vulnerable pattern remains unchanged."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5fb9b459b368",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 966
+        },
+        "commit": "5fb9b459b3686e366640edd4e62805ef7b4de927",
+        "commit_short": "5fb9b459b368",
+        "commit_msg": "smb: client: count the number of posted recv_io messages in order to calculated credits\n\n(At least for me) the logic mai",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 966,
+        "code_snippet": "commit 5fb9b459b3686e366640edd4e62805ef7b4de927\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 13:57:37 2025 +0200\n\n    smb: client: count the number of posted recv_io messages in order to calculated credits\n    \n    (At least for me) the logic maintaining the count of posted\n    recv_io messages and the count of granted credits is much easier\n    to understand.\n    \n    From there we can easily calculate the number of new_credits we'll\n    grant to the peer in outgoing send_io m",
+        "exists": false,
+        "reason": "The diff removes the old racy spinlock-based new_credits_offered logic and introduces atomic counting of posted recv_io (receive_posted). In manage_credits_prior_sending, new_credits is calculated as atomic_read(&info->receive_posted) - atomic_read(&info->receive_credits), which directly reflects pending completions and eliminates the window where credits already consumed by the peer could be mistakenly granted again. The atomic operations and the new calculation constitute the correct handling, so the vulnerability is fixed."
+      }
+    },
+    {
+      "bic_found": "c7316ec2d542e27ea717a0d7493902098329f908",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1045
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 970,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": true,
+        "reason": "The commit is a refactoring that renames fields from info->receive_credits/receive_posted to sc->recv_io.credits.count/sc->recv_io.posted.count and similar, but retains the same racy logic in manage_credits_prior_sending (lines 'new_credits = atomic_read(&sc->recv_io.posted.count); new_credits -= atomic_read(&sc->recv_io.credits.count);') and in recv_done (atomic_dec of posted and credits count). The race condition between hardware reception and completion processing is still present; no fix is introduced."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5fb9b459b368",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 970
+        },
+        "commit": "5fb9b459b3686e366640edd4e62805ef7b4de927",
+        "commit_short": "5fb9b459b368",
+        "commit_msg": "smb: client: count the number of posted recv_io messages in order to calculated credits\n\n(At least for me) the logic mai",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 970,
+        "code_snippet": "commit 5fb9b459b3686e366640edd4e62805ef7b4de927\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 13:57:37 2025 +0200\n\n    smb: client: count the number of posted recv_io messages in order to calculated credits\n    \n    (At least for me) the logic maintaining the count of posted\n    recv_io messages and the count of granted credits is much easier\n    to understand.\n    \n    From there we can easily calculate the number of new_credits we'll\n    grant to the peer in outgoing send_io m",
+        "exists": true,
+        "reason": "The new code in `manage_credits_prior_sending()` (lines 962-976 of the diff) performs a racy calculation: it reads `receive_posted` and `receive_credits` using separate `atomic_read()` calls without any lock or atomic combined operation. This creates a window where a concurrent `recv_done()` can change both values between the reads, leading to an incorrect credit grant. This matches the root cause description of a racy calculation based on posted recv_io messages and granted credits. No synchronization fix is present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "9219f8cac296",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 970
+        },
+        "commit": "f198186aa9bbd60fae7a2061f4feec614d880299",
+        "commit_short": "f198186aa9bb",
+        "commit_msg": "CIFS: SMBD: Establish SMB Direct connection\n\nAdd code to implement the core functions to establish a SMB Direct connecti",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 845,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The function simply atomically reads and resets new_credits_offered under a spinlock. It does not contain any calculation comparing posted recv_io messages with granted credits, nor any racy logic that could lead to double-crediting. Therefore the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "5fb9b459b3686e366640edd4e62805ef7b4de927",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1038
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 963,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": true,
+        "reason": "The commit refactors field accesses from info->receive_credits, info->receive_posted, info->receive_credit_target to sc->recv_io.credits.count, sc->recv_io.posted.count, sc->recv_io.credits.target, but preserves the same racy logic (e.g., manage_credits_prior_sending at lines 960-976, smbd_post_send_credits at lines 536-563, and recv_done at lines 658-665). The race condition between reading posted/credits and using them to grant new credits remains unchanged. No fix for the race is introduced."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5fb9b459b368",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 963
+        },
+        "commit": "f198186aa9bbd60fae7a2061f4feec614d880299",
+        "commit_short": "f198186aa9bb",
+        "commit_msg": "CIFS: SMBD: Establish SMB Direct connection\n\nAdd code to implement the core functions to establish a SMB Direct connecti",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 841,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided function body is a trivial getter that simply returns the value of info->new_credits_offered under a lock. It does not contain any calculation involving posted recv_io messages or granted credits, nor does it show the race window described in the root cause. The vulnerable logic is likely in other parts of the credit management code not shown here, so no determination can be made from this snippet alone."
+      }
+    },
+    {
+      "bic_found": "c7316ec2d542e27ea717a0d7493902098329f908",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1049
+        },
+        "commit": "f198186aa9bbd60fae7a2061f4feec614d880299",
+        "commit_short": "f198186aa9bb",
+        "commit_msg": "CIFS: SMBD: Establish SMB Direct connection\n\nAdd code to implement the core functions to establish a SMB Direct connecti",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 848,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The function only atomically reads and clears info->new_credits_offered under a spinlock (lines 843-846). It does not perform any calculation based on posted recv_io messages or granted credits, which is the core of the vulnerability root cause. Therefore, the vulnerable construct is absent from this function."
+      }
+    },
+    {
+      "bic_found": "f198186aa9bbd60fae7a2061f4feec614d880299",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1219
+        },
+        "commit": "869bb7284fb2976b59ad29455cddd44bce0976f7",
+        "commit_short": "869bb7284fb2",
+        "commit_msg": "smb: client: pass struct smbdirect_socket to manage_credits_prior_sending()\n\nThis will make it easier to move function t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 1129,
+        "code_snippet": "commit 869bb7284fb2976b59ad29455cddd44bce0976f7\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Fri Aug 22 10:18:12 2025 +0200\n\n    smb: client: pass struct smbdirect_socket to manage_credits_prior_sending()\n    \n    This will make it easier to move function to the common code\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Ac",
+        "exists": true,
+        "reason": "The function manage_credits_prior_sending() computes new_credits based on a non-atomic read-modify-write of recv_io.credits.count (line 'new_credits = sc->recv_io.credits.target - atomic_read(&sc->recv_io.credits.count);') then later performs an atomic_add of that delta. This is a classic time-of-check-to-time-of-use race: between reading the count and adding, the count can be changed by a completion, causing over-granting of credits. The commit does not alter this logic; it only refactors the function signature. Therefore the vulnerable construct is present and no fix is applied."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "be8602d47d41",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1129
+        },
+        "commit": "d4e5160d1a0bf089af41c21f273a507e6ace45cd",
+        "commit_short": "d4e5160d1a0b",
+        "commit_msg": "cifs: smbd: Update receive credits before sending and deal with credits roll back on failure before sending\n\nRecevie cre",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 850,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The function calls manage_credits_prior_sending() at line 851 to update receive credits before sending the packet, and handles rollback on DMA mapping failure by adjusting new_credits_offered and subtracting receive credits (lines 903-906). This implements the fix described in the commit, removing the vulnerable racy window. The vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "869bb7284fb2976b59ad29455cddd44bce0976f7",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1220
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 1124,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": true,
+        "reason": "The commit is a refactoring that moves fields (receive_credits, receive_posted, receive_credit_target, post_send_credits_work) into a sub-structure recv_io, but the logic remains unchanged. The vulnerable race condition in manage_credits_prior_sending(), smbd_post_send_iter(), recv_done(), and smbd_post_send_credits() is still present. For example, manage_credits_prior_sending() reads atomic values of posted and credits count non-atomically, creating a window where credits already consumed by the peer could be mistakenly granted again. The fix is not applied in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5fb9b459b368",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1124
+        },
+        "commit": "d4e5160d1a0bf089af41c21f273a507e6ace45cd",
+        "commit_short": "d4e5160d1a0b",
+        "commit_msg": "cifs: smbd: Update receive credits before sending and deal with credits roll back on failure before sending\n\nRecevie cre",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 850,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The function correctly updates receive credits (via manage_credits_prior_sending and atomic_add) before sending the packet, and includes rollback logic on error (spin_lock/lock_new_credits_offered, atomic_sub). This implements the fix described in the commit message, eliminating the race condition where credits could be granted again after the peer consumed them. No vulnerable construct remains."
+      }
+    },
+    {
+      "bic_found": "c7316ec2d542e27ea717a0d7493902098329f908",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 642
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 561,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": true,
+        "reason": "The commit refactors the variable names from info->receive_posted/receive_credits to sc->recv_io.posted.count/sc->recv_io.credits.count, but preserves the exact same logic. The race condition in manage_credits_prior_sending (new_credits = atomic_read(&sc->recv_io.posted.count) - atomic_read(&sc->recv_io.credits.count)) is unchanged, creating a window between hardware reception and completion processing where credits already consumed could be mistakenly granted again. No fix is introduced."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5fb9b459b368",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 561
+        },
+        "commit": "f198186aa9bbd60fae7a2061f4feec614d880299",
+        "commit_short": "f198186aa9bb",
+        "commit_msg": "CIFS: SMBD: Establish SMB Direct connection\n\nAdd code to implement the core functions to establish a SMB Direct connecti",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 506,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function increments receive_credits by ret (line 517) after posting recv buffers, then calls check_and_send_immediate (line 520). This racy calculation creates a window between posting and completion where credits already consumed by the peer could be double-counted, matching the vulnerability root cause. No fix is present in this code (initial commit)."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "f198186aa9bbd60fae7a2061f4feec614d880299",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "c7316ec2d542e27ea717a0d7493902098329f908": 3,
+        "5fb9b459b3686e366640edd4e62805ef7b4de927": 1,
+        "f198186aa9bbd60fae7a2061f4feec614d880299": 2,
+        "869bb7284fb2976b59ad29455cddd44bce0976f7": 1
+      },
+      "bic_candidates": [
+        "c7316ec2d542e27ea717a0d7493902098329f908",
+        "f198186aa9bbd60fae7a2061f4feec614d880299",
+        "5fb9b459b3686e366640edd4e62805ef7b4de927",
+        "869bb7284fb2976b59ad29455cddd44bce0976f7"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

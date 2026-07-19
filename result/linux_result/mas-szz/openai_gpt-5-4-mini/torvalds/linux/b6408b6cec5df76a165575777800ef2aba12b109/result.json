@@ -1,0 +1,242 @@
+{
+  "cveid": "CVE-2026-31592",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b6408b6cec5df76a165575777800ef2aba12b109"
+  ],
+  "ground_truth_bic": "1e80fdc09d121d8327cdf62eefbb5abadddca792",
+  "predicted_bic": [
+    "eaf78265a4ab33935d3a0f1407ce4a91aac4d4d5",
+    "5ef1d8c1ddbf696e47b226e11888eaf8d9e8e807"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 30020,
+  "root_cause": {
+    "text": "`sev_mem_enc_register_region()` in KVM/SEV checked `sev_guest()` before taking `kvm->lock`, so a concurrent or failed `KVM_SEV_INIT{2}` could leave `sev->regions_list` uninitialized while the function still proceeded to add a region to it, causing a null-deref/general protection fault.",
+    "evidence": "The patch moves `guard(mutex)(&kvm->lock);` to the top of `sev_mem_enc_register_region()` before `if (!sev_guest(kvm)) return -ENOTTY;`, and the commit message explicitly says `sev_guest() isn't stable unless kvm->lock is held` and that if `KVM_SEV_INIT{2} fails`, KVM can “end up trying to add to a not-yet-initialized sev->regions_list, e.g. triggering a #GP”; the crash trace shows the fault in `list_add_tail()` inside `sev_mem_enc_register_region()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/x86/kvm/svm/sev.c",
+      "lineno": 2709,
+      "content": "if (!sev_guest(kvm))",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kvm/svm/sev.c",
+      "lineno": 2742,
+      "content": "list_add_tail(&region->list, &sev->regions_list);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`sev_mem_enc_register_region()` in KVM/SEV checked `sev_guest()` before taking `kvm->lock`, so a concurrent or failed `KVM_SEV_INIT{2}` could leave `sev->regions_list` uninitialized while the function still proceeded to add a region to it, causing a null-deref/general protection fault.",
+      "evidence_points": "The patch moves `guard(mutex)(&kvm->lock);` to the top of `sev_mem_enc_register_region()` before `if (!sev_guest(kvm)) return -ENOTTY;`, and the commit message explicitly says `sev_guest() isn't stable unless kvm->lock is held` and that if `KVM_SEV_INIT{2} fails`, KVM can “end up trying to add to a not-yet-initialized sev->regions_list, e.g. triggering a #GP”; the crash trace shows the fault in `list_add_tail()` inside `sev_mem_enc_register_region()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/x86/kvm/svm/sev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "arch/x86/kvm/svm/sev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "arch/x86/kvm/svm/sev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add automatic locking around SEV memory-encryption region registration to protect KVM state from concurrent access.",
+        "what": "A `guard(mutex)(&kvm->lock);` statement was inserted at the start of `sev_mem_enc_register_region(struct kvm *kvm, ...)`, before the `sev_guest(kvm)` check.",
+        "how": "This ensures `kvm->lock` is automatically held for the duration of the function, serializing access to the KVM state while the SEV memory-encryption region registration logic runs and preventing races with concurrent operations."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Stop holding `kvm->lock` around memory pinning in `sev_mem_enc_register_region()` to avoid unnecessary locking and error-path mismatch.",
+        "what": "The diff removes the `mutex_lock(&kvm->lock);` call before `sev_pin_memory(...)` and removes the matching `mutex_unlock(&kvm->lock);` from the error path in `sev_mem_enc_register_region()`.",
+        "how": "At runtime, the region-pinning operation no longer occurs while holding `kvm->lock`, reducing lock contention and avoiding holding the lock across a potentially slow memory-pinning call. The error path also no longer attempts to unlock a mutex that was not acquired in this function."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove the premature unlock from the successful path of `sev_mem_enc_register_region()` to correct lock handling.",
+        "what": "In `sev_mem_enc_register_region()`, the call to `mutex_unlock(&kvm->lock);` was removed from the normal return path immediately before `return ret;`.",
+        "how": "As written, the function no longer releases `kvm->lock` on successful completion of this path, changing the lock handling behavior at runtime and potentially leaving the mutex held after returning."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add automatic locking around SEV memory-encryption region registration to protect KVM state from concurrent access."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Remove the premature unlock from the successful path of `sev_mem_enc_register_region()` to correct lock handling."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix lock handling in `sev_mem_enc_register_region()` by removing an incorrect early unlock and aligning the lock lifecycle with the region registration flow.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it adds locking around SEV memory-encryption region registration to prevent unsafe access to KVM/SEV state when guest initialization may be concurrent or incomplete."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes are in `sev_mem_enc_register_region()` and adjust its lock handling, which is directly related to the root cause involving incorrect lock/ordering around `sev_guest()` and `kvm->lock` leading to unsafe use of `sev->regions_list`."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kvm/svm/sev.c",
+            "lineno": 2709,
+            "content": "if (!sev_guest(kvm))",
+            "rationale": "This early SEV-state check happens before acquiring kvm->lock, allowing a concurrent or failed KVM_SEV_INIT{2} to race with region registration and leave sev->regions_list uninitialized while execution still proceeds toward list_add_tail()."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "arch/x86/kvm/svm/sev.c",
+            "lineno": 2742,
+            "content": "list_add_tail(&region->list, &sev->regions_list);",
+            "rationale": "This statement dereferences sev->regions_list and is the crash point if the list was never initialized due to the race introduced by checking sev_guest() before taking kvm->lock."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/x86/kvm/svm/sev.c",
+            "stmt_text": "if (!sev_guest(kvm))",
+            "location": "hunk",
+            "explanation": "This pre-lock SEV state check allows a race with KVM_SEV_INIT{2}; if SEV initialization fails or is concurrent, sev->regions_list may remain uninitialized while execution still continues toward list_add_tail()."
+          },
+          {
+            "vuln_file": "arch/x86/kvm/svm/sev.c",
+            "stmt_text": "list_add_tail(&region->list, &sev->regions_list);",
+            "location": "hunk",
+            "explanation": "This statement dereferences sev->regions_list, which can crash if the earlier race left the list uninitialized before region registration proceeds."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9b9f7962e3e8",
+          "anchor_file": "arch/x86/kvm/svm/sev.c",
+          "anchor_lineno": 2709
+        },
+        "commit": "eaf78265a4ab33935d3a0f1407ce4a91aac4d4d5",
+        "commit_short": "eaf78265a4ab",
+        "commit_msg": "KVM: SVM: Move SEV code to separate file\n\nMove the SEV specific parts of svm.c into the new sev.c file.\n\nSigned-off-by: ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/svm/sev.c",
+        "display_lineno": 979,
+        "code_snippet": "commit eaf78265a4ab33935d3a0f1407ce4a91aac4d4d5\nAuthor: Joerg Roedel <jroedel@suse.de>\nDate:   Tue Mar 24 10:41:54 2020 +0100\n\n    KVM: SVM: Move SEV code to separate file\n    \n    Move the SEV specific parts of svm.c into the new sev.c file.\n    \n    Signed-off-by: Joerg Roedel <jroedel@suse.de>\n    Message-Id: <20200324094154.32352-5-joro@8bytes.org>\n    Signed-off-by: Paolo Bonzini <pbonzini@redhat.com>\n\ndiff --git a/arch/x86/kvm/svm/sev.c b/arch/x86/kvm/svm/sev.c\nnew file mode 100644\nindex 0",
+        "exists": false,
+        "reason": "The vulnerable construct is not present in this function. The reported bug was in `sev_mem_enc_register_region()` checking `sev_guest()` before taking `kvm->lock`, which could allow use of an uninitialized `sev->regions_list`. In this commit, `svm_register_enc_region()` does check `if (!sev_guest(kvm)) return -ENOTTY;`, but crucially it then performs `mutex_lock(&kvm->lock);` before `list_add_tail(&region->list, &sev->regions_list);`. That means the region is added only while holding `kvm->lock`, and the list is protected by `sev_guest()` state before the insertion path. The fix behavior is therefore already present in this snippet, and the specific vulnerable early-unlocked add-to-list pattern is absent."
+      }
+    },
+    {
+      "bic_found": "eaf78265a4ab33935d3a0f1407ce4a91aac4d4d5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9b9f7962e3e8",
+          "anchor_file": "arch/x86/kvm/svm/sev.c",
+          "anchor_lineno": 2742
+        },
+        "commit": "5ef1d8c1ddbf696e47b226e11888eaf8d9e8e807",
+        "commit_short": "5ef1d8c1ddbf",
+        "commit_msg": "KVM: SVM: Flush pages under kvm->lock to fix UAF in svm_register_enc_region()\n\nDo the cache flush of converted pages in ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/svm/sev.c",
+        "display_lineno": 1991,
+        "code_snippet": "commit 5ef1d8c1ddbf696e47b226e11888eaf8d9e8e807\nAuthor: Sean Christopherson <seanjc@google.com>\nDate:   Fri Feb 16 17:34:30 2024 -0800\n\n    KVM: SVM: Flush pages under kvm->lock to fix UAF in svm_register_enc_region()\n    \n    Do the cache flush of converted pages in svm_register_enc_region() before\n    dropping kvm->lock to fix use-after-free issues where region and/or its\n    array of pages could be freed by a different task, e.g. if userspace has\n    __unregister_enc_region_locked() already q",
+        "exists": false,
+        "reason": "The shown function body already contains the locking/order fix for the vulnerability described in the root cause. The commit moves the flush to occur while `kvm->lock` is still held: the comment explicitly says, `\"this must be done before dropping kvm->lock, as region and its array of pages can be freed by a different task once kvm->lock is released.\"` In the code, `sev_clflush_pages(region->pages, region->npages);` happens before `list_add_tail(&region->list, &sev->regions_list);` and before `mutex_unlock(&kvm->lock);`. Therefore the vulnerable construct (using `region`/`region->pages` after dropping the lock) is not present here, and the fix is already applied."
+      }
+    },
+    {
+      "bic_found": "5ef1d8c1ddbf696e47b226e11888eaf8d9e8e807",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "eaf78265a4ab33935d3a0f1407ce4a91aac4d4d5": 1,
+        "5ef1d8c1ddbf696e47b226e11888eaf8d9e8e807": 1
+      },
+      "bic_candidates": [
+        "eaf78265a4ab33935d3a0f1407ce4a91aac4d4d5",
+        "5ef1d8c1ddbf696e47b226e11888eaf8d9e8e807"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

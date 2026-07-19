@@ -1,0 +1,208 @@
+{
+  "cveid": "CVE-2026-23150",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "165c34fb6068ff153e3fc99a932a80a9d5755709"
+  ],
+  "ground_truth_bic": "94f418a206648c9be6fd84d6681d6956b8f8b106",
+  "predicted_bic": [
+    "94f418a206648c9be6fd84d6681d6956b8f8b106",
+    "6709d4b7bc2e079241fdef15d1160581c5261c10"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 15,
+  "llm_tokens": 24221,
+  "root_cause": {
+    "text": "A race in the NFC LLCP subsystem let nfc_llcp_send_ui_frame() queue sk_buffs onto nfc_llcp_local->tx_queue without synchronizing against local_cleanup()/nfc_llcp_remove_local(), so frames could be enqueued after tx_queue had been purged during local teardown and become leaked.",
+    "evidence": "The commit message explicitly states “there is no synchronisation between nfc_llcp_send_ui_frame() and local_cleanup(), and skb could be put into local->tx_queue after it was purged,” and the patch fixes this by taking local->tx_queue.lock, changing list_del() to list_del_init() under that lock, checking list_empty(&local->list) before queuing, and freeing the skb instead of enqueueing it.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/nfc/llcp_commands.c",
+      "lineno": 782,
+      "content": "skb_queue_tail(&local->tx_queue, pdu);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/nfc/llcp_core.c",
+      "lineno": 319,
+      "content": "list_del(&local->list);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the NFC LLCP subsystem let nfc_llcp_send_ui_frame() queue sk_buffs onto nfc_llcp_local->tx_queue without synchronizing against local_cleanup()/nfc_llcp_remove_local(), so frames could be enqueued after tx_queue had been purged during local teardown and become leaked.",
+      "evidence_points": "The commit message explicitly states “there is no synchronisation between nfc_llcp_send_ui_frame() and local_cleanup(), and skb could be put into local->tx_queue after it was purged,” and the patch fixes this by taking local->tx_queue.lock, changing list_del() to list_del_init() under that lock, checking list_empty(&local->list) before queuing, and freeing the skb instead of enqueueing it."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/nfc/llcp_commands.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/nfc/llcp_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Prevent queuing UI frame PDUs on a removed LLCP local instance by checking list membership under the tx queue lock and freeing the skb with an ENXIO-style failure when unavailable.",
+        "what": "The change wraps enqueueing of the UI frame skb with an explicit spin_lock on local->tx_queue.lock, adds a new check for list_empty(&local->list) before queueing, and on that condition unlocks, frees the newly built pdu with kfree_skb(), adjusts len by subtracting remaining_len, converts a zero result to -ENXIO, and breaks out of the loop; it also replaces skb_queue_tail(&local->tx_queue, pdu) with __skb_queue_tail(&local->tx_queue, pdu) while the lock is held.",
+        "how": "At runtime, this prevents a UI frame fragment from being queued when the local NFC LLCP instance is no longer present in its list, avoiding enqueueing to an invalid or removed context and cleaning up the allocated skb instead. Using __skb_queue_tail under the held queue lock preserves correct locking semantics and avoids double-locking while making the queue insertion and state check atomic with respect to concurrent removal."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Synchronize LLCP local removal with the transmit queue lock and reinitialize the list node to prevent race-related list corruption.",
+        "what": "Inside nfc_llcp_remove_local(), the code now acquires local->tx_queue.lock before removing the matching local entry from llcp_devices, replaces list_del(&local->list) with list_del_init(&local->list), and then releases local->tx_queue.lock before unlocking llcp_devices_lock and returning.",
+        "how": "At runtime, removal of the local structure from the list is now synchronized with the local transmit queue lock and the list node is reinitialized after deletion, which helps prevent concurrent access races and avoids leaving stale list pointers after the entry is removed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Synchronize LLCP local removal with the transmit queue lock and reinitialize the list node to prevent race-related list corruption."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix LLCP local-instance teardown and transmit-path races by synchronizing list membership/removal under the tx queue lock and safely rejecting sends on removed instances.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the described LLCP race: they synchronize local removal with the tx queue lock and prevent nfc_llcp_send_ui_frame() from queuing sk_buffs on a removed local instance, which is the root cause of the post-teardown enqueue/leak."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/nfc/llcp_commands.c",
+            "lineno": 782,
+            "content": "skb_queue_tail(&local->tx_queue, pdu);",
+            "rationale": "This enqueues a frame onto local->tx_queue without synchronizing against teardown/removal of the LLCP local instance, directly enabling the race where packets are queued after cleanup and then leaked."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/nfc/llcp_core.c",
+            "lineno": 319,
+            "content": "list_del(&local->list);",
+            "rationale": "Removing the local instance from the global list without coordinating with the tx_queue lock allows transmit-side code to race with teardown, so senders may still queue onto a local instance being removed."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/nfc/llcp_commands.c",
+            "stmt_text": "skb_queue_tail(&local->tx_queue, pdu);",
+            "location": "hunk",
+            "explanation": "This statement queues a UI frame PDU onto local->tx_queue without synchronization against LLCP local teardown/removal. As described in the root cause, local_cleanup()/nfc_llcp_remove_local() can purge the queue concurrently, so this enqueue can occur after purge and leak the skb."
+          },
+          {
+            "vuln_file": "net/nfc/llcp_core.c",
+            "stmt_text": "list_del(&local->list);",
+            "location": "hunk",
+            "explanation": "This statement removes the LLCP local instance from the global list without coordinating with the tx_queue lock. That lack of synchronization allows transmit-side code to race with teardown and still treat the local as available, contributing to the window where skb_queue_tail() can enqueue onto a removed instance."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2c84959167d6",
+          "anchor_file": "net/nfc/llcp_commands.c",
+          "anchor_lineno": 782
+        },
+        "commit": "94f418a206648c9be6fd84d6681d6956b8f8b106",
+        "commit_short": "94f418a20664",
+        "commit_msg": "NFC: UI frame sending routine implementation\n\nUI frames still need to follow the MIU rule, and they need to use the\nclie",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/nfc/llcp_commands.c",
+        "display_lineno": 619,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function body is sufficient because it shows the exact enqueue path for UI frames and the lack of any synchronization or teardown-state check before queuing. The vulnerable construct is present at line 619: `skb_queue_tail(&local->tx_queue, pdu);`. The root cause describes a race where `nfc_llcp_send_ui_frame()` can enqueue onto `local->tx_queue` while `local_cleanup()/nfc_llcp_remove_local()` is tearing down and purging that queue. In this function, after `local = sock->local;` and a null check at lines 593-595, there is no locking, no reference protection, no state/cleanup check, and no synchronization around the queue operation. The loop simply allocates a PDU, fills it, and unconditionally appends it to `local->tx_queue`. Therefore this version contains the vulnerable logic, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "94f418a206648c9be6fd84d6681d6956b8f8b106",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2c84959167d6",
+          "anchor_file": "net/nfc/llcp_core.c",
+          "anchor_lineno": 319
+        },
+        "commit": "6709d4b7bc2e079241fdef15d1160581c5261c10",
+        "commit_short": "6709d4b7bc2e",
+        "commit_msg": "net: nfc: Fix use-after-free caused by nfc_llcp_find_local\n\nThis commit fixes several use-after-free that caused by func",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/nfc/llcp_core.c",
+        "display_lineno": 306,
+        "code_snippet": "commit 6709d4b7bc2e079241fdef15d1160581c5261c10\nAuthor: Lin Ma <linma@zju.edu.cn>\nDate:   Sun Jun 25 17:10:07 2023 +0800\n\n    net: nfc: Fix use-after-free caused by nfc_llcp_find_local\n    \n    This commit fixes several use-after-free that caused by function\n    nfc_llcp_find_local(). For example, one UAF can happen when below buggy\n    time window occurs.\n    \n    // nfc_genl_llc_get_params   | // nfc_unregister_device\n                                 |\n    dev = nfc_get_device(idx);   | device",
+        "exists": false,
+        "reason": "The shown function only removes a matching `local` from the global `llcp_devices` list under `llcp_devices_lock` and returns it: `list_del(&local->list); ... return local;`. The stated root cause is a race where `nfc_llcp_send_ui_frame()` enqueues onto `nfc_llcp_local->tx_queue` without synchronizing against `local_cleanup()/nfc_llcp_remove_local()`, leading to frames being queued after `tx_queue` is purged. This snippet does not show `nfc_llcp_send_ui_frame()`, any `tx_queue` access, queue purging, or synchronization around teardown versus enqueue. Therefore the relevant vulnerable construct is not present in this function body, and there is not enough context here to assess that specific race or its fix from this snippet alone."
+      }
+    },
+    {
+      "bic_found": "6709d4b7bc2e079241fdef15d1160581c5261c10",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "94f418a206648c9be6fd84d6681d6956b8f8b106": 1,
+        "6709d4b7bc2e079241fdef15d1160581c5261c10": 1
+      },
+      "bic_candidates": [
+        "94f418a206648c9be6fd84d6681d6956b8f8b106",
+        "6709d4b7bc2e079241fdef15d1160581c5261c10"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

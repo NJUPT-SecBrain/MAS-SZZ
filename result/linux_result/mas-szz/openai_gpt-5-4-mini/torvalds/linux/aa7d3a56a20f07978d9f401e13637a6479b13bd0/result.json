@@ -1,0 +1,283 @@
+{
+  "cveid": "CVE-2025-71142",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "aa7d3a56a20f07978d9f401e13637a6479b13bd0"
+  ],
+  "ground_truth_bic": "f62a5d39368e34a966c8df63e1f05eed7fe9c5de",
+  "predicted_bic": [
+    "181c8e091aae11b0b7efba49b34adfe3c89ce648",
+    "f62a5d39368e34a966c8df63e1f05eed7fe9c5de"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 18,
+  "llm_tokens": 40077,
+  "root_cause": {
+    "text": "The cpuset partition hotplug/disable path in `kernel/cgroup/cpuset.c` assumed `subpartitions_cpus` was still populated when `remote_partition_disable()` checked `cs->effective_xcpus`, but CPU offlining can clear `subpartitions_cpus` first, making the subset check spuriously fail and leaving remote partitions non-invalidated.",
+    "evidence": "The patch changes `remote_partition_disable()` from `WARN_ON_ONCE(!cpumask_subset(cs->effective_xcpus, subpartitions_cpus));` to only warn when `subpartitions_cpus` is non-empty, with a comment explaining that CPU offlining can clear `subpartitions_cpus` before disabling the partition; it also updates `cpuset_hotplug_update_tasks()` to disable remote partitions and invalidate local partitions when `cpumask_empty(subpartitions_cpus)`, matching the CVE description that “subpartitions_cpus gets cleared” and partitions “should be invalidated in this case.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/cgroup/cpuset.c",
+      "lineno": 1671,
+      "content": "WARN_ON_ONCE(!cpumask_subset(cs->effective_xcpus, subpartitions_cpus));",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/cgroup/cpuset.c",
+      "lineno": 3979,
+      "content": "if (remote && cpumask_empty(&new_cpus) &&",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/cgroup/cpuset.c",
+      "lineno": 1669,
+      "content": "partition_is_populated(cs, NULL)) {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The cpuset partition hotplug/disable path in `kernel/cgroup/cpuset.c` assumed `subpartitions_cpus` was still populated when `remote_partition_disable()` checked `cs->effective_xcpus`, but CPU offlining can clear `subpartitions_cpus` first, making the subset check spuriously fail and leaving remote partitions non-invalidated.",
+      "evidence_points": "The patch changes `remote_partition_disable()` from `WARN_ON_ONCE(!cpumask_subset(cs->effective_xcpus, subpartitions_cpus));` to only warn when `subpartitions_cpus` is non-empty, with a comment explaining that CPU offlining can clear `subpartitions_cpus` before disabling the partition; it also updates `cpuset_hotplug_update_tasks()` to disable remote partitions and invalidate local partitions when `cpumask_empty(subpartitions_cpus)`, matching the CVE description that “subpartitions_cpus gets cleared” and partitions “should be invalidated in this case.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/cgroup/cpuset.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/cgroup/cpuset.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/cgroup/cpuset.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid a spurious warning in remote partition disable when CPU offlining has already cleared subpartitions.",
+        "what": "The function `remote_partition_disable()` kept the existing `WARN_ON_ONCE(!is_remote_partition(cs));` check, but replaced the single warning that asserted `cs->effective_xcpus` must be a subset of `subpartitions_cpus` with a compound condition. The new warning only triggers when that subset check fails and `subpartitions_cpus` is not empty, and it adds a comment explaining the offline-CPU/top_cpuset case.",
+        "how": "At runtime, this suppresses a warning in the expected CPU-offline transition path where `subpartitions_cpus` may already have been cleared before the partition is disabled. It still warns on true inconsistencies where the masks do not match while subpartitions remain present, reducing false-positive warnings without changing the disable logic itself."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix remote cpuset hotplug handling to disable partitions not only when their effective CPU mask becomes empty, but also when subpartition CPUs are unavailable.",
+        "what": "The hotplug update logic in cpuset_hotplug_update_tasks() changed its remote-partition error condition. The old check only triggered when remote was true, new_cpus was empty, and the cpuset was populated. The new check also triggers when remote is true and subpartitions_cpus is empty, or when new_cpus is empty and the cpuset is populated. The surrounding error handling and recovery calls remain the same.",
+        "how": "At runtime, this broadens the conditions under which a remote cpuset partition is marked with PERR_HOTPLUG and disabled during hotplug processing. It now catches the case where the partition has no subpartition CPUs available, in addition to the existing empty-effective-CPU populated-partition case, preventing invalid partition state from persisting after CPU topology changes."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Invalidate local partitions when `subpartitions_cpus` is empty to correctly handle an unsupported partition state.",
+        "what": "The condition that sets `partcmd = partcmd_invalidate` in `cpuset_hotplug_update_tasks()` was expanded. A new OR clause `cpumask_empty(subpartitions_cpus)` was added to the existing `is_local_partition(cs) && (... )` check, and the surrounding comment was updated to document a third invalidation case: when `subpartitions_cpus` is empty.",
+        "how": "At runtime, a local partition will now be marked invalid not only when the parent partition is invalid or does not grant any CPUs to the child, but also when the set of CPUs available to subpartitions is empty. This prevents the system from treating a partition as valid in a state where it cannot support any subpartition CPUs."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Invalidate local partitions when `subpartitions_cpus` is empty to correctly handle an unsupported partition state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Handle partition hotplug/disable correctly when subpartition CPU state is unavailable or already cleared.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly match the root cause: they fix cpuset partition hotplug/disable handling when `subpartitions_cpus` has already been cleared, preventing the subset check from failing spuriously and ensuring partitions are properly disabled/invalidated."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/cgroup/cpuset.c",
+            "lineno": 1671,
+            "content": "WARN_ON_ONCE(!cpumask_subset(cs->effective_xcpus, subpartitions_cpus));",
+            "rationale": "This assertion directly assumes subpartitions_cpus still contains the relevant CPUs when remote_partition_disable() runs. The root cause says CPU offlining can clear subpartitions_cpus first, making this subset check spuriously fail and preventing proper invalidation."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/cgroup/cpuset.c",
+            "lineno": 3979,
+            "content": "if (remote && cpumask_empty(&new_cpus) &&",
+            "rationale": "This condition shows the pre-fix hotplug disable path only handled the empty-effective-CPU case. The bug occurs because remote partitions also needed disabling when subpartition CPUs were already unavailable, not just when new_cpus became empty."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/cgroup/cpuset.c",
+            "lineno": 1669,
+            "content": "partition_is_populated(cs, NULL)) {",
+            "rationale": "This population-based guard participates in the old disable condition and can miss the case where subpartitions_cpus is cleared first. The root cause indicates the path failed to invalidate remote partitions under that state."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/cgroup/cpuset.c",
+            "stmt_text": "WARN_ON_ONCE(!cpumask_subset(cs->effective_xcpus, subpartitions_cpus));",
+            "location": "hunk",
+            "explanation": "This assertion assumes subpartitions_cpus still contains all CPUs in cs->effective_xcpus when remote_partition_disable() runs. The root cause says CPU offlining can clear subpartitions_cpus first, so this subset check can fail spuriously and block proper partition invalidation."
+          },
+          {
+            "vuln_file": "kernel/cgroup/cpuset.c",
+            "stmt_text": "if (remote && cpumask_empty(&new_cpus) &&",
+            "location": "hunk",
+            "explanation": "This is part of the pre-fix hotplug disable condition that only triggers when new_cpus becomes empty. The vulnerable behavior is that remote partitions were not disabled when subpartition CPUs had already been cleared, so this condition missed the necessary invalidation."
+          },
+          {
+            "vuln_file": "kernel/cgroup/cpuset.c",
+            "stmt_text": "partition_is_populated(cs, NULL)) {",
+            "location": "hunk",
+            "explanation": "This population check is part of the old disable-path guard. It can still evaluate in a way that misses the case where subpartitions_cpus has been cleared first, allowing remote partitions to remain non-invalidated."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3309b63a2281",
+          "anchor_file": "kernel/cgroup/cpuset.c",
+          "anchor_lineno": 1671
+        },
+        "commit": "f62a5d39368e34a966c8df63e1f05eed7fe9c5de",
+        "commit_short": "f62a5d39368e",
+        "commit_msg": "cgroup/cpuset: Remove remote_partition_check() & make update_cpumasks_hier() handle remote partition\n\nCurrently, changes",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cpuset.c",
+        "display_lineno": 1471,
+        "code_snippet": "commit f62a5d39368e34a966c8df63e1f05eed7fe9c5de\nAuthor: Waiman Long <longman@redhat.com>\nDate:   Sun Mar 30 17:52:42 2025 -0400\n\n    cgroup/cpuset: Remove remote_partition_check() & make update_cpumasks_hier() handle remote partition\n    \n    Currently, changes in exclusive CPUs are being handled in\n    remote_partition_check() by disabling conflicting remote partitions.\n    However, that may lead to results unexpected by the users. Fix\n    this problem by removing remote_partition_check() and m",
+        "exists": false,
+        "reason": "The shown diff removes the vulnerable pattern and replaces it with direct use/maintenance of cs->effective_xcpus in the remote-partition disable path. In the old code, the bug stemmed from `remote_partition_disable()` first doing `compute_effective_exclusive_cpumask(cs, tmp->new_cpus);` and then checking `WARN_ON_ONCE(!cpumask_subset(tmp->new_cpus, subpartitions_cpus));`, which could fail if `subpartitions_cpus` was cleared first. In this version, that sequence is gone: `remote_partition_disable()` now asserts `WARN_ON_ONCE(!cpumask_subset(cs->effective_xcpus, subpartitions_cpus));`, uses `partition_xcpus_del(..., cs->effective_xcpus)`, and only recomputes after the state change with `compute_effective_exclusive_cpumask(cs, NULL, NULL);`. The commit also updates `remote_cpus_update()` and `update_cpumasks_hier()` to manage remote partitions directly, and removes `remote_partition_check()` entirely. So the vulnerable construct is absent and the fix is present."
+      }
+    },
+    {
+      "bic_found": "f62a5d39368e34a966c8df63e1f05eed7fe9c5de",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3309b63a2281",
+          "anchor_file": "kernel/cgroup/cpuset.c",
+          "anchor_lineno": 3979
+        },
+        "commit": "181c8e091aae11b0b7efba49b34adfe3c89ce648",
+        "commit_short": "181c8e091aae",
+        "commit_msg": "cgroup/cpuset: Introduce remote partition\n\nOne can use \"cpuset.cpus.partition\" to create multiple scheduling domains\nor ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cpuset.c",
+        "display_lineno": 4307,
+        "code_snippet": "commit 181c8e091aae11b0b7efba49b34adfe3c89ce648\nAuthor: Waiman Long <longman@redhat.com>\nDate:   Tue Sep 5 09:32:40 2023 -0400\n\n    cgroup/cpuset: Introduce remote partition\n    \n    One can use \"cpuset.cpus.partition\" to create multiple scheduling domains\n    or to produce a set of isolated CPUs where load balancing is disabled.\n    The former use case is less common but the latter one can be frequently\n    used especially for the Telco use cases like DPDK.\n    \n    The existing \"isolated\" part",
+        "exists": false,
+        "reason": "The shown code already contains explicit remote-partition hotplug/disable handling, including the problematic area from the root cause. In particular, the hotplug path checks for a remote partition and disables it before using its CPUs: `if (remote && cpumask_empty(&new_cpus) && partition_is_populated(cs, NULL)) { remote_partition_disable(cs, tmp); ... }`. The disable helper itself computes the mask and then checks subset membership with `WARN_ON_ONCE(!cpumask_subset(tmp->new_cpus, subpartitions_cpus));`, but crucially this commit also maintains `subpartitions_cpus` directly in remote enable/disable and update paths (`cpumask_or(subpartitions_cpus, ... )`, `cpumask_andnot(subpartitions_cpus, ...)`) and introduces a dedicated `remote_children` list so remote partitions are tracked independently. The vulnerable construct described in the root cause—assuming `subpartitions_cpus` is still populated in `remote_partition_disable()` after CPU offlining clears it first—is not visible here as a bug to be triggered; instead, the code has the new remote-partition logic and disable invocation already present, which is the relevant fix direction. Because the snippet includes the full relevant logic, the determination can be made from it."
+      }
+    },
+    {
+      "bic_found": "181c8e091aae11b0b7efba49b34adfe3c89ce648",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3309b63a2281",
+          "anchor_file": "kernel/cgroup/cpuset.c",
+          "anchor_lineno": 1669
+        },
+        "commit": "181c8e091aae11b0b7efba49b34adfe3c89ce648",
+        "commit_short": "181c8e091aae",
+        "commit_msg": "cgroup/cpuset: Introduce remote partition\n\nOne can use \"cpuset.cpus.partition\" to create multiple scheduling domains\nor ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cpuset.c",
+        "display_lineno": 1519,
+        "code_snippet": "commit 181c8e091aae11b0b7efba49b34adfe3c89ce648\nAuthor: Waiman Long <longman@redhat.com>\nDate:   Tue Sep 5 09:32:40 2023 -0400\n\n    cgroup/cpuset: Introduce remote partition\n    \n    One can use \"cpuset.cpus.partition\" to create multiple scheduling domains\n    or to produce a set of isolated CPUs where load balancing is disabled.\n    The former use case is less common but the latter one can be frequently\n    used especially for the Telco use cases like DPDK.\n    \n    The existing \"isolated\" part",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": false,\n  \"is_fixed\": false,\n  \"reason\": \"The shown function body includes the new remote-partition hotplug/disable logic, and it already handles the relevant disab"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e2ffe502ba45",
+          "anchor_file": "kernel/cgroup/cpuset.c",
+          "anchor_lineno": 1519
+        },
+        "commit": "ee8dde0cd2ce78b62d16aec1c29960b64380e634",
+        "commit_short": "ee8dde0cd2ce",
+        "commit_msg": "cpuset: Add new v2 cpuset.sched.partition flag\n\nA new cpuset.sched.partition boolean flag is added to cpuset v2.\nThis ne",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/cgroup/cpuset.c",
+        "display_lineno": 1056,
+        "code_snippet": "commit ee8dde0cd2ce78b62d16aec1c29960b64380e634\nAuthor: Waiman Long <longman@redhat.com>\nDate:   Thu Nov 8 10:08:38 2018 -0500\n\n    cpuset: Add new v2 cpuset.sched.partition flag\n    \n    A new cpuset.sched.partition boolean flag is added to cpuset v2.\n    This new flag, if set, indicates that the cgroup is the root of a\n    new scheduling domain or partition that includes itself and all its\n    descendants except those that are scheduling domain roots themselves\n    and their descendants.\n    \n",
+        "exists": false,
+        "reason": "The shown function bodies already include the new partition-root bookkeeping and do not show the vulnerable stale-state check described in the root cause. In particular, the code explicitly maintains the parent/child partition masks and cleans up consistency after cpumask changes: `update_parent_subparts_cpumask()` updates `parent->subparts_cpus` and `parent->effective_cpus`, and `update_cpumask()` later enforces `subparts_cpus` being a subset of `cpus_allowed` with `cpumask_andnot(cs->subparts_cpus, cs->subparts_cpus, cs->cpus_allowed);`. The hierarchy update also handles partition roots specially: `if ((cp != cs) && cp->partition_root_state && update_parent_subparts_cpumask(cp, partcmd_update, NULL, tmp)) { ... }`. Nothing in this snippet shows the problematic `remote_partition_disable()` subset check against `cs->effective_xcpus` after `subpartitions_cpus` may already have been cleared; that specific vulnerable construct is absent from the provided code. Since the fix for the described bug is also not visible here, `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "181c8e091aae11b0b7efba49b34adfe3c89ce648",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "f62a5d39368e34a966c8df63e1f05eed7fe9c5de": 1,
+        "181c8e091aae11b0b7efba49b34adfe3c89ce648": 2
+      },
+      "bic_candidates": [
+        "181c8e091aae11b0b7efba49b34adfe3c89ce648",
+        "f62a5d39368e34a966c8df63e1f05eed7fe9c5de"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

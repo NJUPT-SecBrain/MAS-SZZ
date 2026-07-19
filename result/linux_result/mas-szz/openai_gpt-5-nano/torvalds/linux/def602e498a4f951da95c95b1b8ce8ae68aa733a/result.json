@@ -1,0 +1,454 @@
+{
+  "cveid": "CVE-2026-23272",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "def602e498a4f951da95c95b1b8ce8ae68aa733a"
+  ],
+  "ground_truth_bic": "35d0ac9070ef619e3bf44324375878a1c540387b",
+  "predicted_bic": [
+    "35d0ac9070ef619e3bf44324375878a1c540387b",
+    "7b225d0b5c6dda5fefab578175f210c6fc7e389a"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 30,
+  "llm_tokens": 42585,
+  "root_cause": {
+    "text": "In nf_tables `nft_add_set_elem()`, the set size check used `atomic_add_unless(&set->nelems, 1, max)` only after the element had already been inserted/published, so when the set was full the code removed the just-published element on the error path without an RCU grace period and without a transaction to safely unwind it.",
+    "evidence": "The CVE/commit states “In case that the set is full, a new element gets published then removed without waiting for the RCU grace period, while RCU reader can be walking over it already,” and the patch moves the `set->nelems` increment before insertion via `atomic_inc_return(&set->nelems)`, always allocates/adds the element transaction, returns `-ENFILE` through `set_full`, and deletes the old `err_set_full: nft_setelem_remove(...)` path.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/netfilter/nf_tables_api.c",
+      "lineno": 7540,
+      "content": "if (!atomic_add_unless(&set->nelems, 1, max)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/netfilter/nf_tables_api.c",
+      "lineno": 7542,
+      "content": "goto err_set_full;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/netfilter/nf_tables_api.c",
+      "lineno": 7551,
+      "content": "nft_setelem_remove(ctx->net, set, elem.priv);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In nf_tables `nft_add_set_elem()`, the set size check used `atomic_add_unless(&set->nelems, 1, max)` only after the element had already been inserted/published, so when the set was full the code removed the just-published element on the error path without an RCU grace period and without a transaction to safely unwind it.",
+      "evidence_points": "The CVE/commit states “In case that the set is full, a new element gets published then removed without waiting for the RCU grace period, while RCU reader can be walking over it already,” and the patch moves the `set->nelems` increment before insertion via `atomic_inc_return(&set->nelems)`, always allocates/adds the element transaction, returns `-ENFILE` through `set_full`, and deletes the old `err_set_full: nft_setelem_remove(...)` path."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/netfilter/nf_tables_api.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/netfilter/nf_tables_api.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/netfilter/nf_tables_api.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/netfilter/nf_tables_api.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add a local set_full state flag in nft_add_set_elem() to support later handling of full-set conditions.",
+        "what": "A new local boolean variable named set_full is introduced in nft_add_set_elem() and initialized to false, with no other changes shown in this diff hunk.",
+        "how": "At runtime, this hunk alone does not change behavior directly, but it prepares the function to track whether the set has reached a full condition so later code in the function can branch on that state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix set element accounting by incrementing non-catchall element counts before transaction creation, detecting over-capacity, and unwinding the count correctly on allocation failure.",
+        "what": "The change adds a conditional block before transaction allocation that skips elements marked with NFT_SET_ELEM_CATCHALL, otherwise reads the set maximum size, atomically increments set->nelems, and sets set_full to true when the incremented count exceeds the maximum; it also changes the error path for nft_trans_elem_alloc() failure from err_elem_free to err_set_size.",
+        "how": "At runtime, normal set element insertions now immediately update the set element count and detect when the set has exceeded its configured maximum size, while catchall elements are excluded from that accounting. Redirecting the allocation failure path to err_set_size ensures the new size/accounting state can be properly unwound instead of leaving the increment unhandled."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix nft_add_set_elem() to use the correct error cleanup path after queuing a transaction-added element, ensuring proper rollback of set state.",
+        "what": "In nft_add_set_elem(), the error-path jump after assigning ue->priv = elem_priv and calling nft_trans_commit_list_add_elem(ctx->net, trans) was changed from 'goto err_elem_free' to 'goto err_set_size'.",
+        "how": "At runtime, this changes which cleanup/error handling block executes when that branch is taken, so the function now follows the set-size rollback path instead of freeing the element directly, ensuring the appropriate state cleanup for a transaction-added element and avoiding incorrect error recovery."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix nftables set element size accounting by deferring full-set reporting and decrementing the element count on post-increment error paths.",
+        "what": "The patch removes the earlier pre-insertion size check that used nft_set_maxsize(set) and atomic_add_unless(&set->nelems, 1, max), deletes the err_set_full label that called nft_setelem_remove(), changes the success return to `return set_full ? -ENFILE : 0;`, and adds a new cleanup path `err_set_size` that decrements `set->nelems` with `atomic_dec(&set->nelems)` for non-catchall elements before destroying the element.",
+        "how": "Instead of rejecting the element before commit when the set appears full, the function now proceeds and returns -ENFILE only if `set_full` was detected after insertion logic. On failure paths after the element count has been incremented, it compensates by decrementing `set->nelems`, preventing the element counter from remaining artificially elevated and avoiding inconsistent set size accounting."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a local set_full state flag in nft_add_set_elem() to support later handling of full-set conditions."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix nftables set element size accounting by deferring full-set reporting and decrementing the element count on post-increment error paths."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix nft_add_set_elem() to use the correct error cleanup path after queuing a transaction-added element, ensuring proper rollback of set state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix nftables set element accounting and capacity handling by adjusting when element counts are updated, deferring full-set checks, and correctly unwinding counts on error paths.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "This change directly targets full-set handling inside nft_add_set_elem(), which is the condition at the core of the bug. Adding a local set_full flag is part of tracking and safely handling the case where insertion occurs before the size check detects the set is full."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the faulty set-capacity/accounting logic in nft_add_set_elem(): they move and correct element count updates, defer full-set handling, and properly unwind counts on error paths, which matches the root cause of checking capacity too late after insertion/publication."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change is in nft_add_set_elem() and specifically fixes the error cleanup/rollback path for a transaction-added element after it has been queued/published, which directly relates to the root cause of unsafe post-publication removal without proper transactional unwinding."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "net/netfilter/nf_tables_api.c",
+            "lineno": 7540,
+            "content": "if (!atomic_add_unless(&set->nelems, 1, max)) {",
+            "rationale": "This is the core faulty capacity check. It increments/checks set size only after the element has already been inserted/published, so a full-set condition is detected too late and triggers unsafe rollback of a visible element."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/netfilter/nf_tables_api.c",
+            "lineno": 7542,
+            "content": "goto err_set_full;",
+            "rationale": "When the late full-set check fails, control jumps to the cleanup path that unwinds an already published element, directly enabling the unsafe removal described in the root cause."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/netfilter/nf_tables_api.c",
+            "lineno": 7551,
+            "content": "nft_setelem_remove(ctx->net, set, elem.priv);",
+            "rationale": "This removes the just-published element on the full-set error path without RCU grace period or transactional protection, which is the unsafe unwind highlighted in the root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/netfilter/nf_tables_api.c",
+            "stmt_text": "if (!atomic_add_unless(&set->nelems, 1, max)) {",
+            "location": "hunk",
+            "explanation": "This is the primary vulnerable statement. It performs the full-set capacity check only after the new element has already been inserted/published, so detecting a full set here is too late and forces rollback of an already visible element."
+          },
+          {
+            "vuln_file": "net/netfilter/nf_tables_api.c",
+            "stmt_text": "goto err_set_full;",
+            "location": "hunk",
+            "explanation": "When the late capacity check fails, this transfers control to the full-set error path, causing unwind of an element that was already published, which is the unsafe behavior described in the root cause."
+          },
+          {
+            "vuln_file": "net/netfilter/nf_tables_api.c",
+            "stmt_text": "nft_setelem_remove(ctx->net, set, elem.priv);",
+            "location": "hunk",
+            "explanation": "This statement removes the just-published element during error handling for the late full-set detection, without the needed RCU grace period or transactional protection."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b824c3e16c19",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 7540
+        },
+        "commit": "d4b7f29eb85c93893bc27388b37709efbc3c9a0e",
+        "commit_short": "d4b7f29eb85c",
+        "commit_msg": "netfilter: nf_tables: always increment set element count\n\nAt this time, set->nelems counter only increments when the set",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 6547,
+        "code_snippet": "commit d4b7f29eb85c93893bc27388b37709efbc3c9a0e\nAuthor: Florian Westphal <fw@strlen.de>\nDate:   Thu May 11 22:45:35 2023 +0200\n\n    netfilter: nf_tables: always increment set element count\n    \n    At this time, set->nelems counter only increments when the set has\n    a maximum size.\n    \n    All set elements decrement the counter unconditionally, this is\n    confusing.\n    \n    Increment the counter unconditionally to make this symmetrical.\n    This would also allow changing the set maximum siz",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the placement of the set size/accounting check inside nft_add_set_elem(). The vulnerable root cause is that the element count/fullness check is performed only after the element has already been inserted/published, and on failure control goes to an error path that unwinds the just-added element unsafely. In this commit, the check is still present in the same location near the end of the function body shown: `if (!(flags & NFT_SET_ELEM_CATCHALL)) { ... if (!atomic_add_unless(&set->nelems, 1, max)) { err = -ENFILE; goto err_set_full; } }` followed by `nft_trans_elem(trans) = elem;`. This commit merely changes the condition from `set->size && !atomic_add_unless(...)` to unconditional accounting with `unsigned int max = set->size ? set->size + set->ndeact : UINT_MAX;` and then `!atomic_add_unless(&set->nelems, 1, max)`. That means the fullness check via `atomic_add_unless()` still happens at this late stage, with an `err_set_full` rollback path still in use. There is no indication in the shown code that the fix has been applied, i.e. no pre-insertion size check, no transaction-based safe unwind replacing this pattern, and no RCU grace-period-safe handling. Therefore the vulnerable construct is still present and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a4878eeae390",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 6547
+        },
+        "commit": "7b225d0b5c6dda5fefab578175f210c6fc7e389a",
+        "commit_short": "7b225d0b5c6d",
+        "commit_msg": "netfilter: nf_tables: add NFTA_SET_ELEM_KEY_END attribute\n\nAdd NFTA_SET_ELEM_KEY_END attribute to convey the closing ele",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 4999,
+        "code_snippet": "commit 7b225d0b5c6dda5fefab578175f210c6fc7e389a\nAuthor: Pablo Neira Ayuso <pablo@netfilter.org>\nDate:   Wed Jan 22 00:17:52 2020 +0100\n\n    netfilter: nf_tables: add NFTA_SET_ELEM_KEY_END attribute\n    \n    Add NFTA_SET_ELEM_KEY_END attribute to convey the closing element of the\n    interval between kernel and userspace.\n    \n    This patch also adds the NFT_SET_EXT_KEY_END extension to store the\n    closing element value in this interval.\n    \n    v4: No changes\n    v3: New patch\n    \n    [sbri",
+        "exists": true,
+        "reason": "The snippet includes the full relevant logic in `nft_add_set_elem()`, so it is sufficient to decide. The vulnerable construct is present: the element is inserted first via `err = set->ops->insert(ctx->net, set, &elem, &ext2);` and only afterwards the set size limit is enforced with `if (set->size && !atomic_add_unless(&set->nelems, 1, set->size + set->ndeact)) { err = -ENFILE; goto err_set_full; }`. On the full-set error path, the code immediately unwinds by calling `set->ops->remove(ctx->net, set, &elem);` under label `err_set_full:`. This matches the root cause exactly: size check happens only after the element has been published/inserted, and failure removes the just-published element directly on the error path. There is no indication here that the fix has been applied, such as moving the capacity check before insertion/publication or converting this unwind into a safe transactional/RCU-delayed mechanism. Therefore this version still contains the bug and does not contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "20a1452c3542",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 4999
+        },
+        "commit": "f2a6d766765d2794e26e25655d4ffcfe29c3ec2f",
+        "commit_short": "f2a6d766765d",
+        "commit_msg": "netfilter: nf_tables: add generation mask to tables\n\nThis patch addresses two problems:\n\n1) The netlink dump is inconsis",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 3533,
+        "code_snippet": "commit f2a6d766765d2794e26e25655d4ffcfe29c3ec2f\nAuthor: Pablo Neira Ayuso <pablo@netfilter.org>\nDate:   Tue Jun 14 17:29:18 2016 +0200\n\n    netfilter: nf_tables: add generation mask to tables\n    \n    This patch addresses two problems:\n    \n    1) The netlink dump is inconsistent when interfering with an ongoing\n       transaction update for several reasons:\n    \n    1.a) We don't honor the internal NFT_TABLE_INACTIVE flag, and we should\n         be skipping these inactive objects in the dump.\n ",
+        "exists": false,
+        "reason": "The shown function is sufficient because it contains the set-size enforcement logic around element insertion. In this version, the size check happens before calling `nft_add_set_elem()`: `if (set->size && !atomic_add_unless(&set->nelems, 1, set->size + set->ndeact)) return -ENFILE;` at lines 3560-3562, and only afterwards does it perform `err = nft_add_set_elem(&ctx, set, attr);` at line 3564. This is the opposite of the root-cause pattern, where `nft_add_set_elem()` would publish the element first and only then `atomic_add_unless()` would fail, forcing unsafe rollback. Here, if the set is full, the function returns before insertion/publication. The error path after insertion failure also decrements the pre-incremented count (`atomic_dec(&set->nelems);` at line 3566), which matches the pre-check/pre-accounting scheme. Therefore the vulnerable construct is absent and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "7b225d0b5c6dda5fefab578175f210c6fc7e389a",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b824c3e16c19",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 7542
+        },
+        "commit": "d4b7f29eb85c93893bc27388b37709efbc3c9a0e",
+        "commit_short": "d4b7f29eb85c",
+        "commit_msg": "netfilter: nf_tables: always increment set element count\n\nAt this time, set->nelems counter only increments when the set",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 6549,
+        "code_snippet": "commit d4b7f29eb85c93893bc27388b37709efbc3c9a0e\nAuthor: Florian Westphal <fw@strlen.de>\nDate:   Thu May 11 22:45:35 2023 +0200\n\n    netfilter: nf_tables: always increment set element count\n    \n    At this time, set->nelems counter only increments when the set has\n    a maximum size.\n    \n    All set elements decrement the counter unconditionally, this is\n    confusing.\n    \n    Increment the counter unconditionally to make this symmetrical.\n    This would also allow changing the set maximum siz",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the placement of the set size accounting/check inside nft_add_set_elem(). The vulnerable root cause is that the fullness check via atomic_add_unless(&set->nelems, 1, max) happens only after the element has already been inserted/published, so failure goes to an unwind path (err_set_full) for a just-published element. In this commit, that construct is still present: `if (!atomic_add_unless(&set->nelems, 1, max)) { err = -ENFILE; goto err_set_full; }`. The change only makes the counter increment unconditional for non-catchall elements by using `unsigned int max = set->size ? set->size + set->ndeact : UINT_MAX;`, but it does not move the check before publication nor introduce any RCU-safe or transactional handling for the already-inserted element on overflow. Therefore the vulnerable construct is present, and the fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a4878eeae390",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 6549
+        },
+        "commit": "35d0ac9070ef619e3bf44324375878a1c540387b",
+        "commit_short": "35d0ac9070ef",
+        "commit_msg": "netfilter: nf_tables: fix set->nelems counting with no NLM_F_EXCL\n\nIf the element exists and no NLM_F_EXCL is specified,",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 3753,
+        "code_snippet": "commit 35d0ac9070ef619e3bf44324375878a1c540387b\nAuthor: Pablo Neira Ayuso <pablo@netfilter.org>\nDate:   Tue Jan 24 00:51:32 2017 +0100\n\n    netfilter: nf_tables: fix set->nelems counting with no NLM_F_EXCL\n    \n    If the element exists and no NLM_F_EXCL is specified, do not bump\n    set->nelems, otherwise we leak one set element slot. This problem\n    amplifies if the set is full since the abort path always decrements the\n    counter for the -ENFILE case too, giving one spare extra slot.\n    \n ",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the full relevant control flow in `nft_add_set_elem()` around insertion, size accounting, and cleanup. In this commit version, `nft_add_set_elem()` performs the set size check only after earlier successful insertion/publishing steps, as shown by the newly added block placed immediately before transaction enqueue: `if (set->size && !atomic_add_unless(&set->nelems, 1, set->size + set->ndeact)) { err = -ENFILE; goto err6; }`. On failure it executes `err6: set->ops->remove(set, &elem);`, meaning the just-inserted element is removed on the error path after it was already added to the set. This matches the root cause: the element was inserted/published first, then the fullness check happened, and the unwind removed it directly instead of preventing publication in the first place. The commit message itself confirms this behavior: `Fix this by moving set->nelems update to nft_add_set_elem() after successful element insertion. Moreover, remove the element if the set is full...` Since the vulnerable construct is the post-insertion `atomic_add_unless(...)` check and direct removal via `set->ops->remove(set, &elem)` on `-ENFILE`, `has_bug` is true. The proper fix for the stated vulnerability would avoid publishing the element before the capacity check or otherwise unwind safely with the required transaction/RCU handling; that is not present here, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "5ce6b04ce968",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 3753
+        },
+        "commit": "60319eb1ca351aa36e29d58d2e60ba9a9836265a",
+        "commit_short": "60319eb1ca35",
+        "commit_msg": "netfilter: nf_tables: use new transaction infrastructure to handle elements\n\nLeave the set content in consistent state i",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 3099,
+        "code_snippet": "commit 60319eb1ca351aa36e29d58d2e60ba9a9836265a\nAuthor: Pablo Neira Ayuso <pablo@netfilter.org>\nDate:   Fri Apr 4 03:36:42 2014 +0200\n\n    netfilter: nf_tables: use new transaction infrastructure to handle elements\n    \n    Leave the set content in consistent state if we fail to load the\n    batch. Use the new generic transaction infrastructure to achieve\n    this.\n    \n    Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>\n\ndiff --git a/net/netfilter/nf_tables_api.c b/net/netfilter/nf_table",
+        "exists": false,
+        "reason": "The diff is sufficient because it shows the full relevant control flow for set element addition, commit, and abort handling. In `nft_add_set_elem()`, the function no longer increments `set->nelems` or sends notification immediately after insertion. Instead, after successful `set->ops->insert(set, &elem);`, it stores the inserted element in a transaction via `nft_trans_elem(trans) = elem;` and `list_add(&trans->list, &ctx->net->nft.commit_list);`. The actual `set->nelems++` is deferred to `nf_tables_commit()` under `case NFT_MSG_NEWSETELEM:`. Likewise, abort handling under `nf_tables_abort()` for `case NFT_MSG_NEWSETELEM:` performs `set->ops->get(set, &nft_trans_elem(trans));` followed by `set->ops->remove(set, &nft_trans_elem(trans));`, i.e. rollback is handled through the transaction infrastructure rather than immediate ad hoc removal in the add error path. This matches the fix described by the root cause: use transaction infrastructure so a published element is not unsafely removed on local failure after insertion. The vulnerable construct described in the root cause—post-publication size enforcement using `atomic_add_unless(&set->nelems, 1, max)` with direct error-path removal—is not present anywhere in this shown code. Instead, there is an early pre-check `if (set->size && set->nelems == set->size) return -ENFILE;`, and element accounting/removal is transaction-based. Therefore the vulnerable construct is absent and the fix is present."
+      }
+    },
+    {
+      "bic_found": "35d0ac9070ef619e3bf44324375878a1c540387b",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b824c3e16c19",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 7551
+        },
+        "commit": "0e1ea651c9717ddcd8e0648d8468477a31867b0a",
+        "commit_short": "0e1ea651c971",
+        "commit_msg": "netfilter: nf_tables: shrink memory consumption of set elements\n\nInstead of copying struct nft_set_elem into struct nft_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 6919,
+        "code_snippet": "commit 0e1ea651c9717ddcd8e0648d8468477a31867b0a\nAuthor: Pablo Neira Ayuso <pablo@netfilter.org>\nDate:   Mon Oct 16 14:29:27 2023 +0200\n\n    netfilter: nf_tables: shrink memory consumption of set elements\n    \n    Instead of copying struct nft_set_elem into struct nft_trans_elem, store\n    the pointer to the opaque set element object in the transaction. Adapt\n    set backend API (and set backend implementations) to take the pointer to\n    opaque set element representation whenever required.\n    \n",
+        "exists": true,
+        "reason": "The diff shows the relevant logic in `nft_add_set_elem()` and its error path clearly enough to determine the vulnerable construct is still present. In this commit, after successful insertion/publication, the transaction stores the inserted element pointer via `nft_trans_elem_priv(trans) = elem.priv;` and then returns success. Crucially, on the set-full path the code still does `err_set_full: nft_setelem_remove(ctx->net, set, elem.priv);` before freeing the transaction. This matches the root cause: the element has already been inserted/published, and when the set is full it is removed immediately on the error path rather than being unwound through a transaction/RCU-safe path. The commit only changes representation from `struct nft_set_elem *` to `struct nft_elem_priv *` (for example `nft_setelem_remove(..., elem.priv)` replacing `nft_setelem_remove(..., &elem)`), but does not move the size check earlier or add deferred removal/RCU grace-period handling. Therefore the vulnerable construct remains present and the fix is not yet included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "9dad402b89e8",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 6919
+        },
+        "commit": "d4b7f29eb85c93893bc27388b37709efbc3c9a0e",
+        "commit_short": "d4b7f29eb85c",
+        "commit_msg": "netfilter: nf_tables: always increment set element count\n\nAt this time, set->nelems counter only increments when the set",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 6548,
+        "code_snippet": "commit d4b7f29eb85c93893bc27388b37709efbc3c9a0e\nAuthor: Florian Westphal <fw@strlen.de>\nDate:   Thu May 11 22:45:35 2023 +0200\n\n    netfilter: nf_tables: always increment set element count\n    \n    At this time, set->nelems counter only increments when the set has\n    a maximum size.\n    \n    All set elements decrement the counter unconditionally, this is\n    confusing.\n    \n    Increment the counter unconditionally to make this symmetrical.\n    This would also allow changing the set maximum siz",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the placement of the set size accounting/check inside `nft_add_set_elem()`, which is the logic described in the root cause. The vulnerable construct is still present: the code performs the fullness check via `atomic_add_unless(&set->nelems, 1, max)` and on failure jumps to `err_set_full` (`if (!atomic_add_unless(&set->nelems, 1, max)) { err = -ENFILE; goto err_set_full; }`). Per the stated root cause, the bug is that this check happens only after the new element has already been inserted/published, so a full-set condition causes removal of an already-published element on the error path without safe RCU/transactional unwinding. This commit only changes the condition from `set->size && !atomic_add_unless(..., set->size + set->ndeact)` to an unconditional non-catchall increment using `unsigned int max = set->size ? set->size + set->ndeact : UINT_MAX;` and the same `atomic_add_unless(&set->nelems, 1, max)`. That is merely a symmetry/accounting change; it does not move the capacity check before publication, nor does it add any safe unwind/RCU grace period handling. Therefore the vulnerable logic remains present and the fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "a4878eeae390",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 6548
+        },
+        "commit": "35d0ac9070ef619e3bf44324375878a1c540387b",
+        "commit_short": "35d0ac9070ef",
+        "commit_msg": "netfilter: nf_tables: fix set->nelems counting with no NLM_F_EXCL\n\nIf the element exists and no NLM_F_EXCL is specified,",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 3752,
+        "code_snippet": "commit 35d0ac9070ef619e3bf44324375878a1c540387b\nAuthor: Pablo Neira Ayuso <pablo@netfilter.org>\nDate:   Tue Jan 24 00:51:32 2017 +0100\n\n    netfilter: nf_tables: fix set->nelems counting with no NLM_F_EXCL\n    \n    If the element exists and no NLM_F_EXCL is specified, do not bump\n    set->nelems, otherwise we leak one set element slot. This problem\n    amplifies if the set is full since the abort path always decrements the\n    counter for the -ENFILE case too, giving one spare extra slot.\n    \n ",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the exact logic movement in and around `nft_add_set_elem()` that relates to the root cause. In this commit version, `nft_add_set_elem()` now performs the size check only after the element insertion path has already succeeded, as shown by the newly added block: `if (set->size && !atomic_add_unless(&set->nelems, 1, set->size + set->ndeact)) { err = -ENFILE; goto err6; }`, followed by `err6: set->ops->remove(set, &elem);`. This matches the vulnerable construct described in the root cause: the element is inserted/published first, then the code checks whether the set is full, and on failure removes the just-published element on the error path. The commit message itself confirms this behavior: `Fix this by moving set->nelems update to nft_add_set_elem() after successful element insertion. Moreover, remove the element if the set is full...` That is exactly the problematic pattern from the root cause, not the eventual safe fix with proper pre-checking / transaction-safe unwind. Therefore the vulnerable construct is present (`has_bug=true`), and the function does not already contain the real fix for the described vulnerability (`is_fixed=false`)."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "5ce6b04ce968",
+          "anchor_file": "net/netfilter/nf_tables_api.c",
+          "anchor_lineno": 3752
+        },
+        "commit": "fe2811ebeb97a7a76de0b2b35f13600169508393",
+        "commit_short": "fe2811ebeb97",
+        "commit_msg": "netfilter: nf_tables: convert hash and rbtree to set extensions\n\nThe set implementations' private struct will only conta",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/netfilter/nf_tables_api.c",
+        "display_lineno": 3270,
+        "code_snippet": "commit fe2811ebeb97a7a76de0b2b35f13600169508393\nAuthor: Patrick McHardy <kaber@trash.net>\nDate:   Wed Mar 25 13:07:50 2015 +0000\n\n    netfilter: nf_tables: convert hash and rbtree to set extensions\n    \n    The set implementations' private struct will only contain the elements\n    needed to maintain the search structure, all other elements are moved\n    to the set extensions.\n    \n    Element allocation and initialization is performed centrally by\n    nf_tables_api instead of by the different se",
+        "exists": false,
+        "reason": "The provided snippet does not include the body of `nft_add_set_elem()` or the relevant logic in `nf_tables_newsetelem()` where insertion/publication and the set-size check would occur. It only shows tail error labels and cleanup code: `err5: kfree(trans);`, `err4: kfree(elem.priv);`, `err3: if (nla[NFTA_SET_ELEM_DATA] != NULL) nft_data_uninit(&data, d2.type);`, `err2: nft_data_uninit(&elem.key, d1.type);`, and the start of `nf_tables_newsetelem(...)`. The root cause specifically depends on whether `atomic_add_unless(&set->nelems, 1, max)` happens only after the element has already been inserted/published, and whether rollback removes a published element without RCU grace period/transaction safety. None of that logic is visible here, so a determination cannot be made from this snippet alone."
+      }
+    },
+    {
+      "bic_found": "35d0ac9070ef619e3bf44324375878a1c540387b",
+      "depth": 3
+    },
+    {
+      "bic_votes": {
+        "7b225d0b5c6dda5fefab578175f210c6fc7e389a": 1,
+        "35d0ac9070ef619e3bf44324375878a1c540387b": 2
+      },
+      "bic_candidates": [
+        "35d0ac9070ef619e3bf44324375878a1c540387b",
+        "7b225d0b5c6dda5fefab578175f210c6fc7e389a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

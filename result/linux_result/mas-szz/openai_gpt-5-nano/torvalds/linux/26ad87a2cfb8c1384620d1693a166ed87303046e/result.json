@@ -1,0 +1,323 @@
+{
+  "cveid": "CVE-2026-31538",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "26ad87a2cfb8c1384620d1693a166ed87303046e"
+  ],
+  "ground_truth_bic": "89b021a72663c4d96d8a8b85272bb42d991a1c6f",
+  "predicted_bic": [
+    "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+    "89b021a72663c4d96d8a8b85272bb42d991a1c6f"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 23822,
+  "root_cause": {
+    "text": "A race in the SMB server RDMA recv-credit accounting used posted receive buffer count minus granted credits instead of a dedicated available-credit counter, allowing `manage_credits_prior_sending()` to grant credits that had already been consumed by the peer before `recv_done` processed the receive completion.",
+    "evidence": "The CVE/commit explicitly says “The logic off managing recv credits by counting posted recv_io and granted credits is racy” because “the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist,” and the patch fixes this by adding and using `sc->recv_io.credits.available` via `atomic_add()` on posted recvs and `atomic_xchg()`/draining in `manage_credits_prior_sending()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/transport_rdma.c",
+      "lineno": 1086,
+      "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/transport_rdma.c",
+      "lineno": 1082,
+      "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/transport_rdma.c",
+      "lineno": 1090,
+      "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the SMB server RDMA recv-credit accounting used posted receive buffer count minus granted credits instead of a dedicated available-credit counter, allowing `manage_credits_prior_sending()` to grant credits that had already been consumed by the peer before `recv_done` processed the receive completion.",
+      "evidence_points": "The CVE/commit explicitly says “The logic off managing recv credits by counting posted recv_io and granted credits is racy” because “the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist,” and the patch fixes this by adding and using `sc->recv_io.credits.available` via `atomic_add()` on posted recvs and `atomic_xchg()`/draining in `manage_credits_prior_sending()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/transport_rdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/transport_rdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Update available receive-credit accounting before scheduling immediate work so newly posted credits are correctly reflected and usable.",
+        "what": "A new statement was added in smb_direct_post_recv_credits(): atomic_add(credits, &sc->recv_io.credits.available); inserted after the loop and before the existing check that queues immediate_work when credits is nonzero.",
+        "how": "At runtime, the function now increments the available receive credits counter by the number of credits processed before potentially scheduling immediate work. This makes the internal credit accounting reflect newly posted receive credits so later work can observe and use them correctly, preventing stale or missing available-credit state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix SMB Direct credit management to grant only actually available missing credits and preserve any ungranted credit availability.",
+        "what": "The function `manage_credits_prior_sending()` was changed to introduce local variables `missing` and `available`, replace the old calculation of `new_credits` from `posted.count - credits.count` with a calculation based on `missing = target - credits.count` and `available = atomic_xchg(&sc->recv_io.credits.available, 0)`, cap the granted credits with `min3(U16_MAX, missing, available)`, add handling to restore `available` credits when no credits are granted, add handling to put back any unused portion of `available` when only some credits are granted, and keep updating `credits.count` by the granted amount before returning it.",
+        "how": "At runtime, the function now grants receive credits only from the tracked `credits.available` pool and only up to the number actually missing to reach the target, while atomically consuming and restoring availability as needed. This prevents over-granting based on posted buffers alone, preserves unused available credits for future sends, and keeps the granted credit count synchronized with what was actually advertised."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix SMB Direct credit management to grant only actually available missing credits and preserve any ungranted credit availability."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix SMB Direct receive-credit accounting so credit grants reflect only actually available credits while preserving and exposing newly available credits correctly.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly fix the RDMA receive-credit accounting bug described in the root cause by introducing/correcting tracking of actually available credits, updating that availability when receives are posted/completed, and ensuring credit grants use available credits rather than inferred posted-minus-granted counts."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/transport_rdma.c",
+            "lineno": 1082,
+            "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "rationale": "This initializes grantable credits from the posted receive buffer count rather than a dedicated available-credit counter, which is the core accounting mistake described in the root cause."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/transport_rdma.c",
+            "lineno": 1086,
+            "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "rationale": "This derives available credits as posted-count minus granted-credit count, the exact flawed formula that races with peer consumption before recv_done updates accounting."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/transport_rdma.c",
+            "lineno": 1090,
+            "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "rationale": "After computing credits with the flawed posted-minus-granted logic, this statement commits the overgrant by increasing the granted credit count, enabling credits already consumed by the peer to be granted again."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/transport_rdma.c",
+            "stmt_text": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "This statement implements the flawed credit-availability calculation by deriving grantable credits as posted receive buffers minus already granted credits. Per the root cause, that accounting races with peer consumption before recv_done updates state, so it can treat already-consumed credits as still available."
+          },
+          {
+            "vuln_file": "fs/smb/server/transport_rdma.c",
+            "stmt_text": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "location": "hunk",
+            "explanation": "This initializes the grant calculation from the posted receive buffer count instead of a dedicated available-credit counter. That choice is part of the incorrect accounting model that enables the race described in the root cause."
+          },
+          {
+            "vuln_file": "fs/smb/server/transport_rdma.c",
+            "stmt_text": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "After the flawed posted-minus-granted computation, this statement commits the overgrant by adding the miscomputed credits to the granted-credit count, allowing credits already consumed by the peer to be granted again."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e94268b21c8",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 1086
+        },
+        "commit": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+        "commit_short": "e8bc71986cbd",
+        "commit_msg": "smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 827,
+        "code_snippet": "commit e8bc71986cbd2d2d5991a2fc6afbac0311ff3769\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:33:30 2025 +0200\n\n    smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Namjae Jeon <linkinjeon@kernel.org>\n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Sig",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in `manage_credits_prior_sending()` and the related recv accounting updates, so the snippet is sufficient. The vulnerable construct is present because `manage_credits_prior_sending()` derives grantable credits from `posted.count - credits.count`: it reads `new_credits = atomic_read(&sc->recv_io.posted.count);` and then subtracts `atomic_read(&sc->recv_io.credits.count);` before doing `atomic_add(new_credits, &sc->recv_io.credits.count);`. This matches the root cause: using posted receive buffers minus granted credits instead of a dedicated available-credit counter. The race condition also remains possible because `recv_done()` only decrements both counters later on receive completion (`atomic_dec(&sc->recv_io.posted.count);` and `atomic_dec(&sc->recv_io.credits.count);`), meaning credits consumed by the peer but not yet processed by `recv_done()` can still be counted as available and re-granted. There is no dedicated available-credit counter or equivalent corrected accounting in this function, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "89b021a72663",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 827
+        },
+        "commit": "89b021a72663c4d96d8a8b85272bb42d991a1c6f",
+        "commit_short": "89b021a72663",
+        "commit_msg": "smb: server: manage recv credits by counting posted recv_io and granted credits\n\n(At least for me) the logic maintaining",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 827,
+        "code_snippet": "commit 89b021a72663c4d96d8a8b85272bb42d991a1c6f\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:05:47 2025 +0200\n\n    smb: server: manage recv credits by counting posted recv_io and granted credits\n    \n    (At least for me) the logic maintaining the count of posted\n    recv_io messages and the count of granted credits is much\n    easier to understand.\n    \n    From there we can easily calculate the number of new_credits we'll\n    grant to the peer in outgoing send_io messages.",
+        "exists": true,
+        "reason": "The function body and surrounding diff are sufficient because the vulnerable accounting logic is shown directly in `manage_credits_prior_sending()` together with the relevant updates in `recv_done()` and `smb_direct_post_recv_credits()`. The root cause says credits were derived from posted receive buffers minus granted credits instead of a dedicated available-credit counter, creating a race where credits already consumed by the peer could be granted again before `recv_done()` runs. That exact construct is present here: `new_credits = atomic_read(&t->recv_posted); ... new_credits -= atomic_read(&t->recv_credits); ... atomic_add(new_credits, &t->recv_credits);`. This computes grantable credits from `recv_posted - recv_credits`, which matches the described vulnerable approach. `recv_done()` only decrements these counters later on completion: `atomic_dec(&t->recv_posted); atomic_dec(&t->recv_credits);`, so there is a window where a posted receive may already have been consumed by the peer but not yet reflected in completion processing, allowing `manage_credits_prior_sending()` to overgrant. There is no separate dedicated available-credit counter or equivalent synchronization preventing that race. Therefore the vulnerable construct is present and the fix is not yet in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "113ed9d56f63",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 827
+        },
+        "commit": "070fb21e5912b6aa22509083aaca030d1f4e7d57",
+        "commit_short": "070fb21e5912",
+        "commit_msg": "cifsd: Alignment should match open parenthesis\n\nFix warnings \"Alignment should match open parenthesis\" from\ncheckpatch.p",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 851,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided function body is the RDMA send completion handler and only shows send completion bookkeeping and freeing send messages, e.g. decrementing `t->send_payload_pending` / `t->send_pending` and freeing `sendmsg` list entries (`smb_direct_free_sendmsg`). The reported root cause is specifically about SMB server RDMA recv-credit accounting in `manage_credits_prior_sending()` using posted receive buffer count minus granted credits instead of a dedicated available-credit counter, with interaction against `recv_done`. None of that logic appears in this snippet: there is no credit calculation, no `manage_credits_prior_sending()`, no granted/available recv credit state, and no receive completion handling. Therefore the shown code is not sufficient to determine whether the vulnerable construct is present or fixed in this commit version."
+      }
+    },
+    {
+      "bic_found": "89b021a72663c4d96d8a8b85272bb42d991a1c6f",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e94268b21c8",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 1082
+        },
+        "commit": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+        "commit_short": "e8bc71986cbd",
+        "commit_msg": "smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 823,
+        "code_snippet": "commit e8bc71986cbd2d2d5991a2fc6afbac0311ff3769\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:33:30 2025 +0200\n\n    smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Namjae Jeon <linkinjeon@kernel.org>\n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Sig",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the recv-credit accounting in both `recv_done()` and `manage_credits_prior_sending()`, which is exactly where the root-cause race lives. The vulnerable construct is still present. In `manage_credits_prior_sending()`, the code computes grantable credits from posted receives minus already granted credits: `new_credits = atomic_read(&sc->recv_io.posted.count);` followed by `new_credits -= atomic_read(&sc->recv_io.credits.count);` and then `atomic_add(new_credits, &sc->recv_io.credits.count);`. This matches the root cause: using posted receive buffer count and granted-credit count instead of a dedicated available-credit counter. `recv_done()` only decrements both counters later on completion: `atomic_dec(&sc->recv_io.posted.count);` and `atomic_dec(&sc->recv_io.credits.count);`. That means credits already consumed by the peer can still be counted as available until `recv_done()` runs, enabling over-granting in the race window described. There is no sign of the fix: no separate available-credit counter is introduced or used, and `manage_credits_prior_sending()` still derives credits from `posted.count - credits.count`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "89b021a72663",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 823
+        },
+        "commit": "0626e6641f6b467447c81dd7678a69c66f7746cf",
+        "commit_short": "0626e6641f6b",
+        "commit_msg": "cifsd: add server handler for central processing and tranport layers\n\nThis adds server handler for central processing,\nt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 871,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet only shows a small helper that reads and clears `t->new_recv_credits` under `lock_new_recv_credits` (`new_credits = t->new_recv_credits; t->new_recv_credits = 0;`). The described root cause is specifically about incorrect recv-credit accounting in `manage_credits_prior_sending()` using posted receive buffer count minus granted credits instead of a dedicated available-credit counter, and about a race with `recv_done`. This function body does not show the credit-granting logic, does not show any calculation based on posted receive buffers minus granted credits, and does not show how `recv_done` updates accounting. Because the relevant logic is outside this snippet, there is not enough context to determine whether the vulnerable construct is present here or whether the fix is already applied."
+      }
+    },
+    {
+      "bic_found": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8e94268b21c8",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 1090
+        },
+        "commit": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+        "commit_short": "e8bc71986cbd",
+        "commit_msg": "smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 831,
+        "code_snippet": "commit e8bc71986cbd2d2d5991a2fc6afbac0311ff3769\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:33:30 2025 +0200\n\n    smb: server: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Namjae Jeon <linkinjeon@kernel.org>\n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Sig",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact recv-credit accounting and grant logic in both `recv_done()` and `manage_credits_prior_sending()`. The vulnerable construct is still present. In `manage_credits_prior_sending()`, the code derives grantable credits from posted receives minus already granted credits: `new_credits = atomic_read(&sc->recv_io.posted.count);` followed by `new_credits -= atomic_read(&sc->recv_io.credits.count);` and then `atomic_add(new_credits, &sc->recv_io.credits.count);`. This matches the root cause: using posted receive buffer count minus granted credits instead of a dedicated available-credit counter. The race remains because `recv_done()` only decrements these counters when the receive completion is processed: `atomic_dec(&sc->recv_io.posted.count);` and `atomic_dec(&sc->recv_io.credits.count);`. Therefore, credits already consumed by the peer but not yet reflected by `recv_done()` can still be re-granted by `manage_credits_prior_sending()`. The commit only renames/moves the fields from `t->recv_posted`/`t->recv_credits` to `sc->recv_io.posted.count`/`sc->recv_io.credits.count`; it does not introduce a separate available-credit counter or any logic preventing this race. Hence the bug is present and the fix is not."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "89b021a72663",
+          "anchor_file": "fs/smb/server/transport_rdma.c",
+          "anchor_lineno": 831
+        },
+        "commit": "0626e6641f6b467447c81dd7678a69c66f7746cf",
+        "commit_short": "0626e6641f6b",
+        "commit_msg": "cifsd: add server handler for central processing and tranport layers\n\nThis adds server handler for central processing,\nt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/transport_rdma.c",
+        "display_lineno": 877,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet only shows a helper that reads and clears `t->new_recv_credits` under `lock_new_recv_credits` (`new_credits = t->new_recv_credits; t->new_recv_credits = 0;`). The root cause described is specifically about SMB server RDMA recv-credit accounting in `manage_credits_prior_sending()` using posted receive buffer count minus granted credits instead of a dedicated available-credit counter, creating a race with `recv_done`. This function body does not show `manage_credits_prior_sending()`, does not show how credits are granted, and does not show whether the returned value is used as a dedicated available-credit counter versus the vulnerable calculation. Because the relevant logic is outside this snippet, there is not enough context to determine whether the vulnerable construct is present or whether the fix is already applied."
+      }
+    },
+    {
+      "bic_found": "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "89b021a72663c4d96d8a8b85272bb42d991a1c6f": 1,
+        "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769": 2
+      },
+      "bic_candidates": [
+        "e8bc71986cbd2d2d5991a2fc6afbac0311ff3769",
+        "89b021a72663c4d96d8a8b85272bb42d991a1c6f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

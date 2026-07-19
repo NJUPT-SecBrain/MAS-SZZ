@@ -1,0 +1,342 @@
+{
+  "cveid": "CVE-2026-46063",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "9874b2917b9fbc30956fee209d3c4aa47201c64e"
+  ],
+  "ground_truth_bic": "7fad2a432cd35bbf104d2d9d426e74902f22aa95",
+  "predicted_bic": [
+    "05e36022c0543ba55a3de55af455b00cb3eb4fcc",
+    "52f657e34d7b21b47434d9d8b26fa7f6778b63a0",
+    "7fad2a432cd35bbf104d2d9d426e74902f22aa95"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 17931,
+  "root_cause": {
+    "text": "`shstk_pop_sigframe()` in `arch/x86/kernel/shstk.c` held `mmap_read_lock()` across a userspace read of the shadow-stack signal frame, so a page fault during that read could recursively take the mmap read lock and deadlock if another CPU was already waiting on the mmap write lock.",
+    "evidence": "The patch replaces the pre-read `mmap_read_lock()`/`find_vma()`/`mmap_read_unlock()` sequence with `mmap_lock_speculate_try_begin()` and `mmap_lock_speculate_retry()` specifically because “If the read of the shadow stack sigframe hits a page fault, the fault handler will try to recursively grab another mmap read lock… if a writer on another CPU is also waiting… [it] could cause a deadlock,” and it also adds `depends on PER_VMA_LOCK` since the speculative helpers require `mm::mm_lock_seq`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/x86/kernel/shstk.c",
+      "lineno": 349,
+      "content": "err = get_shstk_data(&token_addr, (unsigned long __user *)*ssp);",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kernel/shstk.c",
+      "lineno": 346,
+      "content": "if (mmap_read_lock_killable(current->mm))",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kernel/shstk.c",
+      "lineno": 360,
+      "content": "mmap_read_unlock(current->mm);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`shstk_pop_sigframe()` in `arch/x86/kernel/shstk.c` held `mmap_read_lock()` across a userspace read of the shadow-stack signal frame, so a page fault during that read could recursively take the mmap read lock and deadlock if another CPU was already waiting on the mmap write lock.",
+      "evidence_points": "The patch replaces the pre-read `mmap_read_lock()`/`find_vma()`/`mmap_read_unlock()` sequence with `mmap_lock_speculate_try_begin()` and `mmap_lock_speculate_retry()` specifically because “If the read of the shadow stack sigframe hits a page fault, the fault handler will try to recursively grab another mmap read lock… if a writer on another CPU is also waiting… [it] could cause a deadlock,” and it also adds `depends on PER_VMA_LOCK` since the speculative helpers require `mm::mm_lock_seq`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/x86/Kconfig",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "arch/x86/kernel/shstk.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "arch/x86/kernel/shstk.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "arch/x86/kernel/shstk.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Require PER_VMA_LOCK before allowing X86 userspace shadow stack to be configured.",
+        "what": "A new Kconfig dependency line, `depends on PER_VMA_LOCK`, was added to `config X86_USER_SHADOW_STACK`.",
+        "how": "This prevents the X86 userspace shadow stack option from being enabled unless PER-VMA locking support is available, restricting the configuration to kernels that provide that prerequisite."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Rework shstk_pop_sigframe() local bookkeeping to use sequence-based tracking instead of VMA check state.",
+        "what": "In shstk_pop_sigframe(), the local variables struct vm_area_struct *vma, bool need_to_check_vma, and int err = 1 were removed, and a new unsigned int seq variable was added.",
+        "how": "This changes the local state used by the function, indicating that the function no longer tracks VMA lookup/validation state through those removed variables and instead uses a sequence value for its control flow or synchronization logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Harden shadow stack frame popping against concurrent VMA changes by revalidating the mapping with speculative retry logic before using the token address.",
+        "what": "The code that previously conditionally acquired the mmap read lock and then called get_shstk_data() once has been restructured into a do/while loop. Inside the loop, it now declares local variables for a VMA pointer, a validity flag, and an error code; acquires the mmap read lock killably; finds the VMA for *ssp; records whether the VMA exists and has VM_SHADOW_STACK; calls mmap_lock_speculate_try_begin(current->mm, &seq); releases the mmap read lock; returns -EINVAL immediately if the VMA is invalid; calls get_shstk_data() and returns on error; and repeats while mmap_lock_speculate_retry(current->mm, seq) is true. The earlier PAGE_ALIGN-based need_to_check_vma logic and the old out_err flow are removed.",
+        "how": "At runtime, the function now verifies that the shadow-stack token read from user memory is consistent with the VMA that covered *ssp, even if the mmap layout changes concurrently. By using a sequence check and retry loop, it avoids acting on stale VMA information and ensures the token address is validated against the current shadow stack mapping before proceeding, preventing incorrect restoration from raced or changed mappings."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "refactor",
+        "intent_summary": "Remove obsolete error cleanup code from `shstk_pop_sigframe()` by deleting the unused `out_err` path.",
+        "what": "The diff removes the `out_err:` cleanup label and its associated error-handling block from `shstk_pop_sigframe()`, including the conditional `mmap_read_unlock(current->mm);` and `return err;` statements.",
+        "how": "At runtime, the function no longer has this local error-exit path in the shown hunk, so any control flow that previously jumped to `out_err` must now be handled elsewhere or is no longer present in this section; the removed code specifically prevented the memory map read lock from being left held on error."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Require PER_VMA_LOCK before allowing X86 userspace shadow stack to be configured."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Rework shstk_pop_sigframe() local bookkeeping to use sequence-based tracking instead of VMA check state."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Harden shadow stack frame popping against concurrent VMA changes by revalidating the mapping with speculative retry logic before using the token address."
+        },
+        {
+          "group_id": 3,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove obsolete error cleanup code from `shstk_pop_sigframe()` by deleting the unused `out_err` path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change requires PER_VMA_LOCK for configuring userspace shadow stack, which is unrelated to the deadlock in shstk_pop_sigframe() caused by holding mmap_read_lock() across a userspace read of the signal frame."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change targets shstk_pop_sigframe() in the same area as the root cause and modifies its bookkeeping logic. Since the vulnerability involves locking and signal-frame handling in this function, a rework of its internal state tracking is likely part of the fix or directly related to the deadlock issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change is in the same shadow-stack signal-frame pop path and hardens handling around user memory access under concurrent VMA changes, which is closely related to the deadlock-prone mmap lock usage in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": false,
+        "reason": "The change only removes an unused error cleanup path in shstk_pop_sigframe(); it does not address the mmap_read_lock being held across the userspace read that caused the deadlock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "arch/x86/kernel/shstk.c",
+            "lineno": 349,
+            "content": "err = get_shstk_data(&token_addr, (unsigned long __user *)*ssp);",
+            "rationale": "This userspace read of the shadow-stack signal frame happened while the mmap read lock was still held; a page fault here could recurse into mmap locking and deadlock."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "arch/x86/kernel/shstk.c",
+            "lineno": 346,
+            "content": "if (mmap_read_lock_killable(current->mm))",
+            "rationale": "This is the lock acquisition that was held across the later userspace access, creating the lock inversion/deadlock condition when the access faulted."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "arch/x86/kernel/shstk.c",
+            "lineno": 360,
+            "content": "mmap_read_unlock(current->mm);",
+            "rationale": "The unlock occurred only after the userspace read completed, confirming the lock was retained during the faultable access that triggered the deadlock."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/x86/kernel/shstk.c",
+            "stmt_text": "err = get_shstk_data(&token_addr, (unsigned long __user *)*ssp);",
+            "location": "hunk",
+            "explanation": "This userspace read of the shadow-stack signal frame occurred while mmap_read_lock() was still held, so a page fault here could recurse into mmap locking and deadlock."
+          },
+          {
+            "vuln_file": "arch/x86/kernel/shstk.c",
+            "stmt_text": "if (mmap_read_lock_killable(current->mm))",
+            "location": "hunk",
+            "explanation": "This acquired the mmap read lock that was then held across the faultable userspace access, creating the deadlock-prone lock inversion."
+          },
+          {
+            "vuln_file": "arch/x86/kernel/shstk.c",
+            "stmt_text": "mmap_read_unlock(current->mm);",
+            "location": "hunk",
+            "explanation": "The unlock happened only after the userspace read completed, confirming the mmap read lock was retained during the access that could fault and deadlock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c1f49dea2b8f",
+          "anchor_file": "arch/x86/kernel/shstk.c",
+          "anchor_lineno": 349
+        },
+        "commit": "05e36022c0543ba55a3de55af455b00cb3eb4fcc",
+        "commit_short": "05e36022c054",
+        "commit_msg": "x86/shstk: Handle signals for shadow stack\n\nWhen a signal is handled, the context is pushed to the stack before\nhandling",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kernel/shstk.c",
+        "display_lineno": 255,
+        "code_snippet": "commit 05e36022c0543ba55a3de55af455b00cb3eb4fcc\nAuthor: Rick Edgecombe <rick.p.edgecombe@intel.com>\nDate:   Mon Jun 12 17:10:57 2023 -0700\n\n    x86/shstk: Handle signals for shadow stack\n    \n    When a signal is handled, the context is pushed to the stack before\n    handling it. For shadow stacks, since the shadow stack only tracks return\n    addresses, there isn't any state that needs to be pushed. However, there\n    are still a few things that need to be done. These things are visible to\n    ",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is a deadlock from `shstk_pop_sigframe()` holding `mmap_read_lock()` across a userspace read. In this snippet, `shstk_pop_sigframe()` does not take any mmap lock at all; it only does `err = get_shstk_data(&token_addr, (unsigned long __user *)*ssp);`, then validates alignment and range, and assigns `*ssp = token_addr;`. Because the shown implementation uses `get_shstk_data()` without any visible `mmap_read_lock()`/`mmap_read_unlock()` around the user read, the deadlock-prone pattern is absent here. Therefore the vulnerable construct is not present, and the fix is already effectively present in this code."
+      }
+    },
+    {
+      "bic_found": "05e36022c0543ba55a3de55af455b00cb3eb4fcc",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c1f49dea2b8f",
+          "anchor_file": "arch/x86/kernel/shstk.c",
+          "anchor_lineno": 346
+        },
+        "commit": "52f657e34d7b21b47434d9d8b26fa7f6778b63a0",
+        "commit_short": "52f657e34d7b",
+        "commit_msg": "x86: shadow stacks: proper error handling for mmap lock\n\n김영민 reports that shstk_pop_sigframe() doesn't check for errors ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kernel/shstk.c",
+        "display_lineno": 354,
+        "code_snippet": "commit 52f657e34d7b21b47434d9d8b26fa7f6778b63a0\nAuthor: Linus Torvalds <torvalds@linux-foundation.org>\nDate:   Wed Apr 8 13:18:57 2026 -0700\n\n    x86: shadow stacks: proper error handling for mmap lock\n    \n    김영민 reports that shstk_pop_sigframe() doesn't check for errors from\n    mmap_read_lock_killable(), which is a silly oversight, and also shows\n    that we haven't marked those functions with \"__must_check\", which would\n    have immediately caught it.\n    \n    So let's fix both issues.\n    ",
+        "exists": false,
+        "reason": "The snippet shows the relevant logic in shstk_pop_sigframe(): `if (need_to_check_vma) mmap_read_lock_killable(current->mm);` followed by a userspace read `err = get_shstk_data(&token_addr, (unsigned long __user *)*ssp);`. This is exactly the vulnerable pattern described: holding the mmap read lock across a userspace access that can fault. However, this commit already contains the fix for the specific reported issue by checking the return value and aborting on failure: `if (mmap_read_lock_killable(current->mm)) return -EINTR;`. So the vulnerable construct is present in the function’s flow, but the error-handling fix is also present in this version."
+      }
+    },
+    {
+      "bic_found": "52f657e34d7b21b47434d9d8b26fa7f6778b63a0",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c1f49dea2b8f",
+          "anchor_file": "arch/x86/kernel/shstk.c",
+          "anchor_lineno": 360
+        },
+        "commit": "7fad2a432cd35bbf104d2d9d426e74902f22aa95",
+        "commit_short": "7fad2a432cd3",
+        "commit_msg": "x86/shstk: Check that signal frame is shadow stack mem\n\nThe shadow stack signal frame is read by the kernel on sigreturn",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kernel/shstk.c",
+        "display_lineno": 282,
+        "code_snippet": "commit 7fad2a432cd35bbf104d2d9d426e74902f22aa95\nAuthor: Rick Edgecombe <rick.p.edgecombe@intel.com>\nDate:   Mon Jun 12 17:10:59 2023 -0700\n\n    x86/shstk: Check that signal frame is shadow stack mem\n    \n    The shadow stack signal frame is read by the kernel on sigreturn. It\n    relies on shadow stack memory protections to prevent forgeries of this\n    signal frame (which included the pre-signal SSP). This behavior helps\n    userspace protect itself. However, using the INCSSP instruction usersp",
+        "exists": false,
+        "reason": "The snippet shows the post-fix `shstk_pop_sigframe()` logic, and the vulnerable construct from the root cause is not present here. The root cause was holding `mmap_read_lock()` across a userspace read (`get_shstk_data(...)`), which could fault and recurse on the mmap lock. In this code, the read lock is only taken conditionally (`if (need_to_check_vma) mmap_read_lock_killable(current->mm);`), and the code now performs VMA validation (`find_vma(current->mm, *ssp); ... VM_SHADOW_STACK`) and explicitly unlocks before returning or on error. The added comment explains the check is only needed near a page boundary. Therefore this commit already contains the fix and does not exhibit the vulnerable deadlock-prone construct."
+      }
+    },
+    {
+      "bic_found": "7fad2a432cd35bbf104d2d9d426e74902f22aa95",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "05e36022c0543ba55a3de55af455b00cb3eb4fcc": 1,
+        "52f657e34d7b21b47434d9d8b26fa7f6778b63a0": 1,
+        "7fad2a432cd35bbf104d2d9d426e74902f22aa95": 1
+      },
+      "bic_candidates": [
+        "05e36022c0543ba55a3de55af455b00cb3eb4fcc",
+        "52f657e34d7b21b47434d9d8b26fa7f6778b63a0",
+        "7fad2a432cd35bbf104d2d9d426e74902f22aa95"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

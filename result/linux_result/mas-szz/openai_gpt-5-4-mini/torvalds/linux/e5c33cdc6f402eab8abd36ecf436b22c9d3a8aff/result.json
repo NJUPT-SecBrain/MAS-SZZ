@@ -1,0 +1,306 @@
+{
+  "cveid": "CVE-2026-46090",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e5c33cdc6f402eab8abd36ecf436b22c9d3a8aff"
+  ],
+  "ground_truth_bic": "597603d615d2b19a9e451d8cfac24372856a522d",
+  "predicted_bic": [
+    "826af7fa62e347464b1b4e0ba2fe19a92438084f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 28,
+  "llm_tokens": 18024,
+  "root_cause": {
+    "text": "The ALSA aloop `loopback_check_format()` path uses a peer `substream`/runtime pointer after releasing `cable->lock`, so a concurrent `free_cable()` can clear `cable->streams[]` and free or detach the peer runtime before `snd_pcm_stop()` runs, causing a use-after-free.",
+    "evidence": "The patch comment says the peer lookup was moved under `cable->lock` but “the actual `snd_pcm_stop()` still runs after dropping that lock,” and that “a concurrent close can clear the capture entry from `cable->streams[]` and detach or free its runtime while the playback trigger path still holds a stale peer substream pointer”; the fix adds `stop_count`/`stop_wait` to block `free_cable()` until in-flight peer stops finish, proving the bug is a lifetime/race issue around the peer runtime.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "sound/drivers/aloop.c",
+      "lineno": 400,
+      "content": "snd_pcm_stop(dpcm_capt->substream, SNDRV_PCM_STATE_DRAINING);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The ALSA aloop `loopback_check_format()` path uses a peer `substream`/runtime pointer after releasing `cable->lock`, so a concurrent `free_cable()` can clear `cable->streams[]` and free or detach the peer runtime before `snd_pcm_stop()` runs, causing a use-after-free.",
+      "evidence_points": "The patch comment says the peer lookup was moved under `cable->lock` but “the actual `snd_pcm_stop()` still runs after dropping that lock,” and that “a concurrent close can clear the capture entry from `cable->streams[]` and detach or free its runtime while the playback trigger path still holds a stale peer substream pointer”; the fix adds `stop_count`/`stop_wait` to block `free_cable()` until in-flight peer stops finish, proving the bug is a lifetime/race issue around the peer runtime."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "sound/drivers/aloop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "sound/drivers/aloop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "sound/drivers/aloop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "sound/drivers/aloop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "sound/drivers/aloop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add synchronization state to `loopback_cable` so concurrent peer stop handling can be coordinated safely outside the cable lock.",
+        "what": "Two new members were added to `struct loopback_cable`: an `atomic_t stop_count` and a `wait_queue_head_t stop_wait`, along with a comment noting that in-flight peer stops run outside `cable->lock`.",
+        "how": "This equips the loopback cable object with state for tracking concurrent stop operations and a wait queue for synchronization, allowing code elsewhere to coordinate stop handling safely even when it occurs outside the main cable spinlock."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Prevent premature peer-runtime release by incrementing `stop_count` before stopping a running capture stream.",
+        "what": "In the playback-side conditional, the code now wraps the existing `stop_capture = true;` assignment in braces and inserts `atomic_inc(&cable->stop_count);` before setting `stop_capture` when `cruntime->state == SNDRV_PCM_STATE_RUNNING`.",
+        "how": "When a running capture peer is about to be stopped from this path, the code now increments `stop_count` first so that a concurrent close operation does not free the peer runtime while it is still being referenced. This changes runtime behavior by preventing premature teardown during this stop sequence."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Wake waiters after the final capture-stop operation by decrementing the stop counter and signaling the wait queue when it reaches zero.",
+        "what": "The single-line `if (stop_capture)` block was expanded into a braced block, and inside it two new statements were added after `snd_pcm_stop(...)`: an `atomic_dec_and_test(&cable->stop_count)` check and a corresponding `wake_up(&cable->stop_wait)` call when the atomic decrement reaches zero.",
+        "how": "When capture is stopped, the code now not only transitions the PCM substream to the DRAINING state but also decrements a shared stop counter and wakes any thread waiting for all stop operations to complete once the last one finishes. This adds synchronization/notification behavior that was previously missing."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix cable teardown to wait for pending stop activity and only free shared resources when both streams are no longer active.",
+        "what": "The function `free_cable()` was restructured: the previous conditional branch that either cleared the current stream or closed and freed the cable was replaced with an unconditional locked block that clears `cable->streams[subsubstream->stream]` and records whether the opposite stream is still active in `other_alive`. After releasing the lock, the code now waits on `cable->stop_wait` until `cable->stop_count` becomes zero, returns early if the other stream is still alive, and only then retrieves `dpcm`, calls `close_cable()` if available, clears the cable pointer in `loopback->cables`, and frees the cable.",
+        "how": "This change prevents the cable from being closed and freed while a stop operation is still in progress, and it separates stream teardown from cable destruction. If the peer stream is still active, the function now only marks the current stream as gone and exits without freeing shared state. If both streams are gone, it waits for any outstanding stop_count activity to finish before invoking close/free logic, reducing the risk of races or use-after-free during concurrent stop and close handling."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize the cable stop counter and wait queue during loopback open to fix uninitialized synchronization state.",
+        "what": "In loopback_open(), immediately after initializing cable->lock, the code now initializes cable->stop_count to 0 with atomic_set() and initializes cable->stop_wait with init_waitqueue_head().",
+        "how": "This ensures the cable's stop-related synchronization primitives are properly set up before the PCM cable is used, preventing stale atomic state or an uninitialized wait queue from affecting stop/wakeup coordination at runtime."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Prevent premature peer-runtime release by incrementing `stop_count` before stopping a running capture stream."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix cable teardown to wait for pending stop activity and only free shared resources when both streams are no longer active."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize the cable stop counter and wait queue during loopback open to fix uninitialized synchronization state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "REJECT",
+        "core_intent": "Coordinate concurrent peer stop handling and stream shutdown to prevent premature peer-runtime release.",
+        "outliers": [],
+        "reason": "The two hunks are coherent and both address synchronization around stopping capture/peer runtime, so there are no outliers."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix cable teardown and stop-handling synchronization so shared resources are only released after pending stop activity completes and no streams remain active.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Coordinate peer stop handling and stream shutdown to prevent premature release of the peer runtime during capture stream stopping.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix cable teardown and stop handling so shared resources are only released after all pending stop activity has completed.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target the race in loopback stop handling by coordinating peer shutdown and preventing the peer runtime from being released too early, which matches the use-after-free root cause in loopback_check_format()/free_cable()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the race in cable teardown/stop handling described by the root cause: they wait for pending stop activity before freeing shared resources, which prevents a peer runtime from being freed or detached before stop processing completes."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The change initializes stop counter/wait queue state during open, which is unrelated to the use-after-free in `loopback_check_format()` caused by accessing a peer runtime after releasing `cable->lock`."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "sound/drivers/aloop.c",
+            "lineno": 1056,
+            "content": "if (cable->streams[!substream->stream]) {",
+            "rationale": "This check is performed before taking `cable->lock`, so it can race with concurrent teardown. The code may decide the peer stream is present and later use the peer runtime, even though `free_cable()` can clear `cable->streams[]` and free/detach the peer in the meantime, leading to use-after-free."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "sound/drivers/aloop.c",
+            "lineno": 1061,
+            "content": "struct loopback_pcm *dpcm = substream->runtime->private_data;",
+            "rationale": "This dereferences `substream->runtime` during teardown without first ensuring the peer runtime is still valid under synchronization. If the cable is concurrently freed, this pointer can become stale and later operations on the peer runtime can trigger use-after-free."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "sound/drivers/aloop.c",
+            "lineno": 1063,
+            "content": "if (cable->ops && cable->ops->close_cable && dpcm)",
+            "rationale": "This uses `dpcm`, which is derived from `substream->runtime->private_data`, after the cable state has already been checked outside the lock. If the peer runtime was detached/freed by concurrent teardown, this path can still operate on invalid data."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "sound/drivers/aloop.c",
+            "lineno": 370,
+            "content": "stop_capture = true;",
+            "rationale": "This is the pre-fix branch that triggers stopping the peer capture stream, but the stop is not coordinated with teardown. The subsequent stop action can run after the peer runtime has been freed, matching the use-after-free root cause."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "sound/drivers/aloop.c",
+            "lineno": 400,
+            "content": "snd_pcm_stop(dpcm_capt->substream, SNDRV_PCM_STATE_DRAINING);",
+            "rationale": "This is the dangerous operation that runs on the peer substream after the lock is released. If `free_cable()` concurrently clears `cable->streams[]` and frees or detaches the peer runtime, this stop call can dereference freed memory."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "sound/drivers/aloop.c",
+            "stmt_text": "snd_pcm_stop(dpcm_capt->substream, SNDRV_PCM_STATE_DRAINING);",
+            "location": "hunk",
+            "explanation": "This is the post-lock stop of the peer capture substream. The root cause is a use-after-free in the loopback format check path when a peer substream/runtime pointer is used after releasing cable->lock; if free_cable() runs concurrently and clears cable->streams[] or detaches/frees the peer runtime, this call can dereference stale memory."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "901ac0ff15ed",
+          "anchor_file": "sound/drivers/aloop.c",
+          "anchor_lineno": 400
+        },
+        "commit": "826af7fa62e347464b1b4e0ba2fe19a92438084f",
+        "commit_short": "826af7fa62e3",
+        "commit_msg": "ALSA: aloop: Fix racy access at PCM trigger\n\nThe PCM trigger callback of aloop driver tries to check the PCM state\nand s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "sound/drivers/aloop.c",
+        "display_lineno": 400,
+        "code_snippet": "commit 826af7fa62e347464b1b4e0ba2fe19a92438084f\nAuthor: Takashi Iwai <tiwai@suse.de>\nDate:   Tue Feb 3 15:09:59 2026 +0100\n\n    ALSA: aloop: Fix racy access at PCM trigger\n    \n    The PCM trigger callback of aloop driver tries to check the PCM state\n    and stop the stream of the tied substream in the corresponding cable.\n    Since both check and stop operations are performed outside the cable\n    lock, this may result in UAF when a program attempts to trigger\n    frequently while opening/closi",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the exact racy path in `loopback_check_format()`. Before the fix, the code accessed `cable->streams[SNDRV_PCM_STREAM_CAPTURE]->substream` and later called `snd_pcm_stop(...)` outside any lock. The commit changes this by wrapping the critical section in `scoped_guard(spinlock_irqsave, &cable->lock)` and by caching `dpcm_play`/`dpcm_capt` under the lock. It also adds NULL checks (`if (!dpcm_play || !dpcm_capt) return -EIO;`, `if (!runtime || !cruntime) return -EIO;`) and defers `snd_pcm_stop(dpcm_capt->substream, ...)` until after the lock, which addresses the UAF described in the root cause. However, the vulnerable construct is clearly present in the pre-fix logic referenced by the diff context, so the function as shown is the fixed version and contains the repaired logic rather than the bug."
+      }
+    },
+    {
+      "bic_found": "826af7fa62e347464b1b4e0ba2fe19a92438084f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "826af7fa62e347464b1b4e0ba2fe19a92438084f": 1
+      },
+      "bic_candidates": [
+        "826af7fa62e347464b1b4e0ba2fe19a92438084f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

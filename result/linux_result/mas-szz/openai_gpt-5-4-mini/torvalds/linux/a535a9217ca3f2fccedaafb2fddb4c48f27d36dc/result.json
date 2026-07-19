@@ -1,0 +1,197 @@
+{
+  "cveid": "CVE-2026-31532",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a535a9217ca3f2fccedaafb2fddb4c48f27d36dc"
+  ],
+  "ground_truth_bic": "514ac99c64b22d83b52dfee3b8becaa69a92bc4a",
+  "predicted_bic": [
+    "514ac99c64b22d83b52dfee3b8becaa69a92bc4a"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 9439,
+  "root_cause": {
+    "text": "The CAN raw socket code freed `ro->uniq` in `raw_release()` before `can_rx_unregister()`’s deferred RCU callback had finished, so `raw_rcv()` could still dereference the per-CPU `uniq` storage after it was freed.",
+    "evidence": "The patch removes `free_percpu(ro->uniq);` from `raw_release()` and instead adds `raw_sock_destruct()` as `sk->sk_destruct` to free `ro->uniq` only when the socket destructor runs; the commit message states that `can_rx_unregister()` defers receiver deletion with `call_rcu()`, creating a window where `raw_rcv()` runs in an RCU read-side critical section after `ro->uniq` was freed.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/can/raw.c",
+      "lineno": 439,
+      "content": "free_percpu(ro->uniq);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The CAN raw socket code freed `ro->uniq` in `raw_release()` before `can_rx_unregister()`’s deferred RCU callback had finished, so `raw_rcv()` could still dereference the per-CPU `uniq` storage after it was freed.",
+      "evidence_points": "The patch removes `free_percpu(ro->uniq);` from `raw_release()` and instead adds `raw_sock_destruct()` as `sk->sk_destruct` to free `ro->uniq` only when the socket destructor runs; the commit message states that `can_rx_unregister()` defers receiver deletion with `call_rcu()`, creating a window where `raw_rcv()` runs in an RCU read-side critical section after `ro->uniq` was freed."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/can/raw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/can/raw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/can/raw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Free the raw socket's per-CPU unique data during destruction to fix a resource leak.",
+        "what": "A new static function `raw_sock_destruct(struct sock *sk)` was added. It retrieves the `raw_sock` via `raw_sk(sk)`, frees the per-CPU allocation `ro->uniq` with `free_percpu()`, and then calls `can_sock_destruct(sk)`.",
+        "how": "This ensures the raw socket's per-CPU `uniq` resource is released when the socket is destroyed, preventing a memory/resource leak during socket teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Assign the raw socket destructor during initialization so raw sockets are cleaned up correctly on teardown.",
+        "what": "In `raw_init(struct sock *sk)`, a new assignment sets `sk->sk_destruct = raw_sock_destruct;` immediately after the `!ro->uniq` allocation check and before registering the socket on the raw notifier list.",
+        "how": "At runtime, raw sockets will now use `raw_sock_destruct` as their destructor callback, ensuring the socket-specific cleanup path runs when the socket is destroyed. This changes lifetime handling by wiring in the expected teardown logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Stop freeing `ro->uniq` during raw socket release to correct the resource cleanup path.",
+        "what": "In `raw_release(struct socket *sock)`, the call to `free_percpu(ro->uniq);` was removed from the release path, while the other state resets (`bound`, `dev`, `count`) remain unchanged.",
+        "how": "When a raw socket is released, it no longer frees the per-CPU `uniq` allocation at this point, changing the cleanup behavior for that resource and avoiding its deallocation during this function."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Assign the raw socket destructor during initialization so raw sockets are cleaned up correctly on teardown."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Stop freeing `ro->uniq` during raw socket release to correct the resource cleanup path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure raw socket resources are properly cleaned up during teardown by assigning and using the correct destructor path.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The changes focus on setting the correct destructor and fixing a resource leak, not on the UAF race where ro->uniq was freed before can_rx_unregister()'s deferred RCU callback completed."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause by stopping `ro->uniq` from being freed in `raw_release()` before the deferred RCU callback completes, preventing `raw_rcv()` from dereferencing freed memory."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "net/can/raw.c",
+            "lineno": 439,
+            "content": "free_percpu(ro->uniq);",
+            "rationale": "This frees the per-CPU uniq storage during raw socket release. Per the root cause, the RCU callback in can_rx_unregister() can still run afterward and raw_rcv() may dereference ro->uniq, creating a use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/can/raw.c",
+            "stmt_text": "free_percpu(ro->uniq);",
+            "location": "hunk",
+            "explanation": "This statement frees the per-CPU uniq storage during raw socket release. Because can_rx_unregister() uses deferred RCU callback behavior, raw_rcv() may still access ro->uniq afterward, causing a use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fed4626501c8",
+          "anchor_file": "net/can/raw.c",
+          "anchor_lineno": 439
+        },
+        "commit": "514ac99c64b22d83b52dfee3b8becaa69a92bc4a",
+        "commit_short": "514ac99c64b2",
+        "commit_msg": "can: fix multiple delivery of a single CAN frame for overlapping CAN filters\n\nThe CAN_RAW socket can set multiple CAN id",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/can/raw.c",
+        "display_lineno": 362,
+        "code_snippet": "commit 514ac99c64b22d83b52dfee3b8becaa69a92bc4a\nAuthor: Oliver Hartkopp <socketcan@hartkopp.net>\nDate:   Wed Apr 1 07:50:28 2015 +0200\n\n    can: fix multiple delivery of a single CAN frame for overlapping CAN filters\n    \n    The CAN_RAW socket can set multiple CAN identifier specific filters that lead\n    to multiple filters in the af_can.c filter processing. These filters are\n    indenpendent from each other which leads to logical OR'ed filters when applied.\n    \n    This patch makes sure that",
+        "exists": false,
+        "reason": "The shown code does not contain the vulnerability described in the root cause. The bug was about freeing `ro->uniq` in `raw_release()` before the deferred RCU callback from `can_rx_unregister()` had finished, allowing `raw_rcv()` to dereference freed per-CPU storage. In this snippet, `raw_rcv()` uses `ro->uniq` for duplicate suppression (`this_cpu_ptr(ro->uniq)->skb == oskb` and `->tstamp`), and `raw_release()` does call `free_percpu(ro->uniq);`, but the critical context needed to determine whether this free races with unregister/RCU teardown is not shown here. However, the specific vulnerable construct from the root cause is not demonstrably present in this function body alone; there is no evidence here of freeing `ro->uniq` before `can_rx_unregister()` completion or of missing synchronization. Therefore `has_bug` cannot be confirmed from this snippet, and the fix is not visible either."
+      }
+    },
+    {
+      "bic_found": "514ac99c64b22d83b52dfee3b8becaa69a92bc4a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "514ac99c64b22d83b52dfee3b8becaa69a92bc4a": 1
+      },
+      "bic_candidates": [
+        "514ac99c64b22d83b52dfee3b8becaa69a92bc4a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

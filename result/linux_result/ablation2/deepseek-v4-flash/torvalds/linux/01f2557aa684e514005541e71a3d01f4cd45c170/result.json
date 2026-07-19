@@ -1,0 +1,615 @@
+{
+  "cveid": "CVE-2026-23466",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "01f2557aa684e514005541e71a3d01f4cd45c170"
+  ],
+  "ground_truth_bic": "919bb54e989c1edef87e9797be125c94c450fc65",
+  "predicted_bic": [
+    "dd08ebf6c3525a7ea2186e636df064ea47281987"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 23748,
+  "root_cause": {
+    "text": "The xe_ggtt driver protected GGTT MMIO access solely via the hotplug mechanism (drm_dev_enter/drm_dev_exit), which is not invoked on driver load failure and cannot prevent concurrent accesses from asynchronous worker threads after GGTT teardown begins, leading to potential use-after-free.",
+    "evidence": "The CVE description states: \"if driver load fails, this protection is insufficient because drm_dev_unplug() is never called\" and \"devm release functions cannot guarantee that all BOs with GGTT mappings are destroyed before the GGTT MMIO region is removed, as some BOs may be freed asynchronously by worker threads.\" The patch introduces an explicit XE_GGTT_FLAGS_ONLINE flag cleared during dev_fini_ggtt, replacing the hotplug-based check in ggtt_node_remove() to guard MMIO access.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 417,
+      "content": "bound = drm_dev_enter(&xe->drm, &idx);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 420,
+      "content": "if (bound)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 421,
+      "content": "xe_ggtt_clear(ggtt, node->base.start, node->base.size);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 380,
+      "content": "err = devm_add_action_or_reset(xe->drm.dev, dev_fini_ggtt, ggtt);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/xe/xe_ggtt.c",
+      "lineno": 316,
+      "content": "drain_workqueue(ggtt->wq);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The xe_ggtt driver protected GGTT MMIO access solely via the hotplug mechanism (drm_dev_enter/drm_dev_exit), which is not invoked on driver load failure and cannot prevent concurrent accesses from asynchronous worker threads after GGTT teardown begins, leading to potential use-after-free.",
+      "evidence_points": "The CVE description states: \"if driver load fails, this protection is insufficient because drm_dev_unplug() is never called\" and \"devm release functions cannot guarantee that all BOs with GGTT mappings are destroyed before the GGTT MMIO region is removed, as some BOs may be freed asynchronously by worker threads.\" The patch introduces an explicit XE_GGTT_FLAGS_ONLINE flag cleared during dev_fini_ggtt, replacing the hotplug-based check in ggtt_node_remove() to guard MMIO access."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/gpu/drm/xe/xe_ggtt_types.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Acquire ggtt->lock before clearing ONLINE flag to prevent race conditions during GGTT teardown.",
+        "what": "Added scoped_guard(mutex, &ggtt->lock) to clear XE_GGTT_FLAGS_ONLINE in dev_fini_ggtt before drain_workqueue.",
+        "how": "Holds the ggtt->lock mutex while clearing the ONLINE flag, ensuring no concurrent access to flags during workqueue drain."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Mark GGTT as online immediately after successful initialization to ensure state consistency before registering cleanup.",
+        "what": "Added line to set XE_GGTT_FLAGS_ONLINE flag on ggtt->flags after successful early initialization check.",
+        "how": "This ensures that the GGTT is marked as online before the resource-managed cleanup action is registered, likely preventing incorrect state tracking or usage of the GGTT before it is fully ready."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition and simplify lifecycle management by replacing drm_dev_enter guard with a local online flag under the ggtt lock in ggtt_node_remove.",
+        "what": "In ggtt_node_remove, replaced drm_dev_enter call with a check of ggtt->flags & XE_GGTT_FLAGS_ONLINE, moved the bound assignment inside the mutex lock, and removed unused variables xe and idx.",
+        "how": "Previously, bound was set before acquiring the lock by calling drm_dev_enter, which acquires a device reference. Now bound is set after acquiring the lock by checking a flag in ggtt, avoiding the need for drm_dev_enter/exit and ensuring the flag is read under the lock."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove unbalanced drm_dev_exit call in ggtt_node_remove to fix device reference count leak.",
+        "what": "Removed the line `drm_dev_exit(idx);` from the `ggtt_node_remove` function, which was previously called before the `free_node:` label.",
+        "how": "The removal prevents `drm_dev_exit` from being called during node removal, fixing an unbalanced device reference count that could cause premature device cleanup or use-after-free."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "other",
+        "intent_summary": "Add XE_GGTT_FLAGS_ONLINE flag to track GGTT online status, enabling future runtime state checks.",
+        "what": "Added a new preprocessor define XE_GGTT_FLAGS_ONLINE (bit 1) to the xe_ggtt structure's flags field, and updated the comment documentation for the flags field to include the new flag and its description.",
+        "how": "This change introduces a new state indicator flag that can be set to indicate the GGTT is online (initialized) and ready for use, which can be checked under the ggtt->lock after initialization."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix race condition and simplify lifecycle management by replacing drm_dev_enter guard with a local online flag under the ggtt lock in ggtt_node_remove."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Mark GGTT as online immediately after successful initialization to ensure state consistency before registering cleanup."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove unbalanced drm_dev_exit call in ggtt_node_remove to fix device reference count leak."
+        },
+        {
+          "group_id": 3,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add XE_GGTT_FLAGS_ONLINE flag to track GGTT online status, enabling future runtime state checks."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix race condition and simplify lifecycle management by replacing drm_dev_enter guard with a local online flag under the ggtt lock in ggtt_node_remove.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by replacing the inadequate drm_dev_enter guard with a local online flag under the ggtt lock, which properly prevents concurrent accesses during GGTT teardown and driver load failure."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the vulnerability by ensuring GGTT is marked as online only after successful initialization, which prevents concurrent accesses from worker threads during early failure or teardown, mitigating the use-after-free risk."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group addresses a device reference count leak by removing an unbalanced drm_dev_exit call, which is a separate bug from the root cause that concerns missing drm_dev_enter/drm_dev_exit protection during driver load failure and GGTT teardown."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The group adds a flag to track GGTT online status, which is a prerequisite for adding runtime state checks that are needed to prevent use-after-free during driver load failure and after teardown."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 417,
+            "content": "bound = drm_dev_enter(&xe->drm, &idx);",
+            "rationale": "This statement uses drm_dev_enter as the sole guard for GGTT MMIO access, which does not protect against concurrent accesses after teardown or during driver load failure, leading to use-after-free."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 420,
+            "content": "if (bound)",
+            "rationale": "The conditional directly relies on the insufficient drm_dev_enter guard; if drm_dev_enter is not invoked (e.g., after load failure) or if the device is removed, the check may be bypassed, allowing unsafe access."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 421,
+            "content": "xe_ggtt_clear(ggtt, node->base.start, node->base.size);",
+            "rationale": "This MMIO write operation is only protected by the drm_dev_enter guard, which is insufficient to prevent concurrent access from worker threads after GGTT teardown has started."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 380,
+            "content": "err = devm_add_action_or_reset(xe->drm.dev, dev_fini_ggtt, ggtt);",
+            "rationale": "The cleanup registration occurs before the GGTT is marked online; if registration fails or if the GGTT is not fully initialized, teardown may not be properly registered, leaving GGTT accessible after failure without protection."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "lineno": 316,
+            "content": "drain_workqueue(ggtt->wq);",
+            "rationale": "Draining the workqueue without holding ggtt->lock and without an online flag check allows concurrent worker threads to attempt GGTT MMIO access after teardown, causing use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "bound = drm_dev_enter(&xe->drm, &idx);",
+            "location": "hunk",
+            "explanation": "This statement uses drm_dev_enter as the sole guard for GGTT MMIO access, which is not invoked on driver load failure and cannot prevent concurrent accesses from worker threads after GGTT teardown begins, leading to use-after-free."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "if (bound)",
+            "location": "hunk",
+            "explanation": "This conditional directly relies on the insufficient drm_dev_enter guard; if drm_dev_enter is not invoked (e.g., after load failure) or if the device is removed, the check may be bypassed, allowing unsafe MMIO access."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "xe_ggtt_clear(ggtt, node->base.start, node->base.size);",
+            "location": "hunk",
+            "explanation": "This MMIO write operation is only protected by the drm_dev_enter guard, which is insufficient to prevent concurrent access from worker threads after GGTT teardown has started, causing use-after-free."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "err = devm_add_action_or_reset(xe->drm.dev, dev_fini_ggtt, ggtt);",
+            "location": "hunk",
+            "explanation": "This cleanup registration occurs before the GGTT is marked online; if registration fails or if the GGTT is not fully initialized, teardown may not be properly registered, leaving GGTT accessible after failure without protection."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+            "stmt_text": "drain_workqueue(ggtt->wq);",
+            "location": "hunk",
+            "explanation": "Draining the workqueue without holding ggtt->lock and without an online flag check allows concurrent worker threads to attempt GGTT MMIO access after teardown, causing use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 417
+        },
+        "commit": "919bb54e989c1edef87e9797be125c94c450fc65",
+        "commit_short": "919bb54e989c",
+        "commit_msg": "drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n\nDefer the ggtt node removal to a thread if runtime_pm",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 292
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "34e804220f69",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 292
+        },
+        "commit": "c5151fa80060a869c0308067e758a271c217ff61",
+        "commit_short": "c5151fa80060",
+        "commit_msg": "drm/xe/ggtt: fix GGTT scratch usage for DG2\n\nScratch page is in VRAM, and therefore requires 64K GTT layout. In GGTT\nwor",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 160
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "5e53d1e806ae",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 160
+        },
+        "commit": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+        "commit_short": "dd08ebf6c352",
+        "commit_msg": "drm/xe: Introduce a new DRM driver for Intel GPUs\n\nXe, is a new driver for Intel GPUs that supports both integrated and\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 157
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 3"
+    },
+    {
+      "bic_found": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 420
+        },
+        "commit": "919bb54e989c1edef87e9797be125c94c450fc65",
+        "commit_short": "919bb54e989c",
+        "commit_msg": "drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n\nDefer the ggtt node removal to a thread if runtime_pm",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 295
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "34e804220f69",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 295
+        },
+        "commit": "c5151fa80060a869c0308067e758a271c217ff61",
+        "commit_short": "c5151fa80060",
+        "commit_msg": "drm/xe/ggtt: fix GGTT scratch usage for DG2\n\nScratch page is in VRAM, and therefore requires 64K GTT layout. In GGTT\nwor",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 163
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "5e53d1e806ae",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 163
+        },
+        "commit": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+        "commit_short": "dd08ebf6c352",
+        "commit_msg": "drm/xe: Introduce a new DRM driver for Intel GPUs\n\nXe, is a new driver for Intel GPUs that supports both integrated and\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 160
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 3"
+    },
+    {
+      "bic_found": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 421
+        },
+        "commit": "919bb54e989c1edef87e9797be125c94c450fc65",
+        "commit_short": "919bb54e989c",
+        "commit_msg": "drm/xe: Fix missing runtime outer protection for ggtt_remove_node\n\nDefer the ggtt node removal to a thread if runtime_pm",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 296
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "34e804220f69",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 296
+        },
+        "commit": "62742d12663145160d3b6f0c4209709c1fd343fe",
+        "commit_short": "62742d126631",
+        "commit_msg": "drm/xe: Normalize bo flags macros\n\nThe flags stored in the BO grew over time without following\nmuch a naming pattern. Fi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 227
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "e27f8a45c81f",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 227
+        },
+        "commit": "c5151fa80060a869c0308067e758a271c217ff61",
+        "commit_short": "c5151fa80060",
+        "commit_msg": "drm/xe/ggtt: fix GGTT scratch usage for DG2\n\nScratch page is in VRAM, and therefore requires 64K GTT layout. In GGTT\nwor",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 164
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "5e53d1e806ae",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 164
+        },
+        "commit": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+        "commit_short": "dd08ebf6c352",
+        "commit_msg": "drm/xe: Introduce a new DRM driver for Intel GPUs\n\nXe, is a new driver for Intel GPUs that supports both integrated and\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 161
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 380
+        },
+        "commit": "89d2835c3680ab1938e22ad81b1c9f8c686bd391",
+        "commit_short": "89d2835c3680",
+        "commit_msg": "drm/xe: Process deferred GGTT node removals on device unwind\n\nWhile we are indirectly draining our dedicated workqueue g",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 300
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "35db1da40c8c",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 300
+        },
+        "commit": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+        "commit_short": "dd08ebf6c352",
+        "commit_msg": "drm/xe: Introduce a new DRM driver for Intel GPUs\n\nXe, is a new driver for Intel GPUs that supports both integrated and\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 133
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e6e3ea52bf07",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 316
+        },
+        "commit": "89d2835c3680ab1938e22ad81b1c9f8c686bd391",
+        "commit_short": "89d2835c3680",
+        "commit_msg": "drm/xe: Process deferred GGTT node removals on device unwind\n\nWhile we are indirectly draining our dedicated workqueue g",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 245
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "35db1da40c8c",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 245
+        },
+        "commit": "244fe1666364865154930f34d8df5489df1922b6",
+        "commit_short": "244fe1666364",
+        "commit_msg": "drm/xe: Introduce GGTT documentation\n\nDocument xe_ggtt and ensure it is part of the built kernel docs.\n\nv2: - Accepted a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 204
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "69f0925c67c2",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 204
+        },
+        "commit": "ab10e976fbda8349163ceee2ce99b2bfc97031b8",
+        "commit_short": "ab10e976fbda",
+        "commit_msg": "drm/xe: limit GGTT size to GUC_GGTT_TOP\n\nThe GuC can't access addresses above GUC_GGTT_TOP, so any GuC-accessible\nobject",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 121
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "ff063430caa8",
+          "anchor_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+          "anchor_lineno": 121
+        },
+        "commit": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+        "commit_short": "dd08ebf6c352",
+        "commit_msg": "drm/xe: Introduce a new DRM driver for Intel GPUs\n\nXe, is a new driver for Intel GPUs that supports both integrated and\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/xe/xe_ggtt.c",
+        "display_lineno": 121
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "dd08ebf6c3525a7ea2186e636df064ea47281987",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "dd08ebf6c3525a7ea2186e636df064ea47281987": 5
+      },
+      "bic_candidates": [
+        "dd08ebf6c3525a7ea2186e636df064ea47281987"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,296 @@
+{
+  "cveid": "CVE-2026-43482",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "83236b2e43dba00bee5b82eb5758816b1a674f6a"
+  ],
+  "ground_truth_bic": "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+  "predicted_bic": [
+    "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+    "a8433f7a267f9fcf14822c08ab89b6021a8ba536"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 75299,
+  "root_cause": {
+    "text": "In sched_ext, callers could be preempted after scx_claim_exit() set scx_sched->exit_kind but before queueing the helper kthread work, creating a non-atomic exit path where error handling was already disabled and teardown/bypass might never be started.",
+    "evidence": "The commit message and added comment state that once scx_claim_exit() claims exit_kind, “scx_error() can no longer trigger,” so if the task is “preempted between claiming exit and kicking the helper work,” the work “is never queued,” “bypass mode never activates,” and “the whole system can wedge”; the patch fixes this by adding preemption guards in scx_disable() and scx_vexit() and lockdep_assert_preemption_disabled() in scx_claim_exit().",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/sched/ext.c",
+      "lineno": 4452,
+      "content": "scx_claim_exit(sch, kind);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/sched/ext.c",
+      "lineno": 4774,
+      "content": "if (!scx_claim_exit(sch, kind))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In sched_ext, callers could be preempted after scx_claim_exit() set scx_sched->exit_kind but before queueing the helper kthread work, creating a non-atomic exit path where error handling was already disabled and teardown/bypass might never be started.",
+      "evidence_points": "The commit message and added comment state that once scx_claim_exit() claims exit_kind, “scx_error() can no longer trigger,” so if the task is “preempted between claiming exit and kicking the helper work,” the work “is never queued,” “bypass mode never activates,” and “the whole system can wedge”; the patch fixes this by adding preemption guards in scx_disable() and scx_vexit() and lockdep_assert_preemption_disabled() in scx_claim_exit()."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/sched/ext.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/sched/ext.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/sched/ext.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a preemption-disabled assertion to scx_claim_exit() to enforce its required calling context and catch conditions that could wedge the system during scheduler exit.",
+        "what": "A descriptive comment was added above scx_claim_exit(), and a new lockdep_assert_preemption_disabled() statement was inserted at the start of the function before the atomic_try_cmpxchg() on sch->exit_kind.",
+        "how": "At runtime, the new assertion checks in lockdep/debug builds that preemption is disabled when scx_claim_exit() is called, enforcing the requirement that exit claiming and helper work kick happen without the current task being preempted; this helps catch incorrect call contexts that could otherwise leave helper work untriggered and wedge the system."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a preemption guard in scx_disable() to protect exit claiming and disable-work queueing from preemption-related races.",
+        "what": "A single statement, guard(preempt)();, was added inside the if (sch) block in scx_disable() immediately before calling scx_claim_exit(sch, kind) and kthread_queue_work(sch->helper, &sch->disable_work).",
+        "how": "At runtime, this introduces a preemption guard for the critical section that operates on the scheduler object after it is obtained under RCU, preventing the current task from being preempted while claiming exit and queueing the disable work. This helps ensure those operations execute in a protected context and avoids races or invalid state transitions caused by preemption."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Disable preemption at the start of `scx_vexit()` to protect the exit-claim critical section from preemption-related races.",
+        "what": "A new `guard(preempt)();` statement was inserted at the start of `scx_vexit()` immediately after loading `sch->exit_info` and before the call to `scx_claim_exit(sch, kind)`.",
+        "how": "This makes the function execute within a preemption-disabled guard scope, preventing the current task from being preempted while entering the scheduler exit path and attempting to claim exit state, which helps avoid races or inconsistent state during that critical section."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 3,
+          "intent": "Disable preemption at the start of `scx_vexit()` to protect the exit-claim critical section from preemption-related races."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Harden the scheduler-exit/disable path against preemption-related races by requiring or enforcing non-preemptible execution around exit claiming and related critical sections.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target the root cause: a preemption window between scx_claim_exit() setting exit_kind and queueing the helper work. Adding preemption-disabled assertions and guards around scx_claim_exit(), scx_disable(), and scx_vexit() enforces atomic, non-preemptible execution of the scheduler exit path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/sched/ext.c",
+            "lineno": 4452,
+            "content": "scx_claim_exit(sch, kind);",
+            "rationale": "This claims exit and sets exit_kind without any preemption protection in the shown caller, creating the vulnerable window where the task can be preempted after error handling is disabled but before teardown/bypass work is queued."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/sched/ext.c",
+            "lineno": 4453,
+            "content": "kthread_queue_work(sch->helper, &sch->disable_work);",
+            "rationale": "This is the follow-up action that must happen immediately after exit is claimed; because it was not protected as part of an atomic non-preemptible critical section with the prior claim, preemption before this statement could leave exit processing unstarted."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "kernel/sched/ext.c",
+            "lineno": 4774,
+            "content": "if (!scx_claim_exit(sch, kind))",
+            "rationale": "This invokes the exit-claim path in scx_vexit() without the preemption-disabled context later required by the fix, exposing the same race between claiming exit and proceeding with the rest of exit handling."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/sched/ext.c",
+            "lineno": 4430,
+            "content": "if (!atomic_try_cmpxchg(&sch->exit_kind, &none, kind))",
+            "rationale": "This is the statement inside scx_claim_exit() that actually flips exit_kind atomically, but by itself does not make the larger exit path atomic against preemption; once this succeeds, callers can be preempted before queueing helper work."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/sched/ext.c",
+            "stmt_text": "scx_claim_exit(sch, kind);",
+            "location": "hunk",
+            "explanation": "This statement claims exit and sets the scheduler's exit state before helper work is queued. The root cause is the non-atomic window after exit is claimed but before teardown/bypass work is started, and this line is the point where that vulnerable state begins in scx_disable()."
+          },
+          {
+            "vuln_file": "kernel/sched/ext.c",
+            "stmt_text": "if (!scx_claim_exit(sch, kind))",
+            "location": "hunk",
+            "explanation": "This statement enters the same exit-claim path from scx_vexit() without the preemption-disabled protection required by the fix. It exposes the same race where exit has been claimed but subsequent exit handling may be interrupted before completion."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ee0ff6690f26",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 4452
+        },
+        "commit": "a69040ed57f50156e5452474d25c79b9e62075d0",
+        "commit_short": "a69040ed57f5",
+        "commit_msg": "sched_ext: Simplify breather mechanism with scx_aborting flag\n\nThe breather mechanism was introduced in 62dcbab8b0ef (\"s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 4113,
+        "code_snippet": "commit a69040ed57f50156e5452474d25c79b9e62075d0\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Tue Nov 11 09:18:07 2025 -1000\n\n    sched_ext: Simplify breather mechanism with scx_aborting flag\n    \n    The breather mechanism was introduced in 62dcbab8b0ef (\"sched_ext: Avoid\n    live-locking bypass mode switching\") and e32c260195e6 (\"sched_ext: Enable the\n    ops breather and eject BPF scheduler on softlockup\") to prevent live-locks by\n    injecting delays when CPUs are trapped in dispatch paths.\n    ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full exit-claim helper and both call sites that initiate disable/exit. The vulnerable construct is present in `scx_claim_exit()`:\n\n- `if (!atomic_try_cmpxchg(&sch->exit_kind, &none, kind)) return false;`\n- then only afterwards: `WRITE_ONCE(scx_aborting, true);`\n\nThis matches the root cause: exit is claimed first by setting `sch->exit_kind`, but the mechanism that starts the abort/breather path is enabled only in a separate later step. A caller can be preempted after `exit_kind` is set and before `scx_aborting` is set, creating a non-atomic exit transition.\n\nThe same helper is then used by the paths which queue teardown work later:\n\n- in `scx_disable()`: `scx_claim_exit(sch, kind); kthread_queue_work(sch->helper, &sch->disable_work);`\n- in `scx_vexit()`: `if (!scx_claim_exit(sch, kind)) return; ...`\n\nSo there is still a window where `exit_kind` has already been claimed but the abort handling / breather enablement has not yet been activated, and queueing of helper work happens even later. That is exactly the non-atomic exit-path issue described.\n\nThe fix is not present because the code does not make claiming exit and initiating abort/teardown indivisible; instead it performs them as separate operations in sequence. Therefore `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "61debc251c1c",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 4113
+        },
+        "commit": "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+        "commit_short": "f0e1a0643a59",
+        "commit_msg": "sched_ext: Implement BPF extensible scheduler class\n\nImplement a new scheduler class sched_ext (SCX), which allows sched",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 2961,
+        "code_snippet": "commit f0e1a0643a59bf1f922fa209cec86a170b784f3f\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Tue Jun 18 10:09:17 2024 -1000\n\n    sched_ext: Implement BPF extensible scheduler class\n    \n    Implement a new scheduler class sched_ext (SCX), which allows scheduling\n    policies to be implemented as BPF programs to achieve the following:\n    \n    1. Ease of experimentation and exploration: Enabling rapid iteration of new\n       scheduling policies.\n    \n    2. Customization: Building application-specif",
+        "exists": true,
+        "reason": "The vulnerable non-atomic exit path is present in this commit. In `scx_ops_exit_kind()`, the function first claims the exit by atomically setting `scx_exit_kind` from `SCX_EXIT_NONE` to the requested kind via `if (!atomic_try_cmpxchg(&scx_exit_kind, &none, kind)) return;`, and then later queues the async teardown with `irq_work_queue(&scx_ops_error_irq_work);`. There is no preemption/IRQ disabling or combined atomic mechanism covering both the state claim and the work queuing. Likewise, `scx_ops_disable()` does `atomic_try_cmpxchg(&scx_exit_kind, &none, kind);` and only afterwards calls `schedule_scx_ops_disable_work();`. This matches the root cause: exit state is claimed first, but helper work is queued only later, leaving a window where the caller could be preempted after setting the exit kind and before queueing the helper work, so teardown/bypass may never start. The fix is not present because there is no atomic helper that combines claiming exit and queueing work, and no protection preventing interruption between these two steps."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ee0ff6690f26",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 4774
+        },
+        "commit": "a69040ed57f50156e5452474d25c79b9e62075d0",
+        "commit_short": "a69040ed57f5",
+        "commit_msg": "sched_ext: Simplify breather mechanism with scx_aborting flag\n\nThe breather mechanism was introduced in 62dcbab8b0ef (\"s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 4435,
+        "code_snippet": "commit a69040ed57f50156e5452474d25c79b9e62075d0\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Tue Nov 11 09:18:07 2025 -1000\n\n    sched_ext: Simplify breather mechanism with scx_aborting flag\n    \n    The breather mechanism was introduced in 62dcbab8b0ef (\"sched_ext: Avoid\n    live-locking bypass mode switching\") and e32c260195e6 (\"sched_ext: Enable the\n    ops breather and eject BPF scheduler on softlockup\") to prevent live-locks by\n    injecting delays when CPUs are trapped in dispatch paths.\n    ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact exit-claiming and disable-work queueing path relevant to the root cause. The vulnerable construct is present in the new helper `scx_claim_exit()` and its callers. In `scx_claim_exit()`, the code first claims exit with `if (!atomic_try_cmpxchg(&sch->exit_kind, &none, kind)) return false;` and only then sets `WRITE_ONCE(scx_aborting, true);`. The actual helper-thread work is queued later by callers such as `scx_disable()`, which does `scx_claim_exit(sch, kind);` followed by `kthread_queue_work(sch->helper, &sch->disable_work);`, and `scx_vexit()` similarly calls `scx_claim_exit()` before later queueing disable work. This means exit is claimed in one step and the teardown trigger (`kthread_queue_work`) happens in a separate later step, leaving the non-atomic window described in the root cause: after `exit_kind` is set but before the helper work is queued, the caller could be preempted. The commit message itself says `Introduce scx_claim_exit() to consolidate exit_kind claiming and breather enablement`, but this function does not consolidate queueing of the helper work, so the problematic split remains. Therefore the vulnerable construct is present, and the fix is not yet in this function set."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "61debc251c1c",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 4435
+        },
+        "commit": "a8433f7a267f9fcf14822c08ab89b6021a8ba536",
+        "commit_short": "a8433f7a267f",
+        "commit_msg": "sched_ext: Add @sch to SCX_CALL_OP*()\n\nIn preparation of hierarchical scheduling support, add @sch to scx_exit()\nand fri",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 5344,
+        "code_snippet": "commit a8433f7a267f9fcf14822c08ab89b6021a8ba536\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Wed May 14 11:11:48 2025 -0400\n\n    sched_ext: Add @sch to SCX_CALL_OP*()\n    \n    In preparation of hierarchical scheduling support, add @sch to scx_exit()\n    and friends:\n    \n    - scx_exit/error() updated to take explicit @sch instead of assuming\n      scx_root.\n    \n    - scx_kf_exit/error() added. These are to be used from kfuncs, don't take\n      @sch and internally determine the scx_sched instance ",
+        "exists": true,
+        "reason": "The relevant exit-path logic is shown directly in this snippet, so it is sufficient to judge. In `scx_vexit(struct scx_sched *sch, enum scx_exit_kind kind, s64 exit_code, const char *fmt, va_list args)`, the function first claims exit by atomically setting `sch->exit_kind` via `if (!atomic_try_cmpxchg(&sch->exit_kind, &none, kind)) return;` and then later queues teardown asynchronously with `irq_work_queue(&sch->error_irq_work);`. There is no preemption/IRQ disabling or combined atomic mechanism ensuring these two steps happen as one indivisible operation. This matches the root cause: after `scx_claim_exit()`/claiming `exit_kind`, execution can be interrupted before the helper work is queued, leaving exit claimed but teardown/bypass not started. The code in this commit still performs the vulnerable split sequence: claim exit state, populate `ei`, then `irq_work_queue(...)`. The commit mostly refactors `scx_exit()` to take explicit `sch` and adds `scx_kf_exit()`, but does not add any protection to make the claim-and-queue path atomic. Therefore the vulnerable construct is present and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "c4c286d74797",
+          "anchor_file": "kernel/sched/ext.c",
+          "anchor_lineno": 5344
+        },
+        "commit": "c201ea1578d3b9eed29494ba3dc2abbccf62c4c8",
+        "commit_short": "c201ea1578d3",
+        "commit_msg": "sched_ext: Move event_stats_cpu into scx_sched\n\nThe event counters are going to become per scheduler instance. Move\neven",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/sched/ext.c",
+        "display_lineno": 5305,
+        "code_snippet": "commit c201ea1578d3b9eed29494ba3dc2abbccf62c4c8\nAuthor: Tejun Heo <tj@kernel.org>\nDate:   Tue Apr 29 08:40:10 2025 -1000\n\n    sched_ext: Move event_stats_cpu into scx_sched\n    \n    The event counters are going to become per scheduler instance. Move\n    event_stats_cpu into scx_sched.\n    \n    - [__]scx_add_event() are updated to take @sch. While at it, add missing\n      parentheses around @cnt expansions.\n    \n    - scx_read_events() is updated to take @sch.\n    \n    - scx_bpf_events() accesses",
+        "exists": false,
+        "reason": "The shown function is an allocator/initializer for `struct scx_sched` and only includes setup such as `sch->event_stats_cpu = alloc_percpu(struct scx_event_stats);` and `atomic_set(&sch->exit_kind, SCX_EXIT_NONE);`. The root cause concerns the exit path: callers being preempted after `scx_claim_exit()` sets `scx_sched->exit_kind` but before queueing helper kthread work, i.e. a missing atomic sequence between claiming exit and starting teardown/bypass. This function does not contain `scx_claim_exit()`, does not queue helper kthread work, and does not implement the exit/teardown path. Therefore the vulnerable construct is absent from this snippet, but because the relevant logic is not shown here, this function body alone is not sufficient to assess whether the commit contains the bug or fix in the affected path."
+      }
+    },
+    {
+      "bic_found": "a8433f7a267f9fcf14822c08ab89b6021a8ba536",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "f0e1a0643a59bf1f922fa209cec86a170b784f3f": 1,
+        "a8433f7a267f9fcf14822c08ab89b6021a8ba536": 1
+      },
+      "bic_candidates": [
+        "f0e1a0643a59bf1f922fa209cec86a170b784f3f",
+        "a8433f7a267f9fcf14822c08ab89b6021a8ba536"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

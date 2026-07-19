@@ -1,0 +1,275 @@
+{
+  "cveid": "CVE-2026-53060",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "044ca491d4086dc5bf233e9fcb71db52df32f633"
+  ],
+  "ground_truth_bic": "352b837a5541690d4f843819028cf2b8be83d424",
+  "predicted_bic": [
+    "352b837a5541690d4f843819028cf2b8be83d424"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 15,
+  "llm_tokens": 22401,
+  "root_cause": {
+    "text": "In `dm_cache_metadata_abort()` the dm-cache metadata code allocates a temporary `struct dm_block_manager *new_bm` before acquiring `cmd->root_lock`, but on the read-only/fail_io path where `cmd_write_lock()` cannot be obtained, that newly created block manager is not freed, leaking memory in `drivers/md/dm-cache-metadata.c`.",
+    "evidence": "The CVE/commit says “when failing to acquire the root_lock in dm_cache_metadata_abort because the block_manager is read-only, the temporary block_manager created outside the root_lock is not properly released,” and the patch shows `new_bm = dm_block_manager_create(...)` happens before `WRITE_LOCK_OR_GOTO(cmd, out);`, replacing the old `WRITE_LOCK(cmd); if (cmd->fail_io) ... goto out;` flow.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/md/dm-cache-metadata.c",
+      "lineno": 1780,
+      "content": "new_bm = dm_block_manager_create(cmd->bdev, DM_CACHE_METADATA_BLOCK_SIZE << SECTOR_SHIFT,",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/md/dm-cache-metadata.c",
+      "lineno": 1784,
+      "content": "if (cmd->fail_io) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/md/dm-cache-metadata.c",
+      "lineno": 1786,
+      "content": "goto out;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`dm_cache_metadata_abort()` in `drivers/md/dm-cache-metadata.c` allocates a temporary `dm_block_manager` before taking `cmd->root_lock`, but on the retry path where `cmd_write_lock()` fails for read-only metadata it jumps out without freeing that newly created `new_bm`, leaking memory.",
+      "evidence_points": "The patch changes `WRITE_LOCK(cmd); if (cmd->fail_io) { ... goto out; }` to `WRITE_LOCK_OR_GOTO(cmd, out);` and explicitly notes that `cmd_write_lock()` checks `fail_io` with `cmd->root_lock` held; the CVE description says “the temporary block_manager created outside the root_lock is not properly released” and kmemleak points to `dm_block_manager_create()` inside `dm_cache_metadata_abort()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The evidence and CVE do support a leak in `dm_cache_metadata_abort()` when `cmd_write_lock()`/`root_lock` acquisition fails, but the proposed root cause is too specific and slightly inconsistent with the patch. The leak is not described as happening only on a “retry path” after `cmd_write_lock()` fails for read-only metadata; rather, the function creates `new_bm` before attempting the write lock, and if the lock attempt fails, that temporary block manager is not released. Also, the supporting evidence does not show any explicit free omission in the patch—only the replacement of a manual `fail_io` check with `WRITE_LOCK_OR_GOTO`, which preserves the same control flow and relies on `cmd_write_lock()` to handle cleanup/locking semantics."
+      }
+    },
+    {
+      "root_cause_candidate": "In `dm_cache_metadata_abort()` the dm-cache metadata code allocates a temporary `struct dm_block_manager *new_bm` before acquiring `cmd->root_lock`, but on the read-only/fail_io path where `cmd_write_lock()` cannot be obtained, that newly created block manager is not freed, leaking memory in `drivers/md/dm-cache-metadata.c`.",
+      "evidence_points": "The CVE/commit says “when failing to acquire the root_lock in dm_cache_metadata_abort because the block_manager is read-only, the temporary block_manager created outside the root_lock is not properly released,” and the patch shows `new_bm = dm_block_manager_create(...)` happens before `WRITE_LOCK_OR_GOTO(cmd, out);`, replacing the old `WRITE_LOCK(cmd); if (cmd->fail_io) ... goto out;` flow."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/md/dm-cache-metadata.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/md/dm-cache-metadata.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add a helper macro that retries no work on lock failure by jumping to a caller-specified error path.",
+        "what": "A new macro `WRITE_LOCK_OR_GOTO(cmd, label)` was added. It calls `cmd_write_lock((cmd))` and, if that returns false, immediately jumps to the supplied label with `goto label;` inside a `do { ... } while (0)` wrapper.",
+        "how": "This provides a reusable way to attempt acquiring the write lock and branch to existing cleanup/error-handling code when locking fails, reducing duplicated lock-check logic and making failure paths easier to express."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Consolidate fail_io handling into the write-lock helper to ensure the abort path exits correctly under I/O failure conditions.",
+        "what": "The code replaces an explicit WRITE_LOCK(cmd) followed by a manual cmd->fail_io check and conditional WRITE_UNLOCK/goto out sequence with a single WRITE_LOCK_OR_GOTO(cmd, out) call, and adds a comment noting that cmd_write_lock() already checks fail_io while holding cmd->root_lock.",
+        "how": "At runtime, the abort path now relies on the locking helper to both acquire the write lock and bail out early if fail_io is set, avoiding duplicated fail_io handling in this function while preserving the early-exit behavior when I/O failure is active."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a helper macro that retries no work on lock failure by jumping to a caller-specified error path."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Consolidate fail_io handling into the write-lock helper to ensure the abort path exits correctly under I/O failure conditions."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change adds a lock-failure helper macro and does not modify dm-cache metadata abort handling or free the temporary block manager on the read-only/fail_io path. It is unrelated to the memory leak root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change targets the dm-cache metadata abort path and specifically consolidates fail_io/write-lock handling, which matches the leak scenario where a temporary block manager could be created and then not freed when cmd_write_lock() fails."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/md/dm-cache-metadata.c",
+            "lineno": 1780,
+            "content": "new_bm = dm_block_manager_create(cmd->bdev, DM_CACHE_METADATA_BLOCK_SIZE << SECTOR_SHIFT,",
+            "rationale": "This allocation happens before the code attempts to acquire the write lock; if the fail_io/read-only path causes an early exit, this newly created block manager can be leaked."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/md/dm-cache-metadata.c",
+            "lineno": 1784,
+            "content": "if (cmd->fail_io) {",
+            "rationale": "This conditional is the early-exit path that bypasses the cleanup of the just-created block manager, directly triggering the leak."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/md/dm-cache-metadata.c",
+            "lineno": 1786,
+            "content": "goto out;",
+            "rationale": "This jump exits the abort path without destroying new_bm when fail_io is set, leaving the allocation unreclaimed."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/md/dm-cache-metadata.c",
+            "stmt_text": "new_bm = dm_block_manager_create(cmd->bdev, DM_CACHE_METADATA_BLOCK_SIZE << SECTOR_SHIFT,",
+            "location": "hunk",
+            "explanation": "This allocation occurs before the abort path has successfully acquired the write lock. If cmd_write_lock() cannot be obtained on the fail_io/read-only path, the newly created block manager can be left unreleased, causing the memory leak described in the root cause."
+          },
+          {
+            "vuln_file": "drivers/md/dm-cache-metadata.c",
+            "stmt_text": "if (cmd->fail_io) {",
+            "location": "hunk",
+            "explanation": "This is the early-exit condition for the fail_io path. When true, control flow bypasses the cleanup of new_bm, which is the direct mechanism leading to the leak."
+          },
+          {
+            "vuln_file": "drivers/md/dm-cache-metadata.c",
+            "stmt_text": "goto out;",
+            "location": "hunk",
+            "explanation": "This jump exits the function path without destroying the previously allocated new_bm, so on the fail_io/read-only abort case it leaves the allocation unreclaimed."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4c788c6f921b",
+          "anchor_file": "drivers/md/dm-cache-metadata.c",
+          "anchor_lineno": 1780
+        },
+        "commit": "352b837a5541690d4f843819028cf2b8be83d424",
+        "commit_short": "352b837a5541",
+        "commit_msg": "dm cache: Fix ABBA deadlock between shrink_slab and dm_cache_metadata_abort\n\nSame ABBA deadlock pattern fixed in commit ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-metadata.c",
+        "display_lineno": 1825,
+        "code_snippet": "commit 352b837a5541690d4f843819028cf2b8be83d424\nAuthor: Mike Snitzer <snitzer@kernel.org>\nDate:   Wed Nov 30 13:26:32 2022 -0500\n\n    dm cache: Fix ABBA deadlock between shrink_slab and dm_cache_metadata_abort\n    \n    Same ABBA deadlock pattern fixed in commit 4b60f452ec51 (\"dm thin: Fix\n    ABBA deadlock between shrink_slab and dm_pool_abort_metadata\") to\n    DM-cache's metadata.\n    \n    Reported-by: Zhihao Cheng <chengzhihao1@huawei.com>\n    Cc: stable@vger.kernel.org\n    Fixes: 028ae9f76f29",
+        "exists": false,
+        "reason": "The shown function body of `dm_cache_metadata_abort()` already contains the fix for the leak and does not match the vulnerable construct. The code now creates `new_bm` before taking `cmd->root_lock` (`new_bm = dm_block_manager_create(...)`), but it also explicitly destroys it on all exit paths: `dm_block_manager_destroy(old_bm);` and `if (new_bm && !IS_ERR(new_bm)) dm_block_manager_destroy(new_bm);`. Crucially, the read-only/fail_io case is handled up front with `if (unlikely(cmd->fail_io)) return r;`, and after taking the lock it double-checks `if (cmd->fail_io) { WRITE_UNLOCK(cmd); goto out; }`, ensuring the temporary block manager is not leaked. The vulnerable pattern described in the root cause—creating a temporary `new_bm` before `cmd_write_lock()` and failing to free it when the write lock cannot be obtained—is therefore absent in this version."
+      }
+    },
+    {
+      "bic_found": "352b837a5541690d4f843819028cf2b8be83d424",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4c788c6f921b",
+          "anchor_file": "drivers/md/dm-cache-metadata.c",
+          "anchor_lineno": 1784
+        },
+        "commit": "352b837a5541690d4f843819028cf2b8be83d424",
+        "commit_short": "352b837a5541",
+        "commit_msg": "dm cache: Fix ABBA deadlock between shrink_slab and dm_cache_metadata_abort\n\nSame ABBA deadlock pattern fixed in commit ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-metadata.c",
+        "display_lineno": 1829,
+        "code_snippet": "commit 352b837a5541690d4f843819028cf2b8be83d424\nAuthor: Mike Snitzer <snitzer@kernel.org>\nDate:   Wed Nov 30 13:26:32 2022 -0500\n\n    dm cache: Fix ABBA deadlock between shrink_slab and dm_cache_metadata_abort\n    \n    Same ABBA deadlock pattern fixed in commit 4b60f452ec51 (\"dm thin: Fix\n    ABBA deadlock between shrink_slab and dm_pool_abort_metadata\") to\n    DM-cache's metadata.\n    \n    Reported-by: Zhihao Cheng <chengzhihao1@huawei.com>\n    Cc: stable@vger.kernel.org\n    Fixes: 028ae9f76f29",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": false,\n  \"is_fixed\": true,\n  \"reason\": \"The shown `dm_cache_metadata_abort()` no longer has the vulnerable pattern described in the root cause. The function now al"
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "352b837a5541690d4f843819028cf2b8be83d424",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4c788c6f921b",
+          "anchor_file": "drivers/md/dm-cache-metadata.c",
+          "anchor_lineno": 1786
+        },
+        "commit": "352b837a5541690d4f843819028cf2b8be83d424",
+        "commit_short": "352b837a5541",
+        "commit_msg": "dm cache: Fix ABBA deadlock between shrink_slab and dm_cache_metadata_abort\n\nSame ABBA deadlock pattern fixed in commit ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-metadata.c",
+        "display_lineno": 1831,
+        "code_snippet": "commit 352b837a5541690d4f843819028cf2b8be83d424\nAuthor: Mike Snitzer <snitzer@kernel.org>\nDate:   Wed Nov 30 13:26:32 2022 -0500\n\n    dm cache: Fix ABBA deadlock between shrink_slab and dm_cache_metadata_abort\n    \n    Same ABBA deadlock pattern fixed in commit 4b60f452ec51 (\"dm thin: Fix\n    ABBA deadlock between shrink_slab and dm_pool_abort_metadata\") to\n    DM-cache's metadata.\n    \n    Reported-by: Zhihao Cheng <chengzhihao1@huawei.com>\n    Cc: stable@vger.kernel.org\n    Fixes: 028ae9f76f29",
+        "exists": false,
+        "reason": "The shown `dm_cache_metadata_abort()` no longer matches the vulnerable pattern. The root cause was that a temporary `struct dm_block_manager *new_bm` was allocated before taking `cmd->root_lock` and then leaked on the `cmd_write_lock()`/read-only fail path. In this snippet, `new_bm` is created up front (`new_bm = dm_block_manager_create(...)`), but the function now explicitly cleans it up on all exit paths: after the write-lock section it destroys `old_bm` with `dm_block_manager_destroy(old_bm);`, and on the final exit it destroys `new_bm` if it is still allocated: `if (new_bm && !IS_ERR(new_bm)) dm_block_manager_destroy(new_bm);`. Also, if `cmd->fail_io` is already set, it returns before creating `new_bm`, and if `cmd->fail_io` is detected again after locking, it jumps to `out` where cleanup occurs. Therefore the leak-inducing construct is not present anymore and the fix is already in this code."
+      }
+    },
+    {
+      "bic_found": "352b837a5541690d4f843819028cf2b8be83d424",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "352b837a5541690d4f843819028cf2b8be83d424": 3
+      },
+      "bic_candidates": [
+        "352b837a5541690d4f843819028cf2b8be83d424"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

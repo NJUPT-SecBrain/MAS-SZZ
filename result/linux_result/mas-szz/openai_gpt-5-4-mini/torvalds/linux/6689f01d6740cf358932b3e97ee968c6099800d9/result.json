@@ -1,0 +1,309 @@
+{
+  "cveid": "CVE-2026-31703",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6689f01d6740cf358932b3e97ee968c6099800d9"
+  ],
+  "ground_truth_bic": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+  "predicted_bic": [
+    "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 12,
+  "llm_tokens": 24642,
+  "root_cause": {
+    "text": "`inode_switch_wbs_work_fn()` in the writeback subsystem could leave `wb->switch_work` pending while `wb->switch_wbs_ctxs` was empty because it re-queued/processsed items in a loop, allowing the `wb` object to lose its last `isw`-held reference and be freed before the work executed, resulting in a use-after-free.",
+    "evidence": "The patch removes the `while (1)` loop and changes `inode_switch_wbs_work_fn()` to call `llist_del_all(&new_wb->switch_wbs_ctxs)` once, with a new `WARN_ON_ONCE(!list)` comment explicitly stating that an empty list would be a problem because “references held by isw items protect wb from freeing”; the CVE text also says the loop allowed `wb->switch_work` to remain pending while `wb->switch_wbs_ctxs` was empty, causing `wb` to be freed while work was still pending.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 578,
+      "content": "while (1) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 579,
+      "content": "list = llist_del_all(&new_wb->switch_wbs_ctxs);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 581,
+      "content": "if (!list)",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 592,
+      "content": "llist_for_each_entry_safe(isw, next_isw, list, list)",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 593,
+      "content": "process_inode_switch_wbs(new_wb, isw);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`inode_switch_wbs_work_fn()` in the writeback subsystem could leave `wb->switch_work` pending while `wb->switch_wbs_ctxs` was empty because it re-queued/processsed items in a loop, allowing the `wb` object to lose its last `isw`-held reference and be freed before the work executed, resulting in a use-after-free.",
+      "evidence_points": "The patch removes the `while (1)` loop and changes `inode_switch_wbs_work_fn()` to call `llist_del_all(&new_wb->switch_wbs_ctxs)` once, with a new `WARN_ON_ONCE(!list)` comment explicitly stating that an empty list would be a problem because “references held by isw items protect wb from freeing”; the CVE text also says the loop allowed `wb->switch_work` to remain pending while `wb->switch_wbs_ctxs` was empty, causing `wb` to be freed while work was still pending."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/fs-writeback.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix inode switch work processing to handle the queued list once, warn if invoked with no pending contexts, and keep the RCU synchronization and wb lifetime protection intact.",
+        "what": "In inode_switch_wbs_work_fn(), the code now calls llist_del_all(&new_wb->switch_wbs_ctxs) once at the start, checks the result with WARN_ON_ONCE(!list) and returns early if it is empty, then performs wb_get(new_wb), a single synchronize_rcu(), and one llist_for_each_entry_safe() pass over the retrieved list. The նախկին loop that repeatedly re-queried the list, conditionally broke on empty, and synchronized RCU on each iteration was removed.",
+        "how": "The worker now processes all pending switch_wbs contexts in one batch instead of looping until the list drains. This preserves the intended RCU grace-period ordering before processing, while also flagging the unexpected case where the work runs with no queued contexts, which could indicate a logic error in reference handling or work scheduling."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix inode switch work processing to handle the queued list once, warn if invoked with no pending contexts, and keep the RCU synchronization and wb lifetime protection intact."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the reported root cause: it fixes inode switch work processing so the work does not remain pending on an empty context list, preserving wb lifetime protection and preventing the use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 578,
+            "content": "while (1) {",
+            "rationale": "An unbounded loop here re-polls the switch context list and can leave work queued while the context list becomes empty, matching the root cause where the work item could remain pending without a corresponding context and race with wb lifetime management."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 579,
+            "content": "list = llist_del_all(&new_wb->switch_wbs_ctxs);",
+            "rationale": "This repeatedly drains the pending context list; combined with the loop, it can clear all contexts and then continue re-entering the work path even though no contexts remain, which is the condition that allowed the last reference to be dropped before the work ran."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 581,
+            "content": "if (!list)",
+            "rationale": "This empty-list check is inside the loop, so the work function may still have re-queued or partially processed items before detecting emptiness, leaving the switch work pending with no remaining contexts."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 592,
+            "content": "llist_for_each_entry_safe(isw, next_isw, list, list)",
+            "rationale": "Processing all queued switch contexts in a loop is the direct behavior that could exhaust the list while the work item remained scheduled, enabling the wb object to lose its last reference before execution."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 593,
+            "content": "process_inode_switch_wbs(new_wb, isw);",
+            "rationale": "This per-item processing is the operation that advances the switch state; when repeated under the outer loop, it can clear all contexts but still leave the work infrastructure active, contributing to the use-after-free race."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "while (1) {",
+            "location": "hunk",
+            "explanation": "The unbounded loop re-polls the switch-context list and can continue after the queued contexts have been exhausted, which is the behavior that allowed `wb->switch_work` to remain pending even when `wb->switch_wbs_ctxs` was empty, leading to the use-after-free."
+          },
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "list = llist_del_all(&new_wb->switch_wbs_ctxs);",
+            "location": "hunk",
+            "explanation": "This statement repeatedly drains the pending context list inside the loop; combined with the loop structure, it can clear all contexts while the work item remains scheduled, matching the root cause of a pending work item with no remaining contexts and a freed `wb`."
+          },
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "if (!list)",
+            "location": "hunk",
+            "explanation": "The empty-list check occurs only after re-entering the loop, so the function can already have processed or re-queued work before noticing there are no contexts left, which is the condition that lets the last reference be dropped before the work executes."
+          },
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "llist_for_each_entry_safe(isw, next_isw, list, list)",
+            "location": "hunk",
+            "explanation": "Iterating over and processing every queued switch context in the loop is the mechanism that can exhaust the list while the work remains pending, enabling the lifetime race on `wb`."
+          },
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "process_inode_switch_wbs(new_wb, isw);",
+            "location": "hunk",
+            "explanation": "This per-item processing advances the switch state for each context, and when repeated under the outer loop it can consume all contexts without clearing the pending work, contributing directly to the use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c03ce4173c7b",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 578
+        },
+        "commit": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+        "commit_short": "e1b849cfa6b6",
+        "commit_msg": "writeback: Avoid contention on wb->list_lock when switching inodes\n\nThere can be multiple inode switch works that are tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 556,
+        "code_snippet": "commit e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 9 17:12:59 2025 +0200\n\n    writeback: Avoid contention on wb->list_lock when switching inodes\n    \n    There can be multiple inode switch works that are trying to switch\n    inodes to / from the same wb. This can happen in particular if some\n    cgroup exits which owns many (thousands) inodes and we need to switch\n    them all. In this case several inode_switch_wbs_work_fn() instances will\n    be just",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present in this version. The old design used per-context RCU work: the previous code had `struct rcu_work work;` and `queue_rcu_work(isw_wq, &isw->work);`, with the work function operating on `isw->new_wb`. In this commit, that logic is replaced by a per-wb queue: `struct llist_node list;`, `wb_queue_isw(new_wb, isw)`, and `inode_switch_wbs_work_fn()` now begins with `wb_get(new_wb);` and ends with `wb_put(new_wb);`. The work function drains all queued contexts via `llist_del_all(&new_wb->switch_wbs_ctxs)` and processes them in a loop, which is the corrective change that avoids leaving a wb referenced only by pending work. Since the buggy construct is removed and the lifetime is explicitly protected, `has_bug` is false and `is_fixed` is true."
+      }
+    },
+    {
+      "bic_found": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c03ce4173c7b",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 579
+        },
+        "commit": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+        "commit_short": "e1b849cfa6b6",
+        "commit_msg": "writeback: Avoid contention on wb->list_lock when switching inodes\n\nThere can be multiple inode switch works that are tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 557,
+        "code_snippet": "commit e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 9 17:12:59 2025 +0200\n\n    writeback: Avoid contention on wb->list_lock when switching inodes\n    \n    There can be multiple inode switch works that are trying to switch\n    inodes to / from the same wb. This can happen in particular if some\n    cgroup exits which owns many (thousands) inodes and we need to switch\n    them all. In this case several inode_switch_wbs_work_fn() instances will\n    be just",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the old per-context RCU work path that could leave wb->switch_work pending while no context remained. In this snippet, that design has been replaced: the code no longer stores a per-isw \"new_wb\" inside the context, no longer uses \"struct rcu_work work\", and no longer queues \"queue_rcu_work(isw_wq, &isw->work)\". Instead, a wb-owned work item is queued via \"wb_queue_isw(new_wb, isw)\" and the work function \"inode_switch_wbs_work_fn(struct work_struct *work)\" explicitly does \"wb_get(new_wb);\" before draining \"new_wb->switch_wbs_ctxs\" with \"llist_del_all\" and finishes with \"wb_put(new_wb);\". This is the fix for the use-after-free scenario, and the buggy construct is absent from this commit's code."
+      }
+    },
+    {
+      "bic_found": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c03ce4173c7b",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 581
+        },
+        "commit": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+        "commit_short": "e1b849cfa6b6",
+        "commit_msg": "writeback: Avoid contention on wb->list_lock when switching inodes\n\nThere can be multiple inode switch works that are tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 559,
+        "code_snippet": "commit e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 9 17:12:59 2025 +0200\n\n    writeback: Avoid contention on wb->list_lock when switching inodes\n    \n    There can be multiple inode switch works that are trying to switch\n    inodes to / from the same wb. This can happen in particular if some\n    cgroup exits which owns many (thousands) inodes and we need to switch\n    them all. In this case several inode_switch_wbs_work_fn() instances will\n    be just",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the old per-isw RCU work path that could leave a wb reference unpinned while work was still pending. This diff removes that pattern entirely: the old code using `struct rcu_work work`, `isw->new_wb`, `INIT_RCU_WORK(&isw->work, inode_switch_wbs_work_fn);` and `queue_rcu_work(isw_wq, &isw->work);` is deleted. The new code instead queues isw items onto the wb itself via `wb_queue_isw(new_wb, isw)` and `inode_switch_wbs_work_fn()` now begins with `wb_get(new_wb);` and ends with `wb_put(new_wb);`, explicitly stating `\"Grab out reference to wb so that it cannot get freed under us after we process all the isw items.\"` This shows the fix is already present in this commit. Because the buggy construct is absent from the shown code and the reference-holding fix is implemented, has_bug=false and is_fixed=true."
+      }
+    },
+    {
+      "bic_found": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c03ce4173c7b",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 592
+        },
+        "commit": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+        "commit_short": "e1b849cfa6b6",
+        "commit_msg": "writeback: Avoid contention on wb->list_lock when switching inodes\n\nThere can be multiple inode switch works that are tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 570,
+        "code_snippet": "commit e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 9 17:12:59 2025 +0200\n\n    writeback: Avoid contention on wb->list_lock when switching inodes\n    \n    There can be multiple inode switch works that are trying to switch\n    inodes to / from the same wb. This can happen in particular if some\n    cgroup exits which owns many (thousands) inodes and we need to switch\n    them all. In this case several inode_switch_wbs_work_fn() instances will\n    be just",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the old per-`isw` RCU work (`struct rcu_work work;` / `queue_rcu_work(isw_wq, &isw->work)`) that could leave `wb->switch_work` pending while `wb->switch_wbs_ctxs` was empty, allowing the wb to be freed before the work ran. This commit replaces that design entirely. The new code defines `struct inode_switch_wbs_context` with `struct llist_node list;` instead of `rcu_work`, adds `wb_queue_isw()` which queues contexts onto `wb->switch_wbs_ctxs`, and changes `inode_switch_wbs_work_fn()` to take `struct work_struct *work` for `wb->switch_work`, immediately `wb_get(new_wb);`, process all queued contexts with `llist_del_all(&new_wb->switch_wbs_ctxs)`, and finally `wb_put(new_wb);`. The old `queue_rcu_work()` path is removed. This is exactly the fix for the UAF scenario, so the vulnerable construct is not present and the fix is already in place."
+      }
+    },
+    {
+      "bic_found": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c03ce4173c7b",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 593
+        },
+        "commit": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+        "commit_short": "e1b849cfa6b6",
+        "commit_msg": "writeback: Avoid contention on wb->list_lock when switching inodes\n\nThere can be multiple inode switch works that are tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 571,
+        "code_snippet": "commit e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 9 17:12:59 2025 +0200\n\n    writeback: Avoid contention on wb->list_lock when switching inodes\n    \n    There can be multiple inode switch works that are trying to switch\n    inodes to / from the same wb. This can happen in particular if some\n    cgroup exits which owns many (thousands) inodes and we need to switch\n    them all. In this case several inode_switch_wbs_work_fn() instances will\n    be just",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the old per-isw RCU work path that could leave a wb-specific work pending while the queue of switch contexts became empty, allowing the wb to lose its last reference. This diff no longer uses `struct rcu_work` in `inode_switch_wbs_context` (`\"struct rcu_work work;\"` was replaced with `\"struct llist_node list;\"`), and `inode_switch_wbs_work_fn()` now takes the wb from `container_of(work, struct bdi_writeback, switch_work)`, explicitly does `wb_get(new_wb);` before draining `llist_del_all(&new_wb->switch_wbs_ctxs)`, and drops it only at the end with `wb_put(new_wb);`. Queuing is also centralized in `wb_queue_isw()` which queues `&wb->switch_work` only when `llist_add()` succeeds. This shows the fix is already present and the prior buggy construct is absent in this commit."
+      }
+    },
+    {
+      "bic_found": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b": 5
+      },
+      "bic_candidates": [
+        "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

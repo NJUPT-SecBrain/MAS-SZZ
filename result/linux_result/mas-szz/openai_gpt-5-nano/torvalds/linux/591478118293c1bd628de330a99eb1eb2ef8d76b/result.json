@@ -1,0 +1,346 @@
+{
+  "cveid": "CVE-2026-31647",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "591478118293c1bd628de330a99eb1eb2ef8d76b"
+  ],
+  "ground_truth_bic": "34c21fa894a1af6166f4284c81d1dc21efed8f38",
+  "predicted_bic": [
+    "34c21fa894a1af6166f4284c81d1dc21efed8f38"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 57448,
+  "root_cause": {
+    "text": "The idpf virtchnl transaction manager incorrectly reused struct completion’s internal raw spinlock (`completed.wait.lock`) to protect `idpf_vc_xn` state, causing PREEMPT_RT-invalid lock nesting when async VC handling later acquired a BH spinlock in `idpf_recv_mb_msg`.",
+    "evidence": "The removed comment explicitly says “We are reusing the completion lock to serialize the accesses to the transaction state,” and the patch replaces `raw_spin_lock(&(xn)->completed.wait.lock)`/`raw_spin_unlock(...)` with a dedicated `spinlock_t lock` in `struct idpf_vc_xn`; the reported stack trace shows lock `#2 (&x->wait#34)` held when `idpf_mac_filter_async_handler` tries `_raw_spin_lock_bh`, triggering “[BUG: Invalid wait context]`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+      "lineno": 302,
+      "content": "raw_spin_lock(&(xn)->completed.wait.lock)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+      "lineno": 309,
+      "content": "raw_spin_unlock(&(xn)->completed.wait.lock)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The idpf virtchnl transaction manager incorrectly reused struct completion’s internal raw spinlock (`completed.wait.lock`) to protect `idpf_vc_xn` state, causing PREEMPT_RT-invalid lock nesting when async VC handling later acquired a BH spinlock in `idpf_recv_mb_msg`.",
+      "evidence_points": "The removed comment explicitly says “We are reusing the completion lock to serialize the accesses to the transaction state,” and the patch replaces `raw_spin_lock(&(xn)->completed.wait.lock)`/`raw_spin_unlock(...)` with a dedicated `spinlock_t lock` in `struct idpf_vc_xn`; the reported stack trace shows lock `#2 (&x->wait#34)` held when `idpf_mac_filter_async_handler` tries `_raw_spin_lock_bh`, triggering “[BUG: Invalid wait context]`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Switch virtchnl transaction locking from the completion wait lock to a dedicated xn->lock and simplify the related comment.",
+        "what": "The change removes the multi-line comment explaining that virtchnl transaction state reuses the completion wait lock with raw_spin_lock(), replaces it with a shorter single-line comment, and updates the idpf_vc_xn_lock and idpf_vc_xn_unlock macros to use spin_lock()/spin_unlock() on xn->lock instead of raw_spin_lock()/raw_spin_unlock() on xn->completed.wait.lock.",
+        "how": "At runtime, virtchnl transaction synchronization is now performed using a dedicated xn->lock rather than the completion waitqueue's internal lock, changing the locking target and lock type used to serialize transaction state access. This separates transaction locking from completion internals and avoids relying on the wait structure's lock for mutual exclusion."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize each transaction spinlock during manager setup to avoid using an uninitialized lock.",
+        "what": "A call to spin_lock_init(&xn->lock) was added inside idpf_vc_xn_init() for each transaction object during the initialization loop, between releasing buffers and initializing the completion.",
+        "how": "This ensures each xn->lock spinlock is properly initialized before the transaction object is used, preventing undefined behavior or synchronization errors when the lock is later acquired at runtime."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "style",
+        "intent_summary": "Clarify struct idpf_vc_xn documentation to state that transaction state is protected by its dedicated lock instead of the completion lock.",
+        "what": "The code change updates the struct idpf_vc_xn kernel-doc comments by replacing the description that said @state is protected by the completion's lock with two comments: one documenting a @lock field as protecting the transaction state fields below, and another clarifying that @state is protected by @lock.",
+        "how": "This does not change runtime behavior; it improves the documentation so the stated synchronization model matches the struct fields and makes it clear that transaction state is protected by an explicit lock rather than the completion object."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "guard",
+        "intent_summary": "Add a per-transaction spinlock to protect concurrent access to `idpf_vc_xn` state and data.",
+        "what": "A new field, `spinlock_t lock;`, was added to the `struct idpf_vc_xn` definition between the existing `completed` completion object and the `state` field.",
+        "how": "This adds a dedicated spinlock to each virtual channel transaction object, enabling synchronization around concurrent access to that transaction's state or reply data at runtime and helping prevent races when the structure is used from multiple contexts."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Switch virtchnl transaction locking from the completion wait lock to a dedicated xn->lock and simplify the related comment."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize each transaction spinlock during manager setup to avoid using an uninitialized lock."
+        },
+        {
+          "group_id": 2,
+          "category": "style",
+          "hunk_count": 1,
+          "intent": "Clarify struct idpf_vc_xn documentation to state that transaction state is protected by its dedicated lock instead of the completion lock."
+        },
+        {
+          "group_id": 3,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a per-transaction spinlock to protect concurrent access to `idpf_vc_xn` state and data."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it stops using struct completion’s internal wait.lock for idpf_vc_xn state protection and replaces it with a dedicated xn->lock, which addresses the invalid PREEMPT_RT lock nesting issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The vulnerability stems from incorrect use of a completion’s internal lock for transaction state protection; this change initializes a dedicated transaction spinlock during manager setup, directly supporting the fix of using the proper lock instead of the completion’s lock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by correcting `idpf_vc_xn` documentation to reflect that transaction state must be protected by a dedicated lock, not `struct completion`'s internal lock whose misuse caused the invalid PREEMPT_RT lock nesting."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The root cause is misuse of struct completion’s internal spinlock to protect idpf_vc_xn state. This group directly fixes that by adding a dedicated per-transaction spinlock for idpf_vc_xn state/data, addressing the incorrect lock reuse and resulting lock-nesting issue."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+            "lineno": 302,
+            "content": "raw_spin_lock(&(xn)->completed.wait.lock)",
+            "rationale": "This directly implements the flawed design of reusing struct completion's internal wait.lock to protect idpf_vc_xn state, which creates the PREEMPT_RT-invalid lock nesting described in the root cause."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+            "lineno": 309,
+            "content": "raw_spin_unlock(&(xn)->completed.wait.lock)",
+            "rationale": "This is the matching unlock for the same misused completion internal lock; it is part of the vulnerable locking scheme that incorrectly treats completed.wait.lock as the transaction state lock."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+            "lineno": 292,
+            "content": "* We are reusing the completion lock to serialize the accesses to the",
+            "rationale": "This comment explicitly documents the erroneous locking approach at the heart of the bug: transaction state was intentionally protected by the completion's internal lock."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.h",
+            "lineno": 46,
+            "content": "*\t   completion's lock.",
+            "rationale": "This documentation line confirms that the transaction state was designed to be protected by the completion's lock, reflecting the vulnerable root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+            "stmt_text": "raw_spin_lock(&(xn)->completed.wait.lock)",
+            "location": "hunk",
+            "explanation": "This statement is the core vulnerable operation: it reuses struct completion's internal wait.lock to protect idpf_vc_xn state, creating the invalid PREEMPT_RT lock nesting described in the root cause when async VC handling later acquires a BH spinlock."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+            "stmt_text": "raw_spin_unlock(&(xn)->completed.wait.lock)",
+            "location": "hunk",
+            "explanation": "This is the matching unlock for the same incorrect locking design. It is part of the vulnerable transaction manager scheme that treated completion's internal wait.lock as the transaction state lock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1caa871bb061",
+          "anchor_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+          "anchor_lineno": 302
+        },
+        "commit": "34c21fa894a1af6166f4284c81d1dc21efed8f38",
+        "commit_short": "34c21fa894a1",
+        "commit_msg": "idpf: implement virtchnl transaction manager\n\nThis starts refactoring how virtchnl messages are handled by adding a\ntran",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+        "display_lineno": 478,
+        "code_snippet": "commit 34c21fa894a1af6166f4284c81d1dc21efed8f38\nAuthor: Alan Brady <alan.brady@intel.com>\nDate:   Thu Feb 22 11:04:32 2024 -0800\n\n    idpf: implement virtchnl transaction manager\n    \n    This starts refactoring how virtchnl messages are handled by adding a\n    transaction manager (idpf_vc_xn_manager).\n    \n    There are two primary motivations here which are to enable handling of\n    multiple messages at once and to make it more robust in general. As it\n    is right now, the driver may only hav",
+        "exists": true,
+        "reason": "The diff is sufficient because it directly introduces the transaction manager and the locking scheme in question. The vulnerable construct is explicitly present in the new transaction API comments and macros: `/* We are reusing the completion lock to serialize the accesses to the transaction state ... */` followed by `#define idpf_vc_xn_lock(xn) raw_spin_lock(&(xn)->completed.wait.lock)` and `#define idpf_vc_xn_unlock(xn) raw_spin_unlock(&(xn)->completed.wait.lock)`. The root cause says the bug is reuse of `struct completion`'s internal raw spinlock (`completed.wait.lock`) to protect `idpf_vc_xn` state, and that is exactly what this commit does. The affected paths use that lock around transaction state in multiple places, e.g. `idpf_vc_xn_exec()`, `idpf_vc_xn_shutdown()`, and `idpf_vc_xn_forward_reply()`. Since async handling is also introduced here (`IDPF_VC_XN_ASYNC`, `idpf_vc_xn_forward_async()`), and replies are forwarded from `idpf_recv_mb_msg()` via `err = idpf_vc_xn_forward_reply(adapter, &ctlq_msg);`, this commit contains the problematic design that can later interact badly with BH spinlocks in mailbox receive context. There is no fix present: no separate dedicated lock is added to `struct idpf_vc_xn`, and the code continues to use `completed.wait.lock` as the state lock. Therefore `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5dc283fa5cf7",
+          "anchor_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+          "anchor_lineno": 478
+        },
+        "commit": "d4d5587182664b0c4ab6d3556ce881cb975507c2",
+        "commit_short": "d4d558718266",
+        "commit_msg": "idpf: initialize interrupts and enable vport\n\nTo further continue 'vport open', initialize all the resources\nrequired fo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+        "display_lineno": 416,
+        "code_snippet": "commit d4d5587182664b0c4ab6d3556ce881cb975507c2\nAuthor: Pavan Kumar Linga <pavan.kumar.linga@intel.com>\nDate:   Mon Aug 7 17:34:10 2023 -0700\n\n    idpf: initialize interrupts and enable vport\n    \n    To further continue 'vport open', initialize all the resources\n    required for the interrupts. To start with, initialize the\n    queue vector indices with the ones received from the device\n    Control Plane. Now that all the TX and RX queues are initialized,\n    map the RX descriptor and buffer qu",
+        "exists": false,
+        "reason": "The shown function is a mailbox receive/dispatch loop that calls `idpf_recv_vchnl_op(adapter, ...)` for many virtchnl opcodes, e.g. `case VIRTCHNL2_OP_ENABLE_QUEUES: idpf_recv_vchnl_op(adapter, vport, &ctlq_msg, IDPF_VC_ENA_QUEUES, IDPF_VC_ENA_QUEUES_ERR);`. However, the reported root cause is specifically about the virtchnl transaction manager reusing `struct completion`'s internal raw spinlock (`completed.wait.lock`) to protect `idpf_vc_xn` state, leading to PREEMPT_RT-invalid lock nesting when async handling later acquired a BH spinlock in `idpf_recv_mb_msg`. This snippet does not show any `struct completion`, any access to `completed.wait.lock`, any `idpf_vc_xn` state protection, nor the locking in `idpf_recv_mb_msg`. Because the vulnerable construct is not present in this function body, `has_bug` is false for this function. And because the relevant locking/fix logic is also not shown here, we cannot say this function already contains the fix; the critical context lies in other functions/structures."
+      }
+    },
+    {
+      "bic_found": "34c21fa894a1af6166f4284c81d1dc21efed8f38",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1caa871bb061",
+          "anchor_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+          "anchor_lineno": 309
+        },
+        "commit": "34c21fa894a1af6166f4284c81d1dc21efed8f38",
+        "commit_short": "34c21fa894a1",
+        "commit_msg": "idpf: implement virtchnl transaction manager\n\nThis starts refactoring how virtchnl messages are handled by adding a\ntran",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+        "display_lineno": 485,
+        "code_snippet": "commit 34c21fa894a1af6166f4284c81d1dc21efed8f38\nAuthor: Alan Brady <alan.brady@intel.com>\nDate:   Thu Feb 22 11:04:32 2024 -0800\n\n    idpf: implement virtchnl transaction manager\n    \n    This starts refactoring how virtchnl messages are handled by adding a\n    transaction manager (idpf_vc_xn_manager).\n    \n    There are two primary motivations here which are to enable handling of\n    multiple messages at once and to make it more robust in general. As it\n    is right now, the driver may only hav",
+        "exists": true,
+        "reason": "The diff is sufficient because it explicitly introduces the transaction manager, the transaction state protection, and the receive-side forwarding path involved in the root cause. The vulnerable construct is present in the newly added locking scheme: the comment says, \"We are reusing the completion lock to serialize the accesses to the transaction state,\" and the macros define `idpf_vc_xn_lock(xn)` as `raw_spin_lock(&(xn)->completed.wait.lock)` and unlock correspondingly with `raw_spin_unlock(&(xn)->completed.wait.lock)`. That is exactly the root cause: reusing `struct completion`'s internal raw spinlock (`completed.wait.lock`) to protect `idpf_vc_xn` state.\n\nThe function logic also shows this lock being used around transaction state in multiple paths, e.g. `idpf_vc_xn_exec()` acquires `idpf_vc_xn_lock(xn)` before modifying `xn->state`, `xn->reply`, etc., and `idpf_vc_xn_forward_reply()` also calls `idpf_vc_xn_lock(xn)` before examining/updating the transaction and may dispatch async handling. Since the receive path `idpf_recv_mb_msg()` now calls `idpf_vc_xn_forward_reply(adapter, &ctlq_msg);`, the async VC handling path is wired up through mailbox receive processing, matching the described scenario where later async handling can nest with BH spinlocks.\n\nThere is no fix present here. A fix would require a separate dedicated lock for `idpf_vc_xn` state instead of `completed.wait.lock`, or otherwise avoiding reuse of the completion internals. This code does the opposite by explicitly reusing the completion's internal raw spinlock. Therefore `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5dc283fa5cf7",
+          "anchor_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+          "anchor_lineno": 485
+        },
+        "commit": "02cbfba1add5bd9088c7d14c6b93b77a6ea8f3bb",
+        "commit_short": "02cbfba1add5",
+        "commit_msg": "idpf: add ethtool callbacks\n\nInitialize all the ethtool ops that are supported by the driver and\nadd the necessary suppo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/intel/idpf/idpf_virtchnl.c",
+        "display_lineno": 474,
+        "code_snippet": "commit 02cbfba1add5bd9088c7d14c6b93b77a6ea8f3bb\nAuthor: Alan Brady <alan.brady@intel.com>\nDate:   Mon Aug 7 17:34:15 2023 -0700\n\n    idpf: add ethtool callbacks\n    \n    Initialize all the ethtool ops that are supported by the driver and\n    add the necessary support for the ethtool callbacks. Also add\n    asynchronous link notification virtchnl support where the device\n    Control Plane sends the link status and link speed as an\n    asynchronous event message. Driver report the link speed on\n  ",
+        "exists": false,
+        "reason": "The shown function is a virtchnl receive/dispatch loop that calls helpers such as `idpf_recv_vchnl_op(adapter, vport, &ctlq_msg, ...)` and `idpf_recv_event_msg(vport, &ctlq_msg)`, but it does not show the transaction-manager state locking itself. The root cause is specifically reuse of `struct completion`'s internal raw spinlock (`completed.wait.lock`) to protect `idpf_vc_xn` state, and the PREEMPT_RT issue arises from later lock nesting with async handling in `idpf_recv_mb_msg`. None of that lock acquisition or `struct completion` access is visible in this body. Because the critical vulnerable construct would be inside the helper(s) that manipulate VC transaction state, this snippet alone is not enough to determine whether the bad lock reuse is present or whether a dedicated lock/fix has already been added."
+      }
+    },
+    {
+      "bic_found": "34c21fa894a1af6166f4284c81d1dc21efed8f38",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "34c21fa894a1af6166f4284c81d1dc21efed8f38": 2
+      },
+      "bic_candidates": [
+        "34c21fa894a1af6166f4284c81d1dc21efed8f38"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

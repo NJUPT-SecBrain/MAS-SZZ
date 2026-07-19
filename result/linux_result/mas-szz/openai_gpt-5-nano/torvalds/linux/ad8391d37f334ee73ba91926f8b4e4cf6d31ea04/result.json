@@ -1,0 +1,259 @@
+{
+  "cveid": "CVE-2026-43016",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ad8391d37f334ee73ba91926f8b4e4cf6d31ea04"
+  ],
+  "ground_truth_bic": "c63829182c37c2d6d0608976d15fa61ebebe9e6b",
+  "predicted_bic": [
+    "ef5659280eb13e8ac31c296f58cfdfa1684ac06b"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 15,
+  "llm_tokens": 38938,
+  "root_cause": {
+    "text": "In the BPF sockmap path, sk_psock_verdict_data_ready() dereferenced AF_UNIX peer socket fields sk->sk_socket and sock->ops without RCU protection or another lifetime guarantee, even though unix_stream_sendmsg() can invoke ->sk_data_ready() after unlocking while sock_orphan() may concurrently free sk_socket.",
+    "evidence": "The commit message explicitly says “the sender socket holds the peer's refcount, it does not prevent the peer's sock_orphan(), and the peer's sk_socket might be freed after one RCU grace period,” and the patch changes sk_psock_verdict_data_ready() from directly using `struct socket *sock = sk->sk_socket; ops = READ_ONCE(sock->ops);` to fetching both under `rcu_read_lock()` with `sock = READ_ONCE(sk->sk_socket)` and `ops = READ_ONCE(sock->ops)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/core/skmsg.c",
+      "lineno": 1270,
+      "content": "struct socket *sock = sk->sk_socket;",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/core/skmsg.c",
+      "lineno": 1278,
+      "content": "ops = READ_ONCE(sock->ops);",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the BPF sockmap path, sk_psock_verdict_data_ready() dereferenced AF_UNIX peer socket fields sk->sk_socket and sock->ops without RCU protection or another lifetime guarantee, even though unix_stream_sendmsg() can invoke ->sk_data_ready() after unlocking while sock_orphan() may concurrently free sk_socket.",
+      "evidence_points": "The commit message explicitly says “the sender socket holds the peer's refcount, it does not prevent the peer's sock_orphan(), and the peer's sk_socket might be freed after one RCU grace period,” and the patch changes sk_psock_verdict_data_ready() from directly using `struct socket *sock = sk->sk_socket; ops = READ_ONCE(sock->ops);` to fetching both under `rcu_read_lock()` with `sock = READ_ONCE(sk->sk_socket)` and `ops = READ_ONCE(sock->ops)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/core/skmsg.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Protect socket and proto_ops pointer lookup with RCU and null-safe checks to avoid races and invalid dereferences in sk_psock_verdict_data_ready().",
+        "what": "The function sk_psock_verdict_data_ready() changes local variable initialization by setting `const struct proto_ops *ops = NULL;` and declaring `struct socket *sock;`, then replaces the direct `sk->sk_socket` access with an RCU-protected sequence: `rcu_read_lock(); sock = READ_ONCE(sk->sk_socket); if (likely(sock)) ops = READ_ONCE(sock->ops); rcu_read_unlock();`. It also removes the early return based on `!sock` before reading `sock->ops` and instead relies on the later `if (!ops || !ops->read_skb) return;` check.",
+        "how": "At runtime, this makes retrieval of `sk->sk_socket` and its `ops` pointer occur under an RCU read-side critical section, reducing the risk of racing with concurrent socket teardown or pointer updates. Initializing `ops` to NULL and only reading `sock->ops` when `sock` is present prevents invalid dereferences, while the existing `!ops || !ops->read_skb` check safely aborts processing when no valid read callback is available."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Protect socket and proto_ops pointer lookup with RCU and null-safe checks to avoid races and invalid dereferences in sk_psock_verdict_data_ready()."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by adding RCU protection and null-safe checks around sk->sk_socket and sock->ops access in sk_psock_verdict_data_ready(), preventing the race and invalid dereference described."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/skmsg.c",
+            "lineno": 1270,
+            "content": "struct socket *sock = sk->sk_socket;",
+            "rationale": "This directly dereferences and captures sk->sk_socket without RCU protection or another lifetime guarantee, matching the root cause race with concurrent sock_orphan() freeing sk_socket."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/skmsg.c",
+            "lineno": 1278,
+            "content": "ops = READ_ONCE(sock->ops);",
+            "rationale": "This dereferences sock after obtaining it from sk->sk_socket without protected lifetime, so sock may already be invalid; the READ_ONCE does not provide object lifetime safety."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/core/skmsg.c",
+            "stmt_text": "struct socket *sock = sk->sk_socket;",
+            "location": "hunk 0",
+            "explanation": "This statement is the primary vulnerable dereference: it reads sk->sk_socket without RCU protection or another lifetime guarantee, matching the root cause race where sock_orphan() may concurrently clear/free sk_socket before later use."
+          },
+          {
+            "vuln_file": "net/core/skmsg.c",
+            "stmt_text": "ops = READ_ONCE(sock->ops);",
+            "location": "hunk 0",
+            "explanation": "This statement dereferences sock->ops after sock was obtained from sk->sk_socket without protected lifetime. READ_ONCE only constrains the load, not the lifetime of sock, so it can still access freed or invalid memory in the described race."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e2d072d6a3d1",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 1270
+        },
+        "commit": "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+        "commit_short": "ef5659280eb1",
+        "commit_msg": "bpf, sockmap: Allow skipping sk_skb parser program\n\nCurrently, we often run with a nop parser namely one that just does\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 914,
+        "code_snippet": "commit ef5659280eb13e8ac31c296f58cfdfa1684ac06b\nAuthor: John Fastabend <john.fastabend@gmail.com>\nDate:   Sat Oct 10 22:09:38 2020 -0700\n\n    bpf, sockmap: Allow skipping sk_skb parser program\n    \n    Currently, we often run with a nop parser namely one that just does\n    this, 'return skb->len'. This happens when either our verdict program\n    can handle streaming data or it is only looking at socket data such\n    as IP addresses and other metadata associated with the flow. The second\n    case",
+        "exists": true,
+        "reason": "The diff directly introduces the relevant function `sk_psock_verdict_data_ready(struct sock *sk)`, so the shown code is sufficient to evaluate the vulnerability. In this function, it does `struct socket *sock = sk->sk_socket;` and then immediately checks and dereferences `sock` and its ops: `if (unlikely(!sock || !sock->ops || !sock->ops->read_sock)) return;` followed by `sock->ops->read_sock(sk, &desc, sk_psock_verdict_recv);`. There is no `rcu_read_lock()`, no `READ_ONCE(sk->sk_socket)`, and no other visible lifetime protection around `sk->sk_socket` / `sock->ops`. This matches the root cause: dereferencing AF_UNIX peer socket fields `sk->sk_socket` and `sock->ops` without RCU protection or another lifetime guarantee. The only RCU usage shown is inside `sk_psock_verdict_recv()`, which protects `psock`, not `sk->sk_socket` or `sock->ops`, so it does not fix the described issue. Therefore the vulnerable construct is present and the fix is not yet included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "743df8b7749f",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 914
+        },
+        "commit": "604326b41a6fb9b4a78b6179335decee0365cd8c",
+        "commit_short": "604326b41a6f",
+        "commit_msg": "bpf, sockmap: convert to generic sk_msg interface\n\nAdd a generic sk_msg layer, and convert current sockmap and later\nkTL",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 750,
+        "code_snippet": "commit 604326b41a6fb9b4a78b6179335decee0365cd8c\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Sat Oct 13 02:45:58 2018 +0200\n\n    bpf, sockmap: convert to generic sk_msg interface\n    \n    Add a generic sk_msg layer, and convert current sockmap and later\n    kTLS over to make use of it. While sk_buff handles network packet\n    representation from netdevice up to socket, sk_msg handles data\n    representation from application to socket layer.\n    \n    This means that sk_msg framework spa",
+        "exists": false,
+        "reason": "The provided snippet does not include the relevant function logic at all. It only shows the function signature start: \"void sk_psock_stop_strp(struct sock *sk, struct sk_psock *psock)\". The root cause concerns dereferencing AF_UNIX peer socket fields in sk_psock_verdict_data_ready(), specifically accesses like sk->sk_socket and sock->ops without RCU or other lifetime protection. Since the body of sk_psock_verdict_data_ready() and any such dereference logic are not shown here, there is not enough context to determine whether the vulnerable construct is present or whether a fix is already applied."
+      }
+    },
+    {
+      "bic_found": "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e2d072d6a3d1",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 1278
+        },
+        "commit": "1ded5e5a5931bb8b31e15b63b655fe232e3416b2",
+        "commit_short": "1ded5e5a5931",
+        "commit_msg": "net: annotate data-races around sock->ops\n\nIPV6_ADDRFORM socket option is evil, because it can change sock->ops\nwhile ot",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 1208,
+        "code_snippet": "commit 1ded5e5a5931bb8b31e15b63b655fe232e3416b2\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Tue Aug 8 13:58:09 2023 +0000\n\n    net: annotate data-races around sock->ops\n    \n    IPV6_ADDRFORM socket option is evil, because it can change sock->ops\n    while other threads might read it. Same issue for sk->sk_family\n    being set to AF_INET.\n    \n    Adding READ_ONCE() over sock->ops reads is needed for sockets\n    that might be impacted by IPV6_ADDRFORM.\n    \n    Note that mptcp_is_tcpsk() ",
+        "exists": true,
+        "reason": "The function body is sufficient to decide because it directly shows how `sk->sk_socket` and `sock->ops` are accessed in `sk_psock_verdict_data_ready()`. The root cause is unsafe dereference of AF_UNIX peer socket fields without RCU or another lifetime guarantee. In this commit version, the function still does `struct socket *sock = sk->sk_socket;` with a plain load, and then uses `sock` afterward with no RCU read-side critical section, no refcount acquisition, and no other visible lifetime protection. Although this commit adds `ops = READ_ONCE(sock->ops);` and checks `if (!ops || !ops->read_skb) return;`, that only annotates/serializes the `sock->ops` load for a data-race concern; it does not protect the lifetime of `sk->sk_socket` / `sock` itself against concurrent teardown. The vulnerable construct is therefore still present: `sock` is obtained from `sk->sk_socket` and then dereferenced (`sock->ops`, `ops->read_skb`) without the lifetime guarantee required by the root-cause description. Hence `has_bug=true`. The fix for the described vulnerability is not present, because there is no RCU protection or equivalent mechanism around access to `sk->sk_socket` / `sock`; therefore `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e05a53ab867c",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 1208
+        },
+        "commit": "6df7f764cd3cf5a03a4a47b23be47e57e41fcd85",
+        "commit_short": "6df7f764cd3c",
+        "commit_msg": "bpf, sockmap: Wake up polling after data copy\n\nWhen TCP stack has data ready to read sk_data_ready() is called. Sockmap\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 1209,
+        "code_snippet": "commit 6df7f764cd3cf5a03a4a47b23be47e57e41fcd85\nAuthor: John Fastabend <john.fastabend@gmail.com>\nDate:   Mon May 22 19:56:11 2023 -0700\n\n    bpf, sockmap: Wake up polling after data copy\n    \n    When TCP stack has data ready to read sk_data_ready() is called. Sockmap\n    overwrites this with its own handler to call into BPF verdict program.\n    But, the original TCP socket had sock_def_readable that would additionally\n    wake up any user space waiters with sk_wake_async().\n    \n    Sockmap sa",
+        "exists": true,
+        "reason": "The function body is sufficient because it directly shows the AF_UNIX-related dereference pattern in question. The vulnerable construct is present at the start of the function: `struct socket *sock = sk->sk_socket;` followed by `if (unlikely(!sock || !sock->ops || !sock->ops->read_skb)) return;` and then `copied = sock->ops->read_skb(sk, sk_psock_verdict_recv);`. This accesses `sk->sk_socket` and then dereferences `sock->ops` / `sock->ops->read_skb` without any `rcu_read_lock()` or other visible lifetime protection around the `sk->sk_socket` / `sock` access. The only RCU critical section added in this commit is later, around `psock = sk_psock(sk); psock->saved_data_ready(sk);`, which protects the psock lookup/callback, not the earlier `sk->sk_socket` / `sock->ops` dereferences. Therefore the root-cause condition described is still present in this commit. The commit's added logic is about waking polling via `saved_data_ready`, not about protecting `sk->sk_socket`/`sock->ops`, so the fix for this vulnerability is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ea444185a6bf",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 1209
+        },
+        "commit": "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+        "commit_short": "ef5659280eb1",
+        "commit_msg": "bpf, sockmap: Allow skipping sk_skb parser program\n\nCurrently, we often run with a nop parser namely one that just does\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 926,
+        "code_snippet": "commit ef5659280eb13e8ac31c296f58cfdfa1684ac06b\nAuthor: John Fastabend <john.fastabend@gmail.com>\nDate:   Sat Oct 10 22:09:38 2020 -0700\n\n    bpf, sockmap: Allow skipping sk_skb parser program\n    \n    Currently, we often run with a nop parser namely one that just does\n    this, 'return skb->len'. This happens when either our verdict program\n    can handle streaming data or it is only looking at socket data such\n    as IP addresses and other metadata associated with the flow. The second\n    case",
+        "exists": true,
+        "reason": "The added function `sk_psock_verdict_data_ready()` contains the vulnerable construct directly. It does `struct socket *sock = sk->sk_socket;` and then immediately checks and dereferences `sock` and `sock->ops` via `if (unlikely(!sock || !sock->ops || !sock->ops->read_sock)) return;` followed by `sock->ops->read_sock(sk, &desc, sk_psock_verdict_recv);`. There is no `rcu_read_lock()`, no other visible lifetime protection for `sk->sk_socket`, and no protected access to `sock->ops`. This matches the root cause: dereferencing AF_UNIX peer socket fields `sk->sk_socket` and `sock->ops` without RCU or another lifetime guarantee in the `->sk_data_ready()` path. The function body is sufficient to determine this because the unsafe access is entirely visible here. There is also no sign of the fix: no RCU critical section around the `sk->sk_socket` / `sock->ops` access, no safe helper, and no alternative lifetime pinning before calling `read_sock`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "743df8b7749f",
+          "anchor_file": "net/core/skmsg.c",
+          "anchor_lineno": 926
+        },
+        "commit": "604326b41a6fb9b4a78b6179335decee0365cd8c",
+        "commit_short": "604326b41a6f",
+        "commit_msg": "bpf, sockmap: convert to generic sk_msg interface\n\nAdd a generic sk_msg layer, and convert current sockmap and later\nkTL",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skmsg.c",
+        "display_lineno": 762,
+        "code_snippet": "commit 604326b41a6fb9b4a78b6179335decee0365cd8c\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Sat Oct 13 02:45:58 2018 +0200\n\n    bpf, sockmap: convert to generic sk_msg interface\n    \n    Add a generic sk_msg layer, and convert current sockmap and later\n    kTLS over to make use of it. While sk_buff handles network packet\n    representation from netdevice up to socket, sk_msg handles data\n    representation from application to socket layer.\n    \n    This means that sk_msg framework spa",
+        "exists": false,
+        "reason": "The provided snippet only shows parser teardown logic: restoring `sk->sk_data_ready`, clearing `parser->saved_data_ready`, calling `strp_stop(&parser->strp)`, and setting `parser->enabled = false` (lines 756-762). The root cause concerns `sk_psock_verdict_data_ready()` dereferencing AF_UNIX peer socket fields such as `sk->sk_socket` and `sock->ops` without RCU or lifetime protection. Those accesses are not present anywhere in this function body, so this snippet does not expose the relevant vulnerable logic or any fix for it. A larger view containing `sk_psock_verdict_data_ready()` or the AF_UNIX handling path is required."
+      }
+    },
+    {
+      "bic_found": "ef5659280eb13e8ac31c296f58cfdfa1684ac06b",
+      "depth": 3
+    },
+    {
+      "bic_votes": {
+        "ef5659280eb13e8ac31c296f58cfdfa1684ac06b": 2
+      },
+      "bic_candidates": [
+        "ef5659280eb13e8ac31c296f58cfdfa1684ac06b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

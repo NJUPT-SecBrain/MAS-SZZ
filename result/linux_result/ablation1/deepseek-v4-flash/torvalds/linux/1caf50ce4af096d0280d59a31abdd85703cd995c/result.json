@@ -1,0 +1,399 @@
+{
+  "cveid": "CVE-2026-23224",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "1caf50ce4af096d0280d59a31abdd85703cd995c"
+  ],
+  "ground_truth_bic": "fb176750266a3d7f42ebdcf28e8ba40350b27847",
+  "predicted_bic": [
+    "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+    "5e88d1aadcd20a8e2cf317839cac0c94006cee64",
+    "f8d920a402aec3482931cb5f1539ed438740fc49",
+    "80d0c27a0a4af8e0678d7412781482e6f73c22c7"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 15,
+  "llm_tokens": 60509,
+  "root_cause": {
+    "text": "The erofs_fileio_rq structure is freed inside the asynchronous direct I/O completion callback (erofs_fileio_ki_complete) while the submitter (erofs_fileio_rq_submit) still accesses fields of the same structure (rq->iocb.ki_filp in file_accessed()) after the I/O submission returns, causing a use-after-free.",
+    "evidence": "The CVE description explicitly states the race condition: after iomap_dio_rw returns -EIOCBQUEUED, the workqueue completion handler calls erofs_fileio_ki_complete which frees rq, yet the submitter continues to access file_accessed() which uses rq->iocb.ki_filp. The patch introduces a reference count to ensure that rq is freed only after both erofs_fileio_ki_complete and erofs_fileio_rq_submit have finished using it.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/erofs/fileio.c",
+      "lineno": 41,
+      "content": "kfree(rq);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/erofs/fileio.c",
+      "lineno": 60,
+      "content": "ret = vfs_iocb_iter_read(rq->iocb.ki_filp, &rq->iocb, &iter);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/erofs/fileio.c",
+      "lineno": 62,
+      "content": "erofs_fileio_ki_complete(&rq->iocb, ret);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/erofs/fileio.c",
+      "lineno": 61,
+      "content": "if (ret != -EIOCBQUEUED)",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/erofs/fileio.c",
+      "lineno": 71,
+      "content": "rq->iocb.ki_filp = mdev->m_dif->file;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/erofs/fileio.c",
+      "lineno": 39,
+      "content": "bio_endio(&rq->bio);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/erofs/fileio.c",
+      "lineno": 40,
+      "content": "bio_uninit(&rq->bio);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The erofs_fileio_rq structure is freed inside the asynchronous direct I/O completion callback (erofs_fileio_ki_complete) while the submitter (erofs_fileio_rq_submit) still accesses fields of the same structure (rq->iocb.ki_filp in file_accessed()) after the I/O submission returns, causing a use-after-free.",
+      "evidence_points": "The CVE description explicitly states the race condition: after iomap_dio_rw returns -EIOCBQUEUED, the workqueue completion handler calls erofs_fileio_ki_complete which frees rq, yet the submitter continues to access file_accessed() which uses rq->iocb.ki_filp. The patch introduces a reference count to ensure that rq is freed only after both erofs_fileio_ki_complete and erofs_fileio_rq_submit have finished using it."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "fs/erofs/fileio.c",
+            "lineno": 60,
+            "content": "ret = vfs_iocb_iter_read(rq->iocb.ki_filp, &rq->iocb, &iter);",
+            "rationale": "This is the I/O submission call that may trigger asynchronous completion. After this call returns (if ret == -EIOCBQUEUED), the rq can be freed asynchronously, yet the submitter continues to access rq fields."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/erofs/fileio.c",
+            "lineno": 62,
+            "content": "erofs_fileio_ki_complete(&rq->iocb, ret);",
+            "rationale": "This function is called both synchronously (here) and asynchronously (as the ki_complete callback). It contains the kfree(rq) that frees the structure, making subsequent access by the submitter a use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/erofs/fileio.c",
+            "lineno": 41,
+            "content": "kfree(rq);",
+            "rationale": "This is the actual deallocation of the erofs_fileio_rq structure. It is executed inside the completion function, potentially while the submitter still holds a reference to the same structure."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/erofs/fileio.c",
+            "lineno": 39,
+            "content": "bio_endio(&rq->bio);",
+            "rationale": "This line accesses rq fields (including rq->bio) and is executed before kfree. Although safe in itself, it is part of the cleanup sequence that does not prevent the subsequent use-after-free by the submitter."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/erofs/fileio.c",
+            "lineno": 40,
+            "content": "bio_uninit(&rq->bio);",
+            "rationale": "Similar to bio_endio, this accesses rq fields before freeing. It is part of the same vulnerable path because the structure is used without synchronization with the submitter."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/erofs/fileio.c",
+            "lineno": 71,
+            "content": "rq->iocb.ki_filp = mdev->m_dif->file;",
+            "rationale": "This assignment stores the file pointer into the rq structure. This field (ki_filp) is later accessed by the submitter after I/O submission, making it a target of the use-after-free."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/erofs/fileio.c",
+            "lineno": 61,
+            "content": "if (ret != -EIOCBQUEUED)",
+            "rationale": "This conditional determines whether the completion is called synchronously or deferred. When the condition is false (i.e., ret == -EIOCBQUEUED), the completion is asynchronous and the rq is freed later, but the submitter code after this conditional still accesses rq."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/erofs/fileio.c",
+            "stmt_text": "kfree(rq);",
+            "location": "hunk",
+            "explanation": "This is the actual deallocation of the erofs_fileio_rq structure. It is called inside the asynchronous completion callback, freeing the memory while the submitter may still access rq fields, directly causing the use-after-free."
+          },
+          {
+            "vuln_file": "fs/erofs/fileio.c",
+            "stmt_text": "ret = vfs_iocb_iter_read(rq->iocb.ki_filp, &rq->iocb, &iter);",
+            "location": "hunk",
+            "explanation": "This I/O submission call may trigger asynchronous completion via ki_complete. After it returns with -EIOCBQUEUED, the completion callback can free the rq structure at any time, yet the subsequent code in the submitter still accesses rq fields."
+          },
+          {
+            "vuln_file": "fs/erofs/fileio.c",
+            "stmt_text": "erofs_fileio_ki_complete(&rq->iocb, ret);",
+            "location": "hunk",
+            "explanation": "This function is called both synchronously (when ret != -EIOCBQUEUED) and asynchronously (as the ki_complete callback). It contains the kfree(rq) call that frees the structure. In the async path, this execution is concurrent with the submitter's continued access, causing a use-after-free."
+          },
+          {
+            "vuln_file": "fs/erofs/fileio.c",
+            "stmt_text": "if (ret != -EIOCBQUEUED)",
+            "location": "hunk",
+            "explanation": "This conditional controls whether completion is called synchronously or deferred. When the condition is false (i.e., ret == -EIOCBQUEUED), the completion is asynchronous and the rq can be freed while the submitter continues executing, making every subsequent access to rq vulnerable."
+          },
+          {
+            "vuln_file": "fs/erofs/fileio.c",
+            "stmt_text": "rq->iocb.ki_filp = mdev->m_dif->file;",
+            "location": "hunk",
+            "explanation": "This assignment stores the file pointer into the rq structure. This field (ki_filp) is later accessed by the submitter (e.g., in file_accessed()) after the I/O submission returns, making it a target of the use-after-free when the structure is freed asynchronously."
+          },
+          {
+            "vuln_file": "fs/erofs/fileio.c",
+            "stmt_text": "bio_endio(&rq->bio);",
+            "location": "hunk",
+            "explanation": "This line is executed as part of the completion path, accessing rq->bio before the kfree. Although not directly causing the use-after-free, it is part of the same vulnerable sequence where the structure is used without synchronization with the submitter."
+          },
+          {
+            "vuln_file": "fs/erofs/fileio.c",
+            "stmt_text": "bio_uninit(&rq->bio);",
+            "location": "hunk",
+            "explanation": "Similar to bio_endio, this accesses rq fields before freeing. It is part of the cleanup sequence inside the completion callback that can run concurrently with the submitter's continued access, contributing to the use-after-free condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f2fb72fd17e",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 41
+        },
+        "commit": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+        "commit_short": "ce63cb62d794",
+        "commit_msg": "erofs: support unencoded inodes for fileio\n\nSince EROFS only needs to handle read requests in simple contexts,\nJust dire",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 39,
+        "code_snippet": "commit ce63cb62d794c98c7631c2296fa845f2a8d0a4a1\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Thu Sep 5 17:30:31 2024 +0800\n\n    erofs: support unencoded inodes for fileio\n    \n    Since EROFS only needs to handle read requests in simple contexts,\n    Just directly use vfs_iocb_iter_read() for data I/Os.\n    \n    Reviewed-by: Sandeep Dhavale <dhavale@google.com>\n    Reviewed-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Gao Xiang <hsiangkao@linux.alibaba.com>\n    Link: https://lore.kernel.org/",
+        "exists": false,
+        "reason": "In the provided code, erofs_fileio_rq_submit calls vfs_iocb_iter_read and then, if ret != -EIOCBQUEUED, calls erofs_fileio_ki_complete which frees the rq. If ret == -EIOCBQUEUED, the function returns without any further access to rq fields. There is no access to rq->iocb.ki_filp (or any field) after the I/O submission returns. The callers (erofs_fileio_scan_folio, erofs_fileio_read_folio, erofs_fileio_readahead) set io->rq = NULL after calling erofs_fileio_rq_submit, so no use-after-free occurs. Therefore, the vulnerable construct described in the root cause is absent, and the code already handles both synchronous and asynchronous completion safely."
+      }
+    },
+    {
+      "bic_found": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f2fb72fd17e",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 60
+        },
+        "commit": "5e88d1aadcd20a8e2cf317839cac0c94006cee64",
+        "commit_short": "5e88d1aadcd2",
+        "commit_msg": "erofs: use credential guards\n\nUse credential guards for scoped credential override with automatic\nrestoration on scope e",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 64,
+        "code_snippet": "commit 5e88d1aadcd20a8e2cf317839cac0c94006cee64\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Mon Nov 3 12:26:57 2025 +0100\n\n    erofs: use credential guards\n    \n    Use credential guards for scoped credential override with automatic\n    restoration on scope exit.\n    \n    Link: https://patch.msgid.link/20251103-work-creds-guards-simple-v1-9-a3e156839e7f@kernel.org\n    Reviewed-by: Amir Goldstein <amir73il@gmail.com>\n    Signed-off-by: Christian Brauner <brauner@kernel.org>\n\ndiff --git",
+        "exists": false,
+        "reason": "The provided function body (erofs_fileio_rq_submit) does not contain any access to the rq structure after the asynchronous vfs_iocb_iter_read call. The root-cause file_accessed() call on rq->iocb.ki_filp is absent from this function. Therefore, the vulnerable use-after-free construct is not present in this function, and it is safe."
+      }
+    },
+    {
+      "bic_found": "5e88d1aadcd20a8e2cf317839cac0c94006cee64",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f2fb72fd17e",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 62
+        },
+        "commit": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+        "commit_short": "ce63cb62d794",
+        "commit_msg": "erofs: support unencoded inodes for fileio\n\nSince EROFS only needs to handle read requests in simple contexts,\nJust dire",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 58,
+        "code_snippet": "commit ce63cb62d794c98c7631c2296fa845f2a8d0a4a1\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Thu Sep 5 17:30:31 2024 +0800\n\n    erofs: support unencoded inodes for fileio\n    \n    Since EROFS only needs to handle read requests in simple contexts,\n    Just directly use vfs_iocb_iter_read() for data I/Os.\n    \n    Reviewed-by: Sandeep Dhavale <dhavale@google.com>\n    Reviewed-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Gao Xiang <hsiangkao@linux.alibaba.com>\n    Link: https://lore.kernel.org/",
+        "exists": false,
+        "reason": "The provided code does not contain the vulnerable use-after-free construct. In erofs_fileio_rq_submit, after vfs_iocb_iter_read returns -EIOCBQUEUED (async I/O), the function returns without accessing any fields of rq. The completion callback erofs_fileio_ki_complete frees rq only after the I/O completes. The caller sets io->rq = NULL immediately after submission, ensuring no later dereference. No file_accessed() call is present in this commit. Therefore the vulnerability is absent."
+      }
+    },
+    {
+      "bic_found": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f2fb72fd17e",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 61
+        },
+        "commit": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+        "commit_short": "ce63cb62d794",
+        "commit_msg": "erofs: support unencoded inodes for fileio\n\nSince EROFS only needs to handle read requests in simple contexts,\nJust dire",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 57,
+        "code_snippet": "commit ce63cb62d794c98c7631c2296fa845f2a8d0a4a1\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Thu Sep 5 17:30:31 2024 +0800\n\n    erofs: support unencoded inodes for fileio\n    \n    Since EROFS only needs to handle read requests in simple contexts,\n    Just directly use vfs_iocb_iter_read() for data I/Os.\n    \n    Reviewed-by: Sandeep Dhavale <dhavale@google.com>\n    Reviewed-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Gao Xiang <hsiangkao@linux.alibaba.com>\n    Link: https://lore.kernel.org/",
+        "exists": false,
+        "reason": "The submitter function `erofs_fileio_rq_submit` does not access any fields of the `erofs_fileio_rq` structure after the call to `vfs_iocb_iter_read` in the async path (lines 53-57). After the call, it only checks the return value and either calls the completion function (synchronous path) or returns immediately. The callers (`erofs_fileio_read_folio` and `erofs_fileio_readahead`) also do not access `io.rq` after calling `erofs_fileio_rq_submit`. Therefore, the use-after-free condition described in the root cause (accessing `rq->iocb.ki_filp` after I/O submission returns) does not occur in this commit."
+      }
+    },
+    {
+      "bic_found": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f2fb72fd17e",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 71
+        },
+        "commit": "f8d920a402aec3482931cb5f1539ed438740fc49",
+        "commit_short": "f8d920a402ae",
+        "commit_msg": "erofs: reference `struct erofs_device_info` for erofs_map_dev\n\nRecord `m_sb` and `m_dif` to replace `m_fscache`, `m_daxd",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 70,
+        "code_snippet": "commit f8d920a402aec3482931cb5f1539ed438740fc49\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Fri Dec 13 07:54:01 2024 +0800\n\n    erofs: reference `struct erofs_device_info` for erofs_map_dev\n    \n    Record `m_sb` and `m_dif` to replace `m_fscache`, `m_daxdev`, `m_fp`\n    and `m_dax_part_off` in order to simplify the codebase.\n    \n    Note that `m_bdev` is still left since it can be assigned from\n    `sb->s_bdev` directly.\n    \n    Reviewed-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Gao X",
+        "exists": true,
+        "reason": "Line 70 sets rq->iocb.ki_filp = mdev->m_dif->file. This field is later accessed in file_accessed() after rq is freed in the async completion callback (as per root cause). No fix is present; the code still stores a pointer that will be used-after-free."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7b00af2c5414",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 70
+        },
+        "commit": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+        "commit_short": "ce63cb62d794",
+        "commit_msg": "erofs: support unencoded inodes for fileio\n\nSince EROFS only needs to handle read requests in simple contexts,\nJust dire",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 67,
+        "code_snippet": "commit ce63cb62d794c98c7631c2296fa845f2a8d0a4a1\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Thu Sep 5 17:30:31 2024 +0800\n\n    erofs: support unencoded inodes for fileio\n    \n    Since EROFS only needs to handle read requests in simple contexts,\n    Just directly use vfs_iocb_iter_read() for data I/Os.\n    \n    Reviewed-by: Sandeep Dhavale <dhavale@google.com>\n    Reviewed-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Gao Xiang <hsiangkao@linux.alibaba.com>\n    Link: https://lore.kernel.org/",
+        "exists": false,
+        "reason": "The function erofs_fileio_rq_submit does not access the rq structure after the asynchronous I/O submission. After vfs_iocb_iter_read returns with -EIOCBQUEUED, the function returns immediately without any further access to rq fields. Therefore, the use-after-free pattern described in the root cause is absent."
+      }
+    },
+    {
+      "bic_found": "f8d920a402aec3482931cb5f1539ed438740fc49",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f2fb72fd17e",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 39
+        },
+        "commit": "80d0c27a0a4af8e0678d7412781482e6f73c22c7",
+        "commit_short": "80d0c27a0a4a",
+        "commit_msg": "erofs: get rid of raw bi_end_io() usage\n\nThese BIOs are actually harmless in practice, as they are all pseudo\nBIOs and d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 43,
+        "code_snippet": "commit 80d0c27a0a4af8e0678d7412781482e6f73c22c7\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Thu Nov 27 16:07:56 2025 +0800\n\n    erofs: get rid of raw bi_end_io() usage\n    \n    These BIOs are actually harmless in practice, as they are all pseudo\n    BIOs and do not use advanced features like chaining.  Using the BIO\n    interface is a more friendly and unified approach for both bdev and\n    and file-backed I/Os (compared to awkward bvec interfaces).\n    \n    Let's use bio_endio() instead.\n    \n",
+        "exists": true,
+        "reason": "The function erofs_fileio_ki_complete (after the commit) still calls kfree(rq) at the end (line 'kfree(rq);'), which frees the erofs_fileio_rq structure. According to the root cause, the submitter accesses rq->iocb.ki_filp after I/O submission returns, causing a use-after-free. This commit does not add any synchronization or prevent the premature free, so the vulnerable construct is present and not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "30e13e41a0eb",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 43
+        },
+        "commit": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+        "commit_short": "ce63cb62d794",
+        "commit_msg": "erofs: support unencoded inodes for fileio\n\nSince EROFS only needs to handle read requests in simple contexts,\nJust dire",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 37,
+        "code_snippet": "commit ce63cb62d794c98c7631c2296fa845f2a8d0a4a1\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Thu Sep 5 17:30:31 2024 +0800\n\n    erofs: support unencoded inodes for fileio\n    \n    Since EROFS only needs to handle read requests in simple contexts,\n    Just directly use vfs_iocb_iter_read() for data I/Os.\n    \n    Reviewed-by: Sandeep Dhavale <dhavale@google.com>\n    Reviewed-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Gao Xiang <hsiangkao@linux.alibaba.com>\n    Link: https://lore.kernel.org/",
+        "exists": false,
+        "reason": "In `erofs_fileio_rq_submit`, after calling `vfs_iocb_iter_read`, the code does not access `rq` again if the I/O is queued asynchronously (ret == -EIOCBQUEUED). It returns immediately without any further dereference of `rq`. If the I/O completes synchronously, `erofs_fileio_ki_complete` is called inline, which frees `rq`, but the function then returns without using `rq` anymore. The callers (`erofs_fileio_read_folio` and `erofs_fileio_readahead`) also do not access `io.rq` after calling `erofs_fileio_rq_submit`. Therefore, the use-after-free described in the root cause (submitter accessing freed rq after async submission) is not present in this code."
+      }
+    },
+    {
+      "bic_found": "80d0c27a0a4af8e0678d7412781482e6f73c22c7",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8f2fb72fd17e",
+          "anchor_file": "fs/erofs/fileio.c",
+          "anchor_lineno": 40
+        },
+        "commit": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+        "commit_short": "ce63cb62d794",
+        "commit_msg": "erofs: support unencoded inodes for fileio\n\nSince EROFS only needs to handle read requests in simple contexts,\nJust dire",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/erofs/fileio.c",
+        "display_lineno": 38,
+        "code_snippet": "commit ce63cb62d794c98c7631c2296fa845f2a8d0a4a1\nAuthor: Gao Xiang <xiang@kernel.org>\nDate:   Thu Sep 5 17:30:31 2024 +0800\n\n    erofs: support unencoded inodes for fileio\n    \n    Since EROFS only needs to handle read requests in simple contexts,\n    Just directly use vfs_iocb_iter_read() for data I/Os.\n    \n    Reviewed-by: Sandeep Dhavale <dhavale@google.com>\n    Reviewed-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Gao Xiang <hsiangkao@linux.alibaba.com>\n    Link: https://lore.kernel.org/",
+        "exists": false,
+        "reason": "In erofs_fileio_rq_submit(), after calling vfs_iocb_iter_read(), the function either returns immediately (if ret == -EIOCBQUEUED) or calls erofs_fileio_ki_complete() and then returns. There is no subsequent access to rq (e.g., rq->iocb.ki_filp) after submission. The callers (erofs_fileio_read_folio and erofs_fileio_readahead) also do not access io.rq after submitting. Therefore, the use-after-free pattern described in the root cause is absent in this commit."
+      }
+    },
+    {
+      "bic_found": "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1": 4,
+        "5e88d1aadcd20a8e2cf317839cac0c94006cee64": 1,
+        "f8d920a402aec3482931cb5f1539ed438740fc49": 1,
+        "80d0c27a0a4af8e0678d7412781482e6f73c22c7": 1
+      },
+      "bic_candidates": [
+        "ce63cb62d794c98c7631c2296fa845f2a8d0a4a1",
+        "5e88d1aadcd20a8e2cf317839cac0c94006cee64",
+        "f8d920a402aec3482931cb5f1539ed438740fc49",
+        "80d0c27a0a4af8e0678d7412781482e6f73c22c7"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

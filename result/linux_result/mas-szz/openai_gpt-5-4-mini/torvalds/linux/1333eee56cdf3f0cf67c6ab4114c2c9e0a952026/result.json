@@ -1,0 +1,328 @@
+{
+  "cveid": "CVE-2026-43054",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "1333eee56cdf3f0cf67c6ab4114c2c9e0a952026"
+  ],
+  "ground_truth_bic": "e0eb5d38b732b011cd9ed5b1bf9f59b83c2500d3",
+  "predicted_bic": [
+    "3703b2c5d041a68095cdd22380c23ce27d449ad7",
+    "8f4a1fb0d029feef385986f320c7b4c13d9fce40",
+    "a314d7003ccd4f4886d1280ff4f6c00217fc9ae3"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 50132,
+  "root_cause": {
+    "text": "`tcm_loop_target_reset()` in the `scsi:target:tcm_loop` loopback LLD returned `SUCCESS` without draining or completing in-flight `scsi_cmnd`/`se_cmd` activity, violating the SCSI EH reset contract and allowing stale async completion work to race with reused command structures.",
+    "evidence": "The patch changes `tcm_loop_target_reset()` from immediately setting `tl_transport_status` and returning `SUCCESS` to first issuing `TMR_LUN_RESET` via `tcm_loop_issue_tmr()` and then iterating `blk_mq_tagset_busy_iter()` to `flush_work()` on each pending `se_cmd`; the CVE text says the previous behavior left target-core completion work queued, causing `queuecommand` to zero `se_lun`/`lun_ref_active`, skip `percpu_ref_put()` in `transport_lun_remove_cmd()`, and hang `transport_clear_lun_ref()` during LUN unlink.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/target/loopback/tcm_loop.c",
+      "lineno": 291,
+      "content": "return SUCCESS;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/target/loopback/tcm_loop.c",
+      "lineno": 290,
+      "content": "tl_tpg->tl_transport_status = TCM_TRANSPORT_ONLINE;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/target/loopback/tcm_loop.c",
+      "lineno": 269,
+      "content": "return (ret == TMR_FUNCTION_COMPLETE) ? SUCCESS : FAILED;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`tcm_loop_target_reset()` in the `scsi:target:tcm_loop` loopback LLD returned `SUCCESS` without draining or completing in-flight `scsi_cmnd`/`se_cmd` activity, violating the SCSI EH reset contract and allowing stale async completion work to race with reused command structures.",
+      "evidence_points": "The patch changes `tcm_loop_target_reset()` from immediately setting `tl_transport_status` and returning `SUCCESS` to first issuing `TMR_LUN_RESET` via `tcm_loop_issue_tmr()` and then iterating `blk_mq_tagset_busy_iter()` to `flush_work()` on each pending `se_cmd`; the CVE text says the previous behavior left target-core completion work queued, causing `queuecommand` to zero `se_lun`/`lun_ref_active`, skip `percpu_ref_put()` in `transport_lun_remove_cmd()`, and hang `transport_clear_lun_ref()` during LUN unlink."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/target/loopback/tcm_loop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/target/loopback/tcm_loop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/target/loopback/tcm_loop.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add the blk-mq header so the file can use block multiqueue APIs and types.",
+        "what": "A new include directive for <linux/blk-mq.h> was added to the header include list.",
+        "how": "This makes blk-mq declarations and types available to the translation unit, allowing the code to reference block multiqueue interfaces without relying on implicit or indirect includes."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add flushing of pending command work during target reset to ensure reset handling waits for outstanding SCSI work to complete.",
+        "what": "A new static helper function `tcm_loop_flush_work_iter()` was added; it converts each block request to a SCSI command, retrieves the embedded `se_cmd`, and calls `flush_work(&se_cmd->work)` before returning true. In `tcm_loop_target_reset()`, a local `struct Scsi_Host *sh` and an `int ret` were added, and the existing `shost_priv(sc->device->host)` access was changed to `shost_priv(sh)`.",
+        "how": "The new iterator function provides a way to flush pending work items associated with SCSI commands, which helps ensure in-flight target command work is completed or drained during reset handling. The local host pointer change does not alter behavior by itself, but it makes the target-reset path use a named host reference and prepares the function for additional reset-related logic via the new `ret` variable."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix target reset handling by draining outstanding I/O and flushing deferred completion work before bringing the target back online.",
+        "what": "The function no longer unconditionally marks the target port group online and returns success. It now checks `tl_tpg` for NULL and returns `FAILED` if absent, issues a `TMR_LUN_RESET` via `tcm_loop_issue_tmr()` using `sc->device->lun`, returns `FAILED` unless the TMR completes successfully, then iterates over busy blk-mq tags with `blk_mq_tagset_busy_iter(&sh->tag_set, tcm_loop_flush_work_iter, NULL)` to flush pending work before setting `tl_tpg->tl_transport_status = TCM_TRANSPORT_ONLINE` and returning `SUCCESS`.",
+        "how": "At runtime, target reset now actively drains outstanding commands and waits for deferred completion work to be flushed before declaring the target online again. This prevents race conditions where recovery commands reuse `scsi_cmnd`/`se_cmd` structures while prior asynchronous completion work is still accessing them, which could otherwise leak references and block LUN/configfs teardown. The reset path also now fails cleanly if the target port group is missing or the LUN reset cannot be completed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add the blk-mq header so the file can use block multiqueue APIs and types."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix target reset handling by draining outstanding I/O and flushing deferred completion work before bringing the target back online."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure target reset handling waits for outstanding SCSI work to complete by draining pending I/O and flushing deferred completion work before the target is brought back online.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only adds a blk-mq header for API/type availability and does not address tcm_loop_target_reset() or the reset/command-draining race described in the vulnerability root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly match the root cause: they make target reset wait for outstanding SCSI command/completion activity by draining I/O and flushing deferred work, which addresses the unsafe SUCCESS return before in-flight work was completed."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/target/loopback/tcm_loop.c",
+            "lineno": 269,
+            "content": "return (ret == TMR_FUNCTION_COMPLETE) ? SUCCESS : FAILED;",
+            "rationale": "This reset helper returns SUCCESS immediately when the TMR completes, but the root cause is that target reset completion was allowed without draining or completing in-flight SCSI command activity, enabling stale asynchronous completions to race with reused command structures."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/target/loopback/tcm_loop.c",
+            "lineno": 291,
+            "content": "return SUCCESS;",
+            "rationale": "This is the direct early-success path in tcm_loop_target_reset() that marks the reset as complete before ensuring outstanding I/O and deferred completion work have finished, violating the reset contract described in the root cause."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/target/loopback/tcm_loop.c",
+            "lineno": 290,
+            "content": "tl_tpg->tl_transport_status = TCM_TRANSPORT_ONLINE;",
+            "rationale": "Re-marking the target portal group online immediately after locating it, without first draining pending commands, allows the target to resume while stale async work may still be completing against reused structures."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/target/loopback/tcm_loop.c",
+            "stmt_text": "return SUCCESS;",
+            "location": "hunk",
+            "explanation": "This early-success return in tcm_loop_target_reset() completes the reset path without draining or completing in-flight SCSI command activity, matching the root cause where stale asynchronous completions can race with reused command structures."
+          },
+          {
+            "vuln_file": "drivers/target/loopback/tcm_loop.c",
+            "stmt_text": "tl_tpg->tl_transport_status = TCM_TRANSPORT_ONLINE;",
+            "location": "hunk",
+            "explanation": "This line re-enables the target portal group immediately during reset handling, before outstanding I/O and deferred completion work are drained, allowing the target to come back online while stale completions may still be pending."
+          },
+          {
+            "vuln_file": "drivers/target/loopback/tcm_loop.c",
+            "stmt_text": "return (ret == TMR_FUNCTION_COMPLETE) ? SUCCESS : FAILED;",
+            "location": "hunk",
+            "explanation": "This return statement allows target reset to report SUCCESS as soon as the TMR completes, without ensuring in-flight scsi_cmnd/se_cmd activity has been drained or completed, which is the underlying contract violation described in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "61d099ac4a7a",
+          "anchor_file": "drivers/target/loopback/tcm_loop.c",
+          "anchor_lineno": 291
+        },
+        "commit": "8f4a1fb0d029feef385986f320c7b4c13d9fce40",
+        "commit_short": "8f4a1fb0d029",
+        "commit_msg": "tcm_loop: Implement target reset\n\nImplement target reset by resetting the transport status.\n\n(nab: Remove unused ret in ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/target/loopback/tcm_loop.c",
+        "display_lineno": 415,
+        "code_snippet": "commit 8f4a1fb0d029feef385986f320c7b4c13d9fce40\nAuthor: Hannes Reinecke <hare@suse.de>\nDate:   Wed Oct 16 09:12:56 2013 +0200\n\n    tcm_loop: Implement target reset\n    \n    Implement target reset by resetting the transport status.\n    \n    (nab: Remove unused ret in tcm_loop_target_reset)\n    \n    Signed-off-by: Hannes Reinecke <hare@suse.de>\n    Signed-off-by: Nicholas Bellinger <nab@linux-iscsi.org>\n\ndiff --git a/drivers/target/loopback/tcm_loop.c b/drivers/target/loopback/tcm_loop.c\nindex 048",
+        "exists": true,
+        "reason": "The snippet clearly shows the new `tcm_loop_target_reset()` implementation and its behavior. It locates the HBA and TPG, then on success only does `tl_tpg->tl_transport_status = TCM_TRANSPORT_ONLINE;` and returns `SUCCESS`. There is no draining, aborting, or completion of in-flight `scsi_cmnd`/`se_cmd` activity, which matches the root cause: the reset contract is violated by simply marking transport online/resetting status. The fix is not present here because the function does not wait for or flush outstanding command activity; it only changes transport status."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "969871cdc2d0",
+          "anchor_file": "drivers/target/loopback/tcm_loop.c",
+          "anchor_lineno": 415
+        },
+        "commit": "3703b2c5d041a68095cdd22380c23ce27d449ad7",
+        "commit_short": "3703b2c5d041",
+        "commit_msg": "[SCSI] tcm_loop: Add multi-fabric Linux/SCSI LLD fabric module\n\nThis patch adds the TCM_Loop Linux/SCSI LLD fabric modul",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/target/loopback/tcm_loop.c",
+        "display_lineno": 428,
+        "code_snippet": "commit 3703b2c5d041a68095cdd22380c23ce27d449ad7\nAuthor: Nicholas Bellinger <nab@linux-iscsi.org>\nDate:   Fri Mar 18 15:39:17 2011 -0700\n\n    [SCSI] tcm_loop: Add multi-fabric Linux/SCSI LLD fabric module\n    \n    This patch adds the TCM_Loop Linux/SCSI LLD fabric module for\n    accessing TCM device backstores as locally accessable SCSI LUNs in\n    virtual SAS, FC, and iSCSI Target ports using the generic fabric\n    TransportID and Target Port WWN naming handlers from TCM's\n    target_core_fabric",
+        "exists": true,
+        "reason": "The snippet contains the SCSI EH reset handler `tcm_loop_device_reset()`, which is the relevant reset path. It allocates a TMR, submits it, waits for completion, and then returns `SUCCESS` when `se_cmd->se_tmr_req->response == TMR_FUNCTION_COMPLETE`: `ret = (se_cmd->se_tmr_req->response == TMR_FUNCTION_COMPLETE) ? SUCCESS : FAILED;`. However, in this version there is no visible logic that drains, aborts, or completes in-flight `scsi_cmnd`/`se_cmd` activity before reporting reset success. The code only performs the LUN reset TMR and then frees the command (`transport_generic_free_cmd(se_cmd, 1, 1, 0);`), which means the vulnerable construct described in the root cause is present and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "3703b2c5d041a68095cdd22380c23ce27d449ad7",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "61d099ac4a7a",
+          "anchor_file": "drivers/target/loopback/tcm_loop.c",
+          "anchor_lineno": 290
+        },
+        "commit": "8f4a1fb0d029feef385986f320c7b4c13d9fce40",
+        "commit_short": "8f4a1fb0d029",
+        "commit_msg": "tcm_loop: Implement target reset\n\nImplement target reset by resetting the transport status.\n\n(nab: Remove unused ret in ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/target/loopback/tcm_loop.c",
+        "display_lineno": 414,
+        "code_snippet": "commit 8f4a1fb0d029feef385986f320c7b4c13d9fce40\nAuthor: Hannes Reinecke <hare@suse.de>\nDate:   Wed Oct 16 09:12:56 2013 +0200\n\n    tcm_loop: Implement target reset\n    \n    Implement target reset by resetting the transport status.\n    \n    (nab: Remove unused ret in tcm_loop_target_reset)\n    \n    Signed-off-by: Hannes Reinecke <hare@suse.de>\n    Signed-off-by: Nicholas Bellinger <nab@linux-iscsi.org>\n\ndiff --git a/drivers/target/loopback/tcm_loop.c b/drivers/target/loopback/tcm_loop.c\nindex 048",
+        "exists": true,
+        "reason": "The new function `tcm_loop_target_reset()` is present and it only does `tl_tpg->tl_transport_status = TCM_TRANSPORT_ONLINE; return SUCCESS;` after locating the HBA/TPG. This matches the vulnerable pattern: target reset is implemented as a trivial status reset and does not drain, complete, or otherwise quiesce in-flight `scsi_cmnd`/`se_cmd` activity. There is no code here that waits for outstanding commands, flushes async completion work, or enforces the SCSI EH reset contract, so the vulnerable construct is present and the fix is not present in this snippet."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "969871cdc2d0",
+          "anchor_file": "drivers/target/loopback/tcm_loop.c",
+          "anchor_lineno": 414
+        },
+        "commit": "3703b2c5d041a68095cdd22380c23ce27d449ad7",
+        "commit_short": "3703b2c5d041",
+        "commit_msg": "[SCSI] tcm_loop: Add multi-fabric Linux/SCSI LLD fabric module\n\nThis patch adds the TCM_Loop Linux/SCSI LLD fabric modul",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/target/loopback/tcm_loop.c",
+        "display_lineno": 427,
+        "code_snippet": "commit 3703b2c5d041a68095cdd22380c23ce27d449ad7\nAuthor: Nicholas Bellinger <nab@linux-iscsi.org>\nDate:   Fri Mar 18 15:39:17 2011 -0700\n\n    [SCSI] tcm_loop: Add multi-fabric Linux/SCSI LLD fabric module\n    \n    This patch adds the TCM_Loop Linux/SCSI LLD fabric module for\n    accessing TCM device backstores as locally accessable SCSI LUNs in\n    virtual SAS, FC, and iSCSI Target ports using the generic fabric\n    TransportID and Target Port WWN naming handlers from TCM's\n    target_core_fabric",
+        "exists": false,
+        "reason": "The shown commit is the initial introduction of `tcm_loop` and contains `tcm_loop_device_reset()` rather than a later `tcm_loop_target_reset()` implementation. The reset handler here clearly waits for completion of the LUN reset TMR: `transport_generic_handle_tmr(se_cmd); wait_event(tl_tmr->tl_tmr_wait, atomic_read(&tl_tmr->tmr_complete));` and only returns `SUCCESS` if `se_cmd->se_tmr_req->response == TMR_FUNCTION_COMPLETE`. This is not the vulnerable construct described in the root cause, which is a target reset returning `SUCCESS` without draining/completing in-flight I/O. The specific buggy logic is absent from this snippet, so `has_bug` is false and there is no fix to detect here."
+      }
+    },
+    {
+      "bic_found": "8f4a1fb0d029feef385986f320c7b4c13d9fce40",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "61d099ac4a7a",
+          "anchor_file": "drivers/target/loopback/tcm_loop.c",
+          "anchor_lineno": 269
+        },
+        "commit": "a314d7003ccd4f4886d1280ff4f6c00217fc9ae3",
+        "commit_short": "a314d7003ccd",
+        "commit_msg": "tcm_loop: separate out tcm_loop_issue_tmr\n\nNo functional change.\n\nSigned-off-by: Hannes Reinecke <hare@suse.de>\nSigned-o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/target/loopback/tcm_loop.c",
+        "display_lineno": 343,
+        "code_snippet": "commit a314d7003ccd4f4886d1280ff4f6c00217fc9ae3\nAuthor: Hannes Reinecke <hare@suse.de>\nDate:   Wed Oct 16 09:12:54 2013 +0200\n\n    tcm_loop: separate out tcm_loop_issue_tmr\n    \n    No functional change.\n    \n    Signed-off-by: Hannes Reinecke <hare@suse.de>\n    Signed-off-by: Nicholas Bellinger <nab@linux-iscsi.org>\n\ndiff --git a/drivers/target/loopback/tcm_loop.c b/drivers/target/loopback/tcm_loop.c\nindex a00ad27940b7..783675f7cdab 100644\n--- a/drivers/target/loopback/tcm_loop.c\n+++ b/drivers/",
+        "exists": false,
+        "reason": "The shown code does not contain the vulnerable construct in `tcm_loop_target_reset()` at all; it only shows `tcm_loop_device_reset()` being refactored into `tcm_loop_issue_tmr()` and then wrapped. The reset path here still issues a TMR via `transport_generic_handle_tmr(se_cmd); wait_event(...);` and returns based on `se_cmd->se_tmr_req->response`, e.g. `return (ret == TMR_FUNCTION_COMPLETE) ? SUCCESS : FAILED;`. There is no `tcm_loop_target_reset()` function, no target-reset-specific handling, and no evidence in this snippet of stale in-flight command draining or completion races. Since the vulnerable function/logic is absent, `has_bug` is false, and because the fix for that separate vulnerability is not present here either, `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "a314d7003ccd4f4886d1280ff4f6c00217fc9ae3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "3703b2c5d041a68095cdd22380c23ce27d449ad7": 1,
+        "8f4a1fb0d029feef385986f320c7b4c13d9fce40": 1,
+        "a314d7003ccd4f4886d1280ff4f6c00217fc9ae3": 1
+      },
+      "bic_candidates": [
+        "3703b2c5d041a68095cdd22380c23ce27d449ad7",
+        "8f4a1fb0d029feef385986f320c7b4c13d9fce40",
+        "a314d7003ccd4f4886d1280ff4f6c00217fc9ae3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

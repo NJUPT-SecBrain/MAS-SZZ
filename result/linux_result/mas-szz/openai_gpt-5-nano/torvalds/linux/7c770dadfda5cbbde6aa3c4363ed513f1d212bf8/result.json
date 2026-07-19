@@ -1,0 +1,189 @@
+{
+  "cveid": "CVE-2026-31508",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "7c770dadfda5cbbde6aa3c4363ed513f1d212bf8"
+  ],
+  "ground_truth_bic": "5498227676303e3ffa9a3a46214af96bc3e81314",
+  "predicted_bic": [
+    "ccb1352e76cff0524e7ccb2074826a092dd13016"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 13,
+  "llm_tokens": 23733,
+  "root_cause": {
+    "text": "A race in openvswitch vport netdev teardown let ovs_netdev_detach_dev() clear the shared IFF_OVS_DATAPATH flag before unregister/unlink/promiscuity teardown finished, allowing netdev_destroy() to skip RTNL-protected waiting and free the net_device via call_rcu() while it was still being used.",
+    "evidence": "The commit message states that after commit 549822767630, “netdev_destroy() can proceed immediately to the call_rcu() invocation if the IFF_OVS_DATAPATH flag is already cleared,” while “ovs_netdev_detach_dev() function clears the flag before completing the unregistration,” and the patch fixes this by moving `vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;` after `netdev_rx_handler_unregister()`, `netdev_upper_dev_unlink()`, and `dev_set_promiscuity()`, plus adding `smp_wmb()`/`smp_mb()` ordering.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/openvswitch/vport-netdev.c",
+      "lineno": 154,
+      "content": "vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in openvswitch vport netdev teardown let ovs_netdev_detach_dev() clear the shared IFF_OVS_DATAPATH flag before unregister/unlink/promiscuity teardown finished, allowing netdev_destroy() to skip RTNL-protected waiting and free the net_device via call_rcu() while it was still being used.",
+      "evidence_points": "The commit message states that after commit 549822767630, “netdev_destroy() can proceed immediately to the call_rcu() invocation if the IFF_OVS_DATAPATH flag is already cleared,” while “ovs_netdev_detach_dev() function clears the flag before completing the unregistration,” and the patch fixes this by moving `vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;` after `netdev_rx_handler_unregister()`, `netdev_upper_dev_unlink()`, and `dev_set_promiscuity()`, plus adding `smp_wmb()`/`smp_mb()` ordering."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/openvswitch/vport-netdev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/openvswitch/vport-netdev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Delay clearing IFF_OVS_DATAPATH until detach teardown is complete and enforce ordering with a write barrier to fix a destruction-time race.",
+        "what": "In ovs_netdev_detach_dev(), the statement clearing vport->dev->priv_flags with &= ~IFF_OVS_DATAPATH was moved from the beginning of the function to the end, and a comment plus a call to smp_wmb() were inserted immediately before clearing that flag.",
+        "how": "At runtime, the device now remains marked as an OVS datapath device until after the RX handler is unregistered, the upper device link is removed, and promiscuity is dropped, with a write memory barrier ensuring those teardown operations are visible before other code can observe the flag cleared; this prevents reordering or premature observation of detachment state during destruction."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a full memory barrier in `netdev_destroy()` to correctly synchronize teardown with device detach and avoid ordering races before RCU free.",
+        "what": "A comment documenting pairing with `smp_wmb()` in `ovs_netdev_detach_dev()` was added immediately before a newly inserted `smp_mb();` call in `netdev_destroy()`, just before `call_rcu(&vport->rcu, vport_netdev_free);`.",
+        "how": "This adds a full memory barrier during vport destruction so memory operations are globally ordered before the RCU callback is queued, helping synchronize with the write barrier in `ovs_netdev_detach_dev()` and preventing races caused by reordering during device detach and teardown."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add a full memory barrier in `netdev_destroy()` to correctly synchronize teardown with device detach and avoid ordering races before RCU free."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Strengthen teardown-time synchronization in netdev destruction/detach by delaying state changes and adding memory ordering barriers to prevent races before final free.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target the described teardown race: they delay clearing IFF_OVS_DATAPATH until detach is complete and add memory barriers in detach/destroy paths to synchronize state changes before RCU free, matching the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/openvswitch/vport-netdev.c",
+            "lineno": 154,
+            "content": "vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;",
+            "rationale": "This clears the shared IFF_OVS_DATAPATH flag at the start of detach, before unregister/unlink/promiscuity teardown completes. That premature state change is the core race trigger: other teardown paths can observe the flag cleared and wrongly skip RTNL-protected waiting, leading to freeing the net_device while still in use."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/openvswitch/vport-netdev.c",
+            "lineno": 177,
+            "content": "call_rcu(&vport->rcu, vport_netdev_free);",
+            "rationale": "This schedules deferred free of the vport/netdev-related object without the added synchronization barrier introduced by the fix. In the presence of the premature flag clear, this allows the object to be freed after an insufficiently synchronized teardown sequence."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/openvswitch/vport-netdev.c",
+            "stmt_text": "vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;",
+            "location": "hunk",
+            "explanation": "This statement prematurely clears the shared IFF_OVS_DATAPATH flag at the start of device detach. That lets concurrent teardown paths observe the device as no longer being an OVS datapath device before unregister, unlink, and promiscuity teardown have completed, causing netdev_destroy() to skip the RTNL-protected wait and enabling the use-after-free race described in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "4527025d440c",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 154
+        },
+        "commit": "be4ace6e6b1bc12e18b25fe764917e09a1f96d7b",
+        "commit_short": "be4ace6e6b1b",
+        "commit_msg": "openvswitch: Move dev pointer into vport itself\n\nThis is the first step in representing all OVS vports as regular\nstruct",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 157,
+        "code_snippet": "commit be4ace6e6b1bc12e18b25fe764917e09a1f96d7b\nAuthor: Thomas Graf <tgraf@suug.ch>\nDate:   Tue Jul 21 10:44:04 2015 +0200\n\n    openvswitch: Move dev pointer into vport itself\n    \n    This is the first step in representing all OVS vports as regular\n    struct net_devices. Move the net_device pointer into the vport\n    structure itself to get rid of struct vport_netdev.\n    \n    Signed-off-by: Thomas Graf <tgraf@suug.ch>\n    Signed-off-by: Pravin B Shelar <pshelar@nicira.com>\n    Signed-off-by: ",
+        "exists": true,
+        "reason": "The relevant teardown logic is fully shown in this diff, especially `ovs_netdev_detach_dev()` and `netdev_destroy()`, so it is sufficient to assess the race. The vulnerable construct is present in `ovs_netdev_detach_dev()` where it clears the shared flag first: `vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;` and only afterwards performs `netdev_rx_handler_unregister(vport->dev);`, `netdev_upper_dev_unlink(...)`, and `dev_set_promiscuity(vport->dev, -1);`. This matches the root cause: clearing `IFF_OVS_DATAPATH` before unregister/unlink/promiscuity teardown finishes. The dependent logic in `netdev_destroy()` is also shown: `if (vport->dev->priv_flags & IFF_OVS_DATAPATH) ovs_netdev_detach_dev(vport);` followed by `call_rcu(&vport->rcu, free_port_rcu);`. Because destroy decides whether to detach based on the flag, an early clear can cause another path to observe the device as already detached and skip the RTNL-protected teardown/waiting, enabling premature RCU free while teardown/users may still exist. There is no fix here to defer clearing the flag until after the rest of detach completes, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "34ae932a4036",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 157
+        },
+        "commit": "ccb1352e76cff0524e7ccb2074826a092dd13016",
+        "commit_short": "ccb1352e76cf",
+        "commit_msg": "net: Add Open vSwitch kernel components.\n\nOpen vSwitch is a multilayer Ethernet switch targeted at virtualized\nenvironme",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 118,
+        "code_snippet": "commit ccb1352e76cff0524e7ccb2074826a092dd13016\nAuthor: Jesse Gross <jesse@nicira.com>\nDate:   Tue Oct 25 19:26:31 2011 -0700\n\n    net: Add Open vSwitch kernel components.\n    \n    Open vSwitch is a multilayer Ethernet switch targeted at virtualized\n    environments.  In addition to supporting a variety of features\n    expected in a traditional hardware switch, it enables fine-grained\n    programmatic extension and flow-based control of the network.\n    This control is useful in a wide variety o",
+        "exists": true,
+        "reason": "The vulnerable teardown ordering is directly present in `netdev_destroy()`. The function first clears the shared flag with `netdev_vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;` and only afterward performs teardown steps `netdev_rx_handler_unregister(netdev_vport->dev);` and `dev_set_promiscuity(netdev_vport->dev, -1);`, followed by `synchronize_rcu();`. This matches the root cause: clearing `IFF_OVS_DATAPATH` before unregister/unlink/promiscuity teardown finishes can let other logic observe the device as no longer OVS-attached too early. The lookup helper `ovs_netdev_get_vport()` also depends on that flag: `if (likely(dev->priv_flags & IFF_OVS_DATAPATH)) return ...; else return NULL;`, so clearing it early changes behavior immediately. There is no additional protection here to defer clearing the flag until after teardown is complete, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "ccb1352e76cff0524e7ccb2074826a092dd13016",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "ccb1352e76cff0524e7ccb2074826a092dd13016": 1
+      },
+      "bic_candidates": [
+        "ccb1352e76cff0524e7ccb2074826a092dd13016"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

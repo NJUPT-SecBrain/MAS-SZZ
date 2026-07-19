@@ -1,0 +1,338 @@
+{
+  "cveid": "CVE-2026-31656",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4c71fd099513bfa8acab529b626e1f0097b76061"
+  ],
+  "ground_truth_bic": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+  "predicted_bic": [
+    "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+    "b5e8e954eb672e7128e50589c43817b0ffce6f75"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 28083,
+  "root_cause": {
+    "text": "The i915 GT heartbeat code in `intel_engine_heartbeat.c` released `engine->heartbeat.systole` with a non-atomic read-plus-clear (`engine->heartbeat.systole` / `fetch_and_zero()`), allowing the heartbeat worker and `intel_engine_park_heartbeat()` to race and both `i915_request_put()` the same request, causing a refcount underflow/use-after-free.",
+    "evidence": "The CVE says the worker “reads `engine->heartbeat.systole` and calls `i915_request_put()` on it… but clears the pointer in a separate, non-atomic step,” and `intel_engine_park_heartbeat()` can “read the stale non-NULL systole pointer and calls `i915_request_put()` on it again”; the patch fixes this by replacing both sites with `xchg(&engine->heartbeat.systole, NULL)`, making the pointer handoff atomic.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+      "lineno": 151,
+      "content": "rq = engine->heartbeat.systole;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+      "lineno": 153,
+      "content": "i915_request_put(rq);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+      "lineno": 154,
+      "content": "engine->heartbeat.systole = NULL;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The i915 GT heartbeat code in `intel_engine_heartbeat.c` released `engine->heartbeat.systole` with a non-atomic read-plus-clear (`engine->heartbeat.systole` / `fetch_and_zero()`), allowing the heartbeat worker and `intel_engine_park_heartbeat()` to race and both `i915_request_put()` the same request, causing a refcount underflow/use-after-free.",
+      "evidence_points": "The CVE says the worker “reads `engine->heartbeat.systole` and calls `i915_request_put()` on it… but clears the pointer in a separate, non-atomic step,” and `intel_engine_park_heartbeat()` can “read the stale non-NULL systole pointer and calls `i915_request_put()` on it again”; the patch fixes this by replacing both sites with `xchg(&engine->heartbeat.systole, NULL)`, making the pointer handoff atomic."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Make heartbeat systole handling atomic to avoid races and preserve the request until completion.",
+        "what": "The code that reads and clears `engine->heartbeat.systole` in `heartbeat()` was changed from a direct load followed by a conditional clear to an atomic `xchg(&engine->heartbeat.systole, NULL)`. The completion check and `i915_request_put(rq)` remain, but if the request is not completed, the pointer is written back to `engine->heartbeat.systole`.",
+        "how": "This makes access to `heartbeat.systole` atomic and avoids races where multiple contexts could observe or modify the pointer concurrently. It preserves the request reference until completion is confirmed, while restoring the pointer when the request is still active so the heartbeat state is not lost."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix heartbeat request cleanup by atomically nulling and releasing `engine->heartbeat.systole` only when present.",
+        "what": "The single-line conditional cleanup at the end of `heartbeat()` was expanded into a block: instead of directly calling `i915_request_put(fetch_and_zero(&engine->heartbeat.systole))`, the code now uses `rq = xchg(&engine->heartbeat.systole, NULL);` and conditionally calls `i915_request_put(rq)` only if `rq` is non-NULL.",
+        "how": "This changes the heartbeat teardown path to atomically clear `engine->heartbeat.systole` before releasing the request, making the pointer exchange explicit and avoiding a release call on a potentially stale value. Functionally, it preserves the cleanup behavior while improving correctness/safety of the request handoff at the end of the heartbeat cycle."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix heartbeat parking to safely clear and release the stored request reference using an atomic exchange before dropping it.",
+        "what": "In `intel_engine_park_heartbeat()`, the single-line conditional that cancelled delayed work and immediately released `engine->heartbeat.systole` via `fetch_and_zero()` was expanded into a block that first assigns `xchg(&engine->heartbeat.systole, NULL)` to a local `rq` pointer and then calls `i915_request_put(rq)` only if `rq` is non-NULL.",
+        "how": "At runtime, the heartbeat parking path still cancels the delayed work, but it now clears the `systole` pointer using an atomic exchange and avoids passing a potentially NULL or concurrently modified pointer directly into `i915_request_put()`. This makes the teardown of the heartbeat request reference safer and better synchronized with concurrent updates."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix heartbeat parking to safely clear and release the stored request reference using an atomic exchange before dropping it."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Make heartbeat request cleanup atomic by safely clearing and releasing the stored request reference only when present.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly match the root cause: they make heartbeat systole cleanup atomic so the worker and park path cannot both drop the same request reference, preventing the refcount underflow/use-after-free race."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 151,
+            "content": "rq = engine->heartbeat.systole;",
+            "rationale": "This is the non-atomic read of the shared heartbeat request pointer. Because it is later cleared separately, the heartbeat worker can race with parking/cleanup and both end up putting the same request."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 153,
+            "content": "i915_request_put(rq);",
+            "rationale": "This is the release of the request that becomes unsafe when combined with the separate, racy clear of engine->heartbeat.systole; concurrent cleanup can double-put the same request."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 154,
+            "content": "engine->heartbeat.systole = NULL;",
+            "rationale": "This separate clear after the put is the core race window: another path may observe the old pointer and also call i915_request_put(), causing refcount underflow/use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 236,
+            "content": "i915_request_put(fetch_and_zero(&engine->heartbeat.systole));",
+            "rationale": "This line shows the intended fix pattern replacing the vulnerable read-plus-clear; the pre-fix vulnerability came from not using this atomic fetch-and-zero behavior."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 236,
+            "content": "i915_request_put(fetch_and_zero(&engine->heartbeat.systole));",
+            "rationale": "This is the corrected atomic release used in parking; it highlights that the vulnerable pre-fix code had a non-atomic put-and-clear sequence that could race with the worker."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "stmt_text": "rq = engine->heartbeat.systole;",
+            "location": "hunk",
+            "explanation": "This is the non-atomic read of the shared heartbeat request pointer. It participates in the read-plus-clear race that allowed the worker and parking path to both act on the same request."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "stmt_text": "i915_request_put(rq);",
+            "location": "hunk",
+            "explanation": "This drops the request reference after the racy read of engine->heartbeat.systole, so a concurrent cleaner can also put the same request and trigger refcount underflow/use-after-free."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "stmt_text": "engine->heartbeat.systole = NULL;",
+            "location": "hunk",
+            "explanation": "This separate clear occurs after the put instead of atomically exchanging the pointer, creating the race window where another path can observe the stale pointer and double-put it."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75519f5df2a9",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 151
+        },
+        "commit": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+        "commit_short": "058179e72e09",
+        "commit_msg": "drm/i915/gt: Replace hangcheck by heartbeats\n\nReplace sampling the engine state every so often with a periodic\nheartbeat",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 69,
+        "code_snippet": "commit 058179e72e0956a2dfe4927db6cbe5fbfb2406aa\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Wed Oct 23 14:31:08 2019 +0100\n\n    drm/i915/gt: Replace hangcheck by heartbeats\n    \n    Replace sampling the engine state every so often with a periodic\n    heartbeat request to measure the health of an engine. This is coupled\n    with the forced-preemption to allow long running requests to survive so\n    long as they do not block other users.\n    \n    Signed-off-by: Chris Wilson <chris@chri",
+        "exists": true,
+        "reason": "Yes, this snippet is sufficient because it shows the exact heartbeat cleanup logic that manipulates the shared request pointer. The vulnerable pattern is present in two places: in `heartbeat()` it does `rq = engine->heartbeat.systole;` and later, on the no-next-heartbeat path, `i915_request_put(fetch_and_zero(&engine->heartbeat.systole));`, and in `intel_engine_park_heartbeat()` it also does `i915_request_put(fetch_and_zero(&engine->heartbeat.systole));`. The root cause describes a race between the heartbeat worker and `intel_engine_park_heartbeat()` both releasing `engine->heartbeat.systole`, and this code clearly uses a non-atomic read-plus-clear style ownership transfer on the same field. There is no visible synchronization around `fetch_and_zero(&engine->heartbeat.systole)` or the earlier `rq = engine->heartbeat.systole;` / `if (rq && i915_request_completed(rq)) { i915_request_put(rq); engine->heartbeat.systole = NULL; }`, so the buggy construct is present and the fix is not yet present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2e0986a58cc4",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 69
+        },
+        "commit": "b5e8e954eb672e7128e50589c43817b0ffce6f75",
+        "commit_short": "b5e8e954eb67",
+        "commit_msg": "drm/i915/gt: Introduce barrier pulses along engines\n\nTo flush idle barriers, and even inflight requests, we want to send",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 69,
+        "code_snippet": "commit b5e8e954eb672e7128e50589c43817b0ffce6f75\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Mon Oct 21 18:43:39 2019 +0100\n\n    drm/i915/gt: Introduce barrier pulses along engines\n    \n    To flush idle barriers, and even inflight requests, we want to send a\n    preemptive 'pulse' along an engine. We use a no-op request along the\n    pinned kernel_context at high priority so that it should run or else\n    kick off the stuck requests. We can use this to ensure idle barriers are\n    im",
+        "exists": false,
+        "reason": "The shown function only checks `llist_empty(&engine->barrier_tasks)`, creates a request with `i915_request_create(engine->kernel_context)`, and calls `idle_pulse(engine, rq); i915_request_add(rq);`. It does not show any `engine->heartbeat.systole` access, nor the non-atomic read-plus-clear / `fetch_and_zero()` race described in the root cause. Because the vulnerable construct is absent from this snippet, this function body is not sufficient to determine the heartbeat refcount bug or a fix for it."
+      }
+    },
+    {
+      "bic_found": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75519f5df2a9",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 153
+        },
+        "commit": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+        "commit_short": "058179e72e09",
+        "commit_msg": "drm/i915/gt: Replace hangcheck by heartbeats\n\nReplace sampling the engine state every so often with a periodic\nheartbeat",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 71,
+        "code_snippet": "commit 058179e72e0956a2dfe4927db6cbe5fbfb2406aa\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Wed Oct 23 14:31:08 2019 +0100\n\n    drm/i915/gt: Replace hangcheck by heartbeats\n    \n    Replace sampling the engine state every so often with a periodic\n    heartbeat request to measure the health of an engine. This is coupled\n    with the forced-preemption to allow long running requests to survive so\n    long as they do not block other users.\n    \n    Signed-off-by: Chris Wilson <chris@chri",
+        "exists": true,
+        "reason": "The snippet clearly shows the vulnerable pattern: the worker reads the shared request pointer with `rq = engine->heartbeat.systole;` and later releases it via a non-atomic read-plus-clear at shutdown/idle paths: `i915_request_put(fetch_and_zero(&engine->heartbeat.systole));` in `heartbeat()` and also in `intel_engine_park_heartbeat()`. This matches the root cause description: a non-atomic clear of `engine->heartbeat.systole` can race with the heartbeat worker, allowing both sides to `i915_request_put()` the same request. No synchronization is present around the fetch-and-zero/put sequence, so the fix is not yet present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2e0986a58cc4",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 71
+        },
+        "commit": "b5e8e954eb672e7128e50589c43817b0ffce6f75",
+        "commit_short": "b5e8e954eb67",
+        "commit_msg": "drm/i915/gt: Introduce barrier pulses along engines\n\nTo flush idle barriers, and even inflight requests, we want to send",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 71,
+        "code_snippet": "commit b5e8e954eb672e7128e50589c43817b0ffce6f75\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Mon Oct 21 18:43:39 2019 +0100\n\n    drm/i915/gt: Introduce barrier pulses along engines\n    \n    To flush idle barriers, and even inflight requests, we want to send a\n    preemptive 'pulse' along an engine. We use a no-op request along the\n    pinned kernel_context at high priority so that it should run or else\n    kick off the stuck requests. We can use this to ensure idle barriers are\n    im",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": false,\n  \"has_bug\": false,\n  \"is_fixed\": false,\n  \"reason\": \"The shown file is a new implementation of heartbeat-related functionality and does not contain the vulnerable `engine->he"
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "b5e8e954eb672e7128e50589c43817b0ffce6f75",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75519f5df2a9",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 154
+        },
+        "commit": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+        "commit_short": "058179e72e09",
+        "commit_msg": "drm/i915/gt: Replace hangcheck by heartbeats\n\nReplace sampling the engine state every so often with a periodic\nheartbeat",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 72,
+        "code_snippet": "commit 058179e72e0956a2dfe4927db6cbe5fbfb2406aa\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Wed Oct 23 14:31:08 2019 +0100\n\n    drm/i915/gt: Replace hangcheck by heartbeats\n    \n    Replace sampling the engine state every so often with a periodic\n    heartbeat request to measure the health of an engine. This is coupled\n    with the forced-preemption to allow long running requests to survive so\n    long as they do not block other users.\n    \n    Signed-off-by: Chris Wilson <chris@chri",
+        "exists": true,
+        "reason": "The vulnerable construct is present in this snippet: both the worker and park path release `engine->heartbeat.systole` using a non-atomic read-plus-clear pattern. In `heartbeat()`, the code does `rq = engine->heartbeat.systole;` and later, on shutdown, `i915_request_put(fetch_and_zero(&engine->heartbeat.systole));`. In `intel_engine_park_heartbeat()`, it also does `i915_request_put(fetch_and_zero(&engine->heartbeat.systole));`. This matches the root cause because the worker can observe a non-NULL `rq`, then `intel_engine_park_heartbeat()` can concurrently fetch-and-zero and put the same request, after which the worker may also `i915_request_put(rq);`, causing a double put/refcount underflow. There is no synchronization or atomic handoff around `systole` here, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2e0986a58cc4",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 72
+        },
+        "commit": "b5e8e954eb672e7128e50589c43817b0ffce6f75",
+        "commit_short": "b5e8e954eb67",
+        "commit_msg": "drm/i915/gt: Introduce barrier pulses along engines\n\nTo flush idle barriers, and even inflight requests, we want to send",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 72,
+        "code_snippet": "commit b5e8e954eb672e7128e50589c43817b0ffce6f75\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Mon Oct 21 18:43:39 2019 +0100\n\n    drm/i915/gt: Introduce barrier pulses along engines\n    \n    To flush idle barriers, and even inflight requests, we want to send a\n    preemptive 'pulse' along an engine. We use a no-op request along the\n    pinned kernel_context at high priority so that it should run or else\n    kick off the stuck requests. We can use this to ensure idle barriers are\n    im",
+        "exists": false,
+        "reason": "The shown function is only a small barrier-task helper: it checks `llist_empty(&engine->barrier_tasks)`, creates a request with `i915_request_create(engine->kernel_context)`, calls `idle_pulse(engine, rq)`, and submits it with `i915_request_add(rq)`. It does not show any heartbeat `systole` handling, any `fetch_and_zero()`/read-plus-clear logic, or any `i915_request_put()` reference release. Since the vulnerable construct described in the root cause is absent from this snippet, this body is not sufficient to determine the race/bug or its fix."
+      }
+    },
+    {
+      "bic_found": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "058179e72e0956a2dfe4927db6cbe5fbfb2406aa": 2,
+        "b5e8e954eb672e7128e50589c43817b0ffce6f75": 1
+      },
+      "bic_candidates": [
+        "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+        "b5e8e954eb672e7128e50589c43817b0ffce6f75"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

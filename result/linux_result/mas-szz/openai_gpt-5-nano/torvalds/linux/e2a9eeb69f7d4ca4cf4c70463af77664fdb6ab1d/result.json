@@ -1,0 +1,163 @@
+{
+  "cveid": "CVE-2026-23169",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e2a9eeb69f7d4ca4cf4c70463af77664fdb6ab1d"
+  ],
+  "ground_truth_bic": "141694df6573b49aa4143c92556544b4b0bbda72",
+  "predicted_bic": [
+    "8617e85e04bd08c6c6aa24c832f9bec10bf76648"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 9,
+  "llm_tokens": 23504,
+  "root_cause": {
+    "text": "The MPTCP path manager’s `mptcp_pm_nl_flush_addrs_doit()` removed `pernet->endp_list` with plain `list_splice_init()` even though the list is traversed by RCU readers such as `mptcp_pm_nl_get_local_id()` and `mptcp_pm_nl_is_backup()`, causing a race on the shared `endp_list`.",
+    "evidence": "The CVE/commit explicitly states “Root cause is `list_splice_init()` in `mptcp_pm_nl_flush_addrs_doit()` which is not RCU ready,” and the fix replaces the splice with `free_list = pernet->endp_list; INIT_LIST_HEAD_RCU(&pernet->endp_list); ... synchronize_rcu();` before relinking and freeing, showing the bug was unsafe non-RCU list manipulation of an RCU-read list.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mptcp/pm_kernel.c",
+      "lineno": 1300,
+      "content": "list_splice_init(&pernet->endp_list, &free_list);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The MPTCP path manager’s `mptcp_pm_nl_flush_addrs_doit()` removed `pernet->endp_list` with plain `list_splice_init()` even though the list is traversed by RCU readers such as `mptcp_pm_nl_get_local_id()` and `mptcp_pm_nl_is_backup()`, causing a race on the shared `endp_list`.",
+      "evidence_points": "The CVE/commit explicitly states “Root cause is `list_splice_init()` in `mptcp_pm_nl_flush_addrs_doit()` which is not RCU ready,” and the fix replaces the splice with `free_list = pernet->endp_list; INIT_LIST_HEAD_RCU(&pernet->endp_list); ... synchronize_rcu();` before relinking and freeing, showing the bug was unsafe non-RCU list manipulation of an RCU-read list."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/mptcp/pm_kernel.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix MPTCP address flushing to safely detach and free the endpoint list under RCU without corrupting list links or racing with readers.",
+        "what": "The function changes the temporary address list from a stack-declared `LIST_HEAD(free_list)` to a plain `struct list_head free_list`, replaces `list_splice_init(&pernet->endp_list, &free_list)` with a direct struct copy `free_list = pernet->endp_list` followed by `INIT_LIST_HEAD_RCU(&pernet->endp_list)`, adds an early return when `free_list.next == &pernet->endp_list`, inserts `synchronize_rcu()` before freeing, and then rewrites the copied list head's neighboring links so `free_list.prev->next` and `free_list.next->prev` point back to `&free_list` before flushing and freeing the list.",
+        "how": "At runtime, this atomically detaches the per-network endpoint list under the lock while preserving the old list for later processing, resets the shared list to an empty RCU-safe head, waits for ongoing RCU readers to finish before reclaiming removed entries, and fixes up the detached list head so traversal and cleanup operate on a valid standalone list. The early return avoids unnecessary synchronization and list manipulation when there are no endpoints to flush."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix MPTCP address flushing to safely detach and free the endpoint list under RCU without corrupting list links or racing with readers."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly matches the root cause: it changes MPTCP address flushing to detach and free the shared endpoint list safely under RCU, addressing the race caused by using plain list_splice_init() on endp_list while RCU readers traverse it."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/mptcp/pm_kernel.c",
+            "lineno": 1300,
+            "content": "list_splice_init(&pernet->endp_list, &free_list);",
+            "rationale": "This plain list splice reinitializes and detaches pernet->endp_list without using the RCU-safe list primitive, even though endp_list is concurrently traversed by RCU readers. That can corrupt reader-visible list links and create the race described in the root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mptcp/pm_kernel.c",
+            "stmt_text": "list_splice_init(&pernet->endp_list, &free_list);",
+            "location": "hunk",
+            "explanation": "This statement detaches and reinitializes pernet->endp_list using the non-RCU list primitive while the same list is concurrently traversed by RCU readers such as mptcp_pm_nl_get_local_id() and mptcp_pm_nl_is_backup(). That unsafe splice causes the race on the shared endp_list described in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8d7ba71e4621",
+          "anchor_file": "net/mptcp/pm_kernel.c",
+          "anchor_lineno": 1300
+        },
+        "commit": "35e71e43a56d40e68ea0ebab3ac85038624cb8b5",
+        "commit_short": "35e71e43a56d",
+        "commit_msg": "mptcp: pm: in-kernel: rename 'local_addr_list' to 'endp_list'\n\nA few variables linked to the in-kernel Path-Manager are ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm_kernel.c",
+        "display_lineno": 1202,
+        "code_snippet": "commit 35e71e43a56d40e68ea0ebab3ac85038624cb8b5\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Thu Sep 25 12:32:45 2025 +0200\n\n    mptcp: pm: in-kernel: rename 'local_addr_list' to 'endp_list'\n    \n    A few variables linked to the in-kernel Path-Manager are confusing, and\n    it would help current and future developers, to clarify them.\n    \n    One of them is 'local_addr_list', which in fact represents the list of\n    endpoints, and not only the 'subflow' endpoints.\n    \n    No fu",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows both the RCU readers and the flush-side list removal logic on the same shared list. Multiple readers traverse the list with RCU, e.g. `list_for_each_entry_rcu(entry, &pernet->endp_list, list)` in `select_local_address`, `select_signal_address`, `__lookup_addr_by_id`, `__lookup_addr`, and `fill_local_addresses_vec_fullmesh`. In the flush path, `mptcp_pm_nl_flush_addrs_doit()` does `list_splice_init(&pernet->endp_list, &free_list);` under `spin_lock_bh(&pernet->lock)`. This is the vulnerable construct described in the root cause: plain `list_splice_init()` is used to detach a list that is concurrently read by RCU traversals. The fix is not present here because the code still uses `list_splice_init(...)` rather than an RCU-safe replacement for a list visible to RCU readers."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e7757b6d3a62",
+          "anchor_file": "net/mptcp/pm_kernel.c",
+          "anchor_lineno": 1202
+        },
+        "commit": "8617e85e04bd08c6c6aa24c832f9bec10bf76648",
+        "commit_short": "8617e85e04bd",
+        "commit_msg": "mptcp: pm: split in-kernel PM specific code\n\nBefore this patch, the PM code was dispersed in different places:\n\n- pm.c h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm_kernel.c",
+        "display_lineno": 1101,
+        "code_snippet": "commit 8617e85e04bd08c6c6aa24c832f9bec10bf76648\nAuthor: Matthieu Baerts (NGI0) <matttbe@kernel.org>\nDate:   Fri Mar 7 12:21:58 2025 +0100\n\n    mptcp: pm: split in-kernel PM specific code\n    \n    Before this patch, the PM code was dispersed in different places:\n    \n    - pm.c had common code for all PMs\n    \n    - pm_netlink.c was supposed to be about the in-kernel PM, but also had\n      exported common Netlink helpers, NL events for PM userspace daemons,\n      etc. quite confusing.\n    \n    To",
+        "exists": true,
+        "reason": "The snippet directly contains the relevant flush function and the RCU reader side, so it is sufficient to assess the race. In `mptcp_pm_nl_flush_addrs_doit()`, the code does `spin_lock_bh(&pernet->lock);` then `list_splice_init(&pernet->local_addr_list, &free_list);` and unlocks before `synchronize_rcu();`. This is the vulnerable construct described in the root cause: a plain `list_splice_init()` is used to remove the shared endpoint list even though other functions traverse `pernet->local_addr_list` under RCU. The RCU readers are present in this file, e.g. `mptcp_pm_nl_get_local_id()` calls `rcu_read_lock(); entry = __lookup_addr(pernet, &skc->addr); ... rcu_read_unlock();`, and `mptcp_pm_nl_is_backup()` similarly does `rcu_read_lock(); entry = __lookup_addr(pernet, skc); ... rcu_read_unlock();`. The helper `__lookup_addr()` itself uses `list_for_each_entry_rcu(entry, &pernet->local_addr_list, list, ...)`, confirming RCU traversal of the same list. There is no special RCU-safe splice helper or equivalent fix in `mptcp_pm_nl_flush_addrs_doit()`; it still uses plain `list_splice_init()` rather than an RCU-safe list replacement/removal scheme. Therefore the vulnerable construct is present and the fix is not yet included."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "8617e85e04bd08c6c6aa24c832f9bec10bf76648",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "8617e85e04bd08c6c6aa24c832f9bec10bf76648": 1
+      },
+      "bic_candidates": [
+        "8617e85e04bd08c6c6aa24c832f9bec10bf76648"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

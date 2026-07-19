@@ -1,0 +1,262 @@
+{
+  "cveid": "CVE-2026-53079",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a6bd339dbb3514bce690fdcf252e788dfab4ee76"
+  ],
+  "ground_truth_bic": "a6efc273ab8245722eee2150fa12cf75781dc410",
+  "predicted_bic": [
+    "520ac30f45519b0a82dd92117c181d1d6144677b",
+    "48da34b7a74201f15315cb1fc40bb9a7bd2b4940"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 19054,
+  "root_cause": {
+    "text": "qdisc_dequeue_drop() queued dropped skbs onto the child Qdisc’s local to_free list without considering that qdisc_run_end() only frees the root Qdisc’s deferred drop list, so when the root lacked TCQ_F_DEQUEUE_DROPS the child-queued packets were never reclaimed.",
+    "evidence": "The CVE/commit states that deferred cleanup in qdisc_run_end() \"operates on the root qdisc\" and packets \"gets stranded on the child's local to_free list\"; the patch changes qdisc_dequeue_drop() to fetch qdisc_root_sleeping(q) and either append to root->to_free if the root has TCQ_F_DEQUEUE_DROPS or immediately call kfree_skb_reason() otherwise, instead of always using q->to_free.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "include/net/sch_generic.h",
+      "lineno": 1178,
+      "content": "q->to_free = skb;",
+      "confidence": 1.0
+    },
+    {
+      "file": "include/net/sch_generic.h",
+      "lineno": 1177,
+      "content": "skb->next = q->to_free;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "qdisc_dequeue_drop() queued dropped skbs onto the child Qdisc’s local to_free list without considering that qdisc_run_end() only frees the root Qdisc’s deferred drop list, so when the root lacked TCQ_F_DEQUEUE_DROPS the child-queued packets were never reclaimed.",
+      "evidence_points": "The CVE/commit states that deferred cleanup in qdisc_run_end() \"operates on the root qdisc\" and packets \"gets stranded on the child's local to_free list\"; the patch changes qdisc_dequeue_drop() to fetch qdisc_root_sleeping(q) and either append to root->to_free if the root has TCQ_F_DEQUEUE_DROPS or immediately call kfree_skb_reason() otherwise, instead of always using q->to_free."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/sch_generic.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix qdisc dequeue-drop handling to defer skb freeing only on a compatible root qdisc and otherwise free the skb immediately.",
+        "what": "The function qdisc_dequeue_drop() was changed to declare a root Qdisc pointer, wrap its logic in rcu_read_lock()/rcu_read_unlock(), obtain the root qdisc via qdisc_root_sleeping(q), and conditionally either queue the skb onto root->to_free with tcf_set_drop_reason() when the root has TCQ_F_DEQUEUE_DROPS set, or immediately free it with kfree_skb_reason() otherwise, instead of always appending the skb to q->to_free.",
+        "how": "At runtime, dropped packets are now deferred to the root qdisc's free list only when the root qdisc supports dequeue-drop handling; otherwise they are freed immediately with the recorded drop reason. This prevents enqueuing deferred frees onto a non-root or unsupported qdisc and makes the drop path consistent with the root qdisc's capabilities while safely accessing the root under RCU."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix qdisc dequeue-drop handling to defer skb freeing only on a compatible root qdisc and otherwise free the skb immediately."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it corrects qdisc_dequeue_drop() so deferred freeing happens only when the root qdisc can reclaim deferred drops, otherwise the skb is freed immediately, preventing child-queued packets from being leaked."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "include/net/sch_generic.h",
+            "lineno": 1178,
+            "content": "q->to_free = skb;",
+            "rationale": "This is the direct enqueue onto the current qdisc's local deferred-free list. The root cause is that dropped skbs were queued on a child qdisc's to_free list even though qdisc_run_end() only drains the root qdisc's deferred drop list, causing leaks when the root lacked compatible dequeue-drop handling."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "include/net/sch_generic.h",
+            "lineno": 1177,
+            "content": "skb->next = q->to_free;",
+            "rationale": "This links the skb into the child qdisc's deferred-free chain. Together with the following assignment, it implements the buggy behavior of deferring freeing on the wrong qdisc instance instead of ensuring the skb is reclaimed by a compatible root or immediately freed."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "include/net/sch_generic.h",
+            "stmt_text": "q->to_free = skb;",
+            "location": "hunk",
+            "explanation": "This assignment places the dropped skb onto the current qdisc's deferred-free list. The vulnerability arises because this could be a child qdisc, while qdisc_run_end() only drains the root qdisc's deferred drop list, so the skb could remain unreclaimed."
+          },
+          {
+            "vuln_file": "include/net/sch_generic.h",
+            "stmt_text": "skb->next = q->to_free;",
+            "location": "hunk",
+            "explanation": "This statement links the dropped skb into the current qdisc's local to_free chain, forming the buggy deferred-free list on a child qdisc. Combined with the subsequent assignment, it causes dropped packets to be queued on a list that qdisc_run_end() may never drain."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "656121b15503",
+          "anchor_file": "include/net/sch_generic.h",
+          "anchor_lineno": 1178
+        },
+        "commit": "191ff13e42a7b7824fec5b2ed84fd6481356754d",
+        "commit_short": "191ff13e42a7",
+        "commit_msg": "net_sched: add qdisc_dequeue_drop() helper\n\nSome qdisc like cake, codel, fq_codel might drop packets\nin their dequeue() ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/net/sch_generic.h",
+        "display_lineno": 1140,
+        "code_snippet": "commit 191ff13e42a7b7824fec5b2ed84fd6481356754d\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Fri Nov 21 08:32:55 2025 +0000\n\n    net_sched: add qdisc_dequeue_drop() helper\n    \n    Some qdisc like cake, codel, fq_codel might drop packets\n    in their dequeue() method.\n    \n    This is currently problematic because dequeue() runs with\n    the qdisc spinlock held. Freeing skbs can be extremely expensive.\n    \n    Add qdisc_dequeue_drop() method and a new TCQ_F_DEQUEUE_DROPS\n    so that these",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains both the new helper and the corresponding run-end free-list handling. The vulnerable construct is present in `qdisc_dequeue_drop()` and `qdisc_run_end()`. Specifically, `qdisc_dequeue_drop()` appends dropped skbs to the passed qdisc's local list: `skb->next = q->to_free; q->to_free = skb;`. This means a child qdisc calling the helper will queue drops onto the child `Qdisc` object. However, `qdisc_run_end()` only returns/fetches `qdisc->to_free` from the qdisc on which it is invoked: `if (qdisc->flags & TCQ_F_DEQUEUE_DROPS) { to_free = qdisc->to_free; if (to_free) qdisc->to_free = NULL; } ... return to_free;`. There is no logic here to propagate a child qdisc's `to_free` list to the root qdisc, nor any handling for the case described in the root cause where the root lacks `TCQ_F_DEQUEUE_DROPS`. Thus the code introduces the exact problematic design: drops are enqueued on the child's `to_free` list, while end-of-run reclamation only considers the qdisc currently ending its run. The fix is not present because there is no code redirecting child drops to the root deferred-free list or otherwise ensuring reclamation when the root does not have `TCQ_F_DEQUEUE_DROPS`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0170d7f47c8b",
+          "anchor_file": "include/net/sch_generic.h",
+          "anchor_lineno": 1140
+        },
+        "commit": "520ac30f45519b0a82dd92117c181d1d6144677b",
+        "commit_short": "520ac30f4551",
+        "commit_msg": "net_sched: drop packets after root qdisc lock is released\n\nQdisc performance suffers when packets are dropped at enqueue",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/net/sch_generic.h",
+        "display_lineno": 645,
+        "code_snippet": "commit 520ac30f45519b0a82dd92117c181d1d6144677b\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Tue Jun 21 23:16:49 2016 -0700\n\n    net_sched: drop packets after root qdisc lock is released\n    \n    Qdisc performance suffers when packets are dropped at enqueue()\n    time because drops (kfree_skb()) are done while qdisc lock is held,\n    delaying a dequeue() draining the queue.\n    \n    Nominal throughput can be reduced by 50 % when this happens,\n    at a time we would like the dequeue() to pr",
+        "exists": true,
+        "reason": "The function body is sufficient because it shows the exact drop/defer logic in question. The vulnerable construct is present at line 653: `__qdisc_drop(skb, to_free);`. Per the root cause, the bug is that dropped skbs were queued onto the child Qdisc's local `to_free` list, while only the root Qdisc's deferred drop list was later reclaimed by `qdisc_run_end()`. This helper takes a generic `struct sk_buff **to_free` argument and unconditionally defers the drop to that caller-provided list, with no handling to ensure the skb is queued onto the root qdisc's deferred-drop context or otherwise safely reclaimed. There is no visible fix here such as redirecting deferred frees to the root qdisc, checking dequeue-drop capability, or freeing in a way coordinated with `qdisc_run_end()`. Therefore this function contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "36195d869e4b",
+          "anchor_file": "include/net/sch_generic.h",
+          "anchor_lineno": 645
+        },
+        "commit": "57dbb2d83d100ea601c54fe129bfde0678db5dee",
+        "commit_short": "57dbb2d83d10",
+        "commit_msg": "sched: add head drop fifo queue\n\nThis adds an additional queuing strategy, called pfifo_head_drop,\nto remove the oldest ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/net/sch_generic.h",
+        "display_lineno": 445,
+        "code_snippet": "commit 57dbb2d83d100ea601c54fe129bfde0678db5dee\nAuthor: Hagen Paul Pfeifer <hagen@jauu.net>\nDate:   Sun Jan 24 12:30:59 2010 +0000\n\n    sched: add head drop fifo queue\n    \n    This adds an additional queuing strategy, called pfifo_head_drop,\n    to remove the oldest skb in the case of an overflow within the queue -\n    the head element - instead of the last skb (tail). To remove the oldest\n    skb in congested situations is useful for sensor network environments\n    where newer packets reflect ",
+        "exists": false,
+        "reason": "The provided function body is complete and sufficient for this specific determination because it consists only of a wrapper: `return __qdisc_queue_drop_head(sch, &sch->q);`. The root cause described involves `qdisc_dequeue_drop()` incorrectly queueing dropped skbs onto a child Qdisc's `to_free` list, relying on `qdisc_run_end()` which only frees the root Qdisc's deferred drop list. This wrapper does not show any logic related to `qdisc_dequeue_drop()`, deferred drop handling, `to_free` lists, or `qdisc_run_end()`. Since the vulnerable construct is completely absent from this function body, `has_bug` is false. Likewise, there is no visible fix logic here either, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "520ac30f45519b0a82dd92117c181d1d6144677b",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "656121b15503",
+          "anchor_file": "include/net/sch_generic.h",
+          "anchor_lineno": 1177
+        },
+        "commit": "191ff13e42a7b7824fec5b2ed84fd6481356754d",
+        "commit_short": "191ff13e42a7",
+        "commit_msg": "net_sched: add qdisc_dequeue_drop() helper\n\nSome qdisc like cake, codel, fq_codel might drop packets\nin their dequeue() ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/net/sch_generic.h",
+        "display_lineno": 1139,
+        "code_snippet": "commit 191ff13e42a7b7824fec5b2ed84fd6481356754d\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Fri Nov 21 08:32:55 2025 +0000\n\n    net_sched: add qdisc_dequeue_drop() helper\n    \n    Some qdisc like cake, codel, fq_codel might drop packets\n    in their dequeue() method.\n    \n    This is currently problematic because dequeue() runs with\n    the qdisc spinlock held. Freeing skbs can be extremely expensive.\n    \n    Add qdisc_dequeue_drop() method and a new TCQ_F_DEQUEUE_DROPS\n    so that these",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows both the new helper and the matching run-end cleanup logic. The vulnerable construct is present in `qdisc_dequeue_drop()`: it unconditionally queues dropped skbs onto the specific qdisc passed in, via `skb->next = q->to_free; q->to_free = skb;`. The root-cause condition is that deferred frees are stored on a child/local qdisc list, while cleanup in `qdisc_run_end()` only operates on the qdisc instance passed to it: `if (qdisc->flags & TCQ_F_DEQUEUE_DROPS) { to_free = qdisc->to_free; if (to_free) qdisc->to_free = NULL; }`. There is no logic here to collect or drain `to_free` from child qdiscs when the root qdisc lacks `TCQ_F_DEQUEUE_DROPS`; cleanup is limited to `qdisc->to_free` of the current/root qdisc. That matches the described bug: child-queued packets can be left unreclaimed. Therefore the vulnerable construct is introduced here, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0170d7f47c8b",
+          "anchor_file": "include/net/sch_generic.h",
+          "anchor_lineno": 1139
+        },
+        "commit": "48da34b7a74201f15315cb1fc40bb9a7bd2b4940",
+        "commit_short": "48da34b7a742",
+        "commit_msg": "sched: add and use qdisc_skb_head helpers\n\nThis change replaces sk_buff_head struct in Qdiscs with new qdisc_skb_head.\n\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/net/sch_generic.h",
+        "display_lineno": 679,
+        "code_snippet": "commit 48da34b7a74201f15315cb1fc40bb9a7bd2b4940\nAuthor: Florian Westphal <fw@strlen.de>\nDate:   Sun Sep 18 00:57:34 2016 +0200\n\n    sched: add and use qdisc_skb_head helpers\n    \n    This change replaces sk_buff_head struct in Qdiscs with new qdisc_skb_head.\n    \n    Its similar to the skb_buff_head api, but does not use skb->prev pointers.\n    \n    Qdiscs will commonly enqueue at the tail of a list and dequeue at head.\n    While skb_buff_head works fine for this, enqueue/dequeue needs to also\n ",
+        "exists": true,
+        "reason": "The function body is sufficient because it shows the exact drop-handling logic in question. The vulnerable construct is present at line 688: `__qdisc_drop(skb, to_free);`. Per the root cause, the bug is that dropped skbs were queued onto the child Qdisc's local `to_free` list, while `qdisc_run_end()` only frees the root Qdisc's deferred drop list. This helper accepts an arbitrary `struct sk_buff **to_free` parameter (line 680) and directly passes it to `__qdisc_drop()` without any logic to redirect deferred frees to the root qdisc or otherwise ensure reclamation. There is no visible fix here such as using the root qdisc's drop list, checking dequeue-drop flags, or avoiding child-local deferred free lists. Therefore this function contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ed760cb8aae7",
+          "anchor_file": "include/net/sch_generic.h",
+          "anchor_lineno": 679
+        },
+        "commit": "a27758ffaf96f89002129eedb2cc172d254099f8",
+        "commit_short": "a27758ffaf96",
+        "commit_msg": "net_sched: keep backlog updated with qlen\n\nFor gso_skb we only update qlen, backlog should be updated too.\n\nNote, it is ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/net/sch_generic.h",
+        "display_lineno": 694,
+        "code_snippet": "commit a27758ffaf96f89002129eedb2cc172d254099f8\nAuthor: WANG Cong <xiyou.wangcong@gmail.com>\nDate:   Fri Jun 3 15:05:57 2016 -0700\n\n    net_sched: keep backlog updated with qlen\n    \n    For gso_skb we only update qlen, backlog should be updated too.\n    \n    Note, it is correct to just update these stats at one layer,\n    because the gso_skb is cached there.\n    \n    Reported-by: Stas Nichiporovich <stasn77@gmail.com>\n    Fixes: 2ccccf5fb43f (\"net_sched: update hierarchical backlog too\")\n    Cc",
+        "exists": false,
+        "reason": "The provided function only implements a peek-like path that caches a dequeued skb in `sch->gso_skb` and adjusts queue accounting: `sch->gso_skb = sch->dequeue(sch);` followed by `qdisc_qstats_backlog_inc(sch, sch->gso_skb);` and `sch->q.qlen++;`. The stated root cause is about `qdisc_dequeue_drop()` placing dropped skbs onto a child qdisc's local `to_free` list while `qdisc_run_end()` only frees the root qdisc's deferred drop list. This snippet does not show `qdisc_dequeue_drop()`, any `to_free` handling, any `TCQ_F_DEQUEUE_DROPS` checks, or `qdisc_run_end()` interaction. Therefore the vulnerable construct described in the root cause is absent from this function body, so `has_bug` is false. The fix for that root cause is also not present here, since there is no deferred-drop handling logic at all; this code is about backlog/qlen accounting only."
+      }
+    },
+    {
+      "bic_found": "48da34b7a74201f15315cb1fc40bb9a7bd2b4940",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "520ac30f45519b0a82dd92117c181d1d6144677b": 1,
+        "48da34b7a74201f15315cb1fc40bb9a7bd2b4940": 1
+      },
+      "bic_candidates": [
+        "520ac30f45519b0a82dd92117c181d1d6144677b",
+        "48da34b7a74201f15315cb1fc40bb9a7bd2b4940"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

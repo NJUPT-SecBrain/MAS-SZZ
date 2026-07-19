@@ -1,0 +1,305 @@
+{
+  "cveid": "CVE-2026-53160",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "07ebe87915d8accdaba20c4f88c5ae430fe62fbb"
+  ],
+  "ground_truth_bic": "10df039834f84a297c72ec962c0f9b7c8c5ca31a",
+  "predicted_bic": [
+    "10df039834f84a297c72ec962c0f9b7c8c5ca31a",
+    "9446fa1683a7e3937d9970248ced427c1983a1c5"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 23344,
+  "root_cause": {
+    "text": "A race in the fastrpc mapping lookup/reference path let `fastrpc_map_create()` use an unprotected `struct fastrpc_map *` returned by `fastrpc_map_lookup()` after `fl->lock` was released, so a concurrent unmap could free the object before `kref_get_unless_zero()` took a reference.",
+    "evidence": "The CVE/commit explicitly states that \"`fastrpc_map_lookup` returns a raw pointer after releasing `fl->lock`\" and \"`fastrpc_map_create` then calls `fastrpc_map_get` on this unprotected pointer,\" and the patch restores a `take_ref` parameter so `fastrpc_map_get(map)` is performed inside `fastrpc_map_lookup()` under the lock before exposing the pointer.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/misc/fastrpc.c",
+      "lineno": 927,
+      "content": "if (!fastrpc_map_get(*ppmap))",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/misc/fastrpc.c",
+      "lineno": 406,
+      "content": "*ppmap = map;",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the fastrpc mapping lookup/reference path let `fastrpc_map_create()` use an unprotected `struct fastrpc_map *` returned by `fastrpc_map_lookup()` after `fl->lock` was released, so a concurrent unmap could free the object before `kref_get_unless_zero()` took a reference.",
+      "evidence_points": "The CVE/commit explicitly states that \"`fastrpc_map_lookup` returns a raw pointer after releasing `fl->lock`\" and \"`fastrpc_map_create` then calls `fastrpc_map_get` on this unprotected pointer,\" and the patch restores a `take_ref` parameter so `fastrpc_map_get(map)` is performed inside `fastrpc_map_lookup()` under the lock before exposing the pointer."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/misc/fastrpc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/misc/fastrpc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/misc/fastrpc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/misc/fastrpc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add a take_ref flag to fastrpc_map_lookup so map lookups can optionally control reference acquisition.",
+        "what": "The function signature of fastrpc_map_lookup was changed by adding a new boolean parameter named take_ref after the existing struct fastrpc_map **ppmap argument.",
+        "how": "This change allows callers or the function implementation to distinguish whether a reference to the returned fastrpc_map should be taken during lookup, enabling conditional reference handling at runtime instead of always using a fixed behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Make fastrpc_map_lookup acquire and validate a reference on matched maps when requested before returning them.",
+        "what": "In fastrpc_map_lookup(), a new conditional block was added before assigning *ppmap = map: when take_ref is true, it calls fastrpc_map_get(map), stores the result in ret, and breaks out of the loop if that call fails.",
+        "how": "At runtime, lookup now optionally acquires a reference on the matched map before returning it, and aborts returning that map if the reference acquisition fails. This prevents callers requesting take_ref from receiving a map without a successfully incremented reference count."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Refactor fastrpc_map_create() to delegate existing-map lookup and reuse handling to fastrpc_map_lookup() and directly attach only when no reusable mapping is found.",
+        "what": "The function fastrpc_map_create() was simplified by removing the local sess and err variables, deleting the block that called fastrpc_map_lookup(fl, fd, ppmap), then conditionally called fastrpc_map_get(*ppmap) and logged a debug message on failure, and replacing it with a single check `if (!fastrpc_map_lookup(fl, fd, ppmap, true)) return 0;` followed by directly returning `fastrpc_map_attach(fl, fd, len, attr, ppmap);`. The signature of the lookup call at this site was also changed to pass an अतिरिक्त boolean argument `true`.",
+        "how": "At runtime, fastrpc_map_create() now returns success immediately when fastrpc_map_lookup() finds an existing mapping under the new lookup mode indicated by the `true` argument, instead of separately trying to increment the map reference with fastrpc_map_get() and logging on failure. If lookup does not find a reusable mapping, it proceeds to create/attach one as before. This shifts the handling of existing-map reuse and any associated reference/liveness logic into fastrpc_map_lookup(), eliminating the previous explicit get-and-log path in this function."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Pass false to fastrpc_map_lookup() in fastrpc_put_args() to use the correct lookup mode and avoid incorrect map handling.",
+        "what": "The call to fastrpc_map_lookup() inside the fastrpc_put_args() loop was changed from taking three arguments to taking four arguments by adding false as the new final parameter: fastrpc_map_lookup(fl, (int)fdlist[i], &mmap, false).",
+        "how": "At runtime, fastrpc_put_args() now performs the map lookup with an explicit false flag controlling the lookup behavior defined by fastrpc_map_lookup(). This preserves the existing conditional flow but selects the non-enabled mode for that new option, aligning this call site with the updated function interface and preventing incorrect lookup semantics from using an unintended default behavior."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a take_ref flag to fastrpc_map_lookup so map lookups can optionally control reference acquisition."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Pass false to fastrpc_map_lookup() in fastrpc_put_args() to use the correct lookup mode and avoid incorrect map handling."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor fastrpc_map_create() to delegate existing-map lookup and reuse handling to fastrpc_map_lookup() and directly attach only when no reusable mapping is found."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Correct fastrpc map lookup and reference-handling behavior so callers use the appropriate lookup mode and returned maps are validated consistently.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly modifies fastrpc_map_lookup() reference-acquisition behavior, which is central to the race where a looked-up map was used after lock release before safely taking a reference."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly target the map lookup/reference race: they make fastrpc_map_lookup take/validate a reference before returning a map and adjust callers to use the correct lookup mode, addressing the unsafe use of an unprotected map after releasing fl->lock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly modifies the existing-map lookup/reuse path in fastrpc_map_create() by delegating that logic to fastrpc_map_lookup(), which is the exact area involved in the race where an unprotected map pointer was returned and later referenced after releasing fl->lock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/misc/fastrpc.c",
+            "lineno": 927,
+            "content": "if (!fastrpc_map_get(*ppmap))",
+            "rationale": "This is the direct vulnerable use: it attempts to acquire a reference on a map pointer returned earlier by fastrpc_map_lookup() after lookup has completed, allowing a concurrent unmap/free race before the ref is taken."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/misc/fastrpc.c",
+            "lineno": 406,
+            "content": "*ppmap = map;",
+            "rationale": "This returns the matched map object to the caller without first taking/validating a reference, which is the root cause enabling the caller to later operate on a potentially freed object."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/misc/fastrpc.c",
+            "lineno": 392,
+            "content": "if (!fastrpc_map_lookup(fl, fd, ppmap)) {",
+            "rationale": "This path relies on fastrpc_map_lookup() returning a reusable map pointer without protected lifetime ownership, leading to the subsequent racy reference acquisition."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/misc/fastrpc.c",
+            "stmt_text": "if (!fastrpc_map_get(*ppmap))",
+            "location": "hunk 2",
+            "explanation": "This is the racy reference acquisition identified in the root cause. fastrpc_map_create() uses the map pointer returned by fastrpc_map_lookup() only after the lookup path has released fl->lock, so a concurrent unmap can free the object before this kref_get_unless_zero()-based get occurs."
+          },
+          {
+            "vuln_file": "drivers/misc/fastrpc.c",
+            "stmt_text": "*ppmap = map;",
+            "location": "hunk 1",
+            "explanation": "This returns the located mapping object to the caller without first taking and validating a reference while still protected by fl->lock. That lack of lifetime protection is the underlying cause that allows the caller to later race with unmap and observe a freed object."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5401fb4fe10f",
+          "anchor_file": "drivers/misc/fastrpc.c",
+          "anchor_lineno": 927
+        },
+        "commit": "10df039834f84a297c72ec962c0f9b7c8c5ca31a",
+        "commit_short": "10df039834f8",
+        "commit_msg": "misc: fastrpc: Skip reference for DMA handles\n\nIf multiple dma handles are passed with same fd over a remote call\nthe ke",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/misc/fastrpc.c",
+        "display_lineno": 850,
+        "code_snippet": "commit 10df039834f84a297c72ec962c0f9b7c8c5ca31a\nAuthor: Ling Xu <quic_lxu5@quicinc.com>\nDate:   Fri Sep 12 14:12:36 2025 +0100\n\n    misc: fastrpc: Skip reference for DMA handles\n    \n    If multiple dma handles are passed with same fd over a remote call\n    the kernel driver takes a reference and expects that put for the\n    map will be called as many times to free the map. But DSP only\n    updates the fd one time in the fd list when the DSP refcount\n    goes to zero and hence kernel make put ca",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows both `fastrpc_map_lookup()` and the caller `fastrpc_map_create()`, which are exactly the functions involved in the described race. In this commit, `fastrpc_map_lookup()` was changed to stop taking a reference under the list lock: the function now has signature `static int fastrpc_map_lookup(struct fastrpc_user *fl, int fd, struct fastrpc_map **ppmap)` and inside the locked traversal it only assigns `*ppmap = map; ret = 0; break;` with no `fastrpc_map_get()` call. The old in-lock reference-taking block guarded by `if (take_ref) { ret = fastrpc_map_get(map); ... }` was removed. Then `fastrpc_map_create()` does `if (!fastrpc_map_lookup(fl, fd, ppmap)) { if (!fastrpc_map_get(*ppmap)) return 0; ... }`. This means lookup returns a bare `struct fastrpc_map *`, the lock used inside lookup is no longer held when the function returns, and only afterward does `fastrpc_map_create()` attempt `fastrpc_map_get(*ppmap)`. That matches the root cause exactly: an unprotected map pointer returned after lock release can be freed by a concurrent unmap before `kref_get_unless_zero()`/`fastrpc_map_get()` acquires a reference. Therefore the vulnerable construct is present, and the fix is not present here. In fact, this commit moves the reference acquisition out of `fastrpc_map_lookup()` into `fastrpc_map_create()`, which is the unsafe pattern described."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "da1ba64176e0",
+          "anchor_file": "drivers/misc/fastrpc.c",
+          "anchor_lineno": 850
+        },
+        "commit": "c68cfb718c8f97b7f7a50ed66be5feb42d0c8988",
+        "commit_short": "c68cfb718c8f",
+        "commit_msg": "misc: fastrpc: Add support for context Invoke method\n\nThis patch adds support to compute context invoke method on the\nre",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/misc/fastrpc.c",
+        "display_lineno": 406,
+        "code_snippet": "commit c68cfb718c8f97b7f7a50ed66be5feb42d0c8988\nAuthor: Srinivas Kandagatla <srini@kernel.org>\nDate:   Fri Feb 8 17:11:25 2019 +0000\n\n    misc: fastrpc: Add support for context Invoke method\n    \n    This patch adds support to compute context invoke method on the\n    remote processor (DSP).\n    This involves setting up the functions input and output arguments,\n    input and output handles and mapping the dmabuf fd for the\n    argument/handle buffers.\n    \n    The below diagram depicts invocation",
+        "exists": false,
+        "reason": "The relevant lookup/reference logic is fully visible in this snippet, so it is sufficient to judge. The root cause describes an unsafe pattern where a lookup returns a `struct fastrpc_map *`, the lock is released, and only afterward a ref is acquired with something like `kref_get_unless_zero()`, allowing a concurrent unmap/free race. That pattern is not present here. Instead, `fastrpc_map_find()` acquires the reference while still holding the lock: `mutex_lock(&fl->mutex); list_for_each_entry(map, &fl->maps, node) { if (map->fd == fd) { fastrpc_map_get(map); *ppmap = map; mutex_unlock(&fl->mutex); return 0; } }`. The refcount increment `fastrpc_map_get(map)` happens before `mutex_unlock(&fl->mutex)`, so the returned pointer is already protected. `fastrpc_map_create()` then safely uses that helper: `if (!fastrpc_map_find(fl, fd, ppmap)) return 0;`. Because the lookup path already takes a reference under the lock, the vulnerable construct is absent, and the code already contains the correct handling that prevents the described race."
+      }
+    },
+    {
+      "bic_found": "10df039834f84a297c72ec962c0f9b7c8c5ca31a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5401fb4fe10f",
+          "anchor_file": "drivers/misc/fastrpc.c",
+          "anchor_lineno": 406
+        },
+        "commit": "9446fa1683a7e3937d9970248ced427c1983a1c5",
+        "commit_short": "9446fa1683a7",
+        "commit_msg": "misc: fastrpc: Fix use-after-free and race in fastrpc_map_find\n\nCurrently, there is a race window between the point when",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/misc/fastrpc.c",
+        "display_lineno": 374,
+        "code_snippet": "commit 9446fa1683a7e3937d9970248ced427c1983a1c5\nAuthor: Abel Vesa <abelvesa@kernel.org>\nDate:   Thu Nov 24 17:49:39 2022 +0000\n\n    misc: fastrpc: Fix use-after-free and race in fastrpc_map_find\n    \n    Currently, there is a race window between the point when the mutex is\n    unlocked in fastrpc_map_lookup and the reference count increasing\n    (fastrpc_map_get) in fastrpc_map_find, which can also lead to\n    use-after-free.\n    \n    So lets merge fastrpc_map_find into fastrpc_map_lookup which ",
+        "exists": false,
+        "reason": "The snippet directly shows the relevant lookup/reference logic and the fix. The vulnerable pattern described in the root cause was: lookup returned a raw `struct fastrpc_map *`, then after the lock was released a separate later step took the reference, allowing a concurrent unmap/free in between. In this commit, that pattern is removed. `fastrpc_map_lookup()` now takes `bool take_ref`, acquires `spin_lock(&fl->lock)`, searches the list, and if `take_ref` is requested it calls `ret = fastrpc_map_get(map);` before releasing the lock with `spin_unlock(&fl->lock)`. The old separate `fastrpc_map_find()` function, which did `int ret = fastrpc_map_lookup(fl, fd, ppmap);` followed by `fastrpc_map_get(*ppmap);`, is deleted in the diff. Also, `fastrpc_map_create()` now calls `fastrpc_map_lookup(fl, fd, ppmap, true)` instead of the old `fastrpc_map_find(...)`, meaning the reference is acquired within the protected lookup path. Therefore the vulnerable construct is absent in this version, and the fix is present."
+      }
+    },
+    {
+      "bic_found": "9446fa1683a7e3937d9970248ced427c1983a1c5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "10df039834f84a297c72ec962c0f9b7c8c5ca31a": 1,
+        "9446fa1683a7e3937d9970248ced427c1983a1c5": 1
+      },
+      "bic_candidates": [
+        "10df039834f84a297c72ec962c0f9b7c8c5ca31a",
+        "9446fa1683a7e3937d9970248ced427c1983a1c5"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

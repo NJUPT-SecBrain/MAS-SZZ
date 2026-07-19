@@ -1,0 +1,348 @@
+{
+  "cveid": "CVE-2026-43023",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "8a5b0135d4a5d9683203a3d9a12a711ccec5936b"
+  ],
+  "ground_truth_bic": "9a8ec9e8ebb5a7c0cfbce2d6b4a6b67b2b78e8f3",
+  "predicted_bic": [
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+    "3dcaa192ac2159193bc6ab57bc5369dcb84edd8e"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 39833,
+  "root_cause": {
+    "text": "A race in the Bluetooth SCO socket connect path let sco_sock_connect() read and validate sk_state/sk_type without holding the socket lock, allowing concurrent connect() calls and disconnect handling to attach a closed SOCK_ZAPPED socket to a new sco_conn and cause double sock_put/use-after-free.",
+    "evidence": "The CVE/commit explicitly states “sco_sock_connect() checks sk_state and sk_type without holding the socket lock,” describes two concurrent connect() syscalls both passing the unlocked BT_OPEN check and one later “reviv[ing] a BT_CLOSED + SOCK_ZAPPED socket back to BT_CONNECT,” and the patch fixes this by moving lock_sock() before the state/type checks, rechecking state in sco_connect(), and preventing double-attach with `if (conn->sk || sco_pi(sk)->conn)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/bluetooth/sco.c",
+      "lineno": 659,
+      "content": "if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND)",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/bluetooth/sco.c",
+      "lineno": 662,
+      "content": "if (sk->sk_type != SOCK_SEQPACKET)",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/bluetooth/sco.c",
+      "lineno": 356,
+      "content": "err = sco_chan_add(conn, sk, NULL);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in the Bluetooth SCO socket connect path let sco_sock_connect() read and validate sk_state/sk_type without holding the socket lock, allowing concurrent connect() calls and disconnect handling to attach a closed SOCK_ZAPPED socket to a new sco_conn and cause double sock_put/use-after-free.",
+      "evidence_points": "The CVE/commit explicitly states “sco_sock_connect() checks sk_state and sk_type without holding the socket lock,” describes two concurrent connect() syscalls both passing the unlocked BT_OPEN check and one later “reviv[ing] a BT_CLOSED + SOCK_ZAPPED socket back to BT_CONNECT,” and the patch fixes this by moving lock_sock() before the state/type checks, rechecking state in sco_connect(), and preventing double-attach with `if (conn->sk || sco_pi(sk)->conn)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/bluetooth/sco.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/bluetooth/sco.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/bluetooth/sco.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a busy-state check to prevent attaching a socket that is already associated with a SCO connection.",
+        "what": "The busy-check condition in sco_chan_add() was changed from testing only conn->sk to testing conn->sk || sco_pi(sk)->conn before calling __sco_chan_add().",
+        "how": "At runtime, the function now rejects channel attachment with -EBUSY not only when the target connection already has an associated socket, but also when the socket being added is already linked to some connection, preventing a socket from being attached twice or to multiple connections."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix sco_connect() to revalidate socket state after locking and drop the HCI connection on raced or failed setup paths.",
+        "what": "The change adds a state validation block immediately after lock_sock(sk) in sco_connect() that checks whether sk->sk_state is still BT_OPEN or BT_BOUND; if not, it releases the socket lock, drops the HCI connection with hci_conn_drop(hcon), sets err to -EBADFD, and jumps to unlock. It also adds a call to hci_conn_drop(hcon) in the existing error path when sco_chan_add(conn, sk, NULL) fails.",
+        "how": "At runtime, this prevents continuing connection setup after the socket lock is reacquired if another thread has changed the socket state, such as by closing the socket. It also ensures the referenced HCI connection is properly dropped on both the invalid-state path and the sco_chan_add() failure path, avoiding stale connection handling and leaked connection references during failed or raced connect attempts."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Lock the SCO socket before state/type validation and release it on error to fix unsafe checks and lock handling in connect.",
+        "what": "The change moves lock_sock(sk) earlier in sco_sock_connect(), before the socket state and type checks, and converts the sk->sk_state and sk->sk_type validation paths from setting or returning errors without cleanup into explicit early returns that first call release_sock(sk) when those checks fail.",
+        "how": "At runtime, the socket is now locked before inspecting sk_state and sk_type, ensuring those validations occur under the socket lock; if the socket is in an invalid state or has the wrong type, the function now releases the lock before returning, preventing races during validation and avoiding leaving the socket locked on those error paths."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a busy-state check to prevent attaching a socket that is already associated with a SCO connection."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Lock the SCO socket before state/type validation and release it on error to fix unsafe checks and lock handling in connect."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix sco_connect() locking and validation by taking the SCO socket lock before state/type checks and cleaning up correctly on raced or failed connection setup paths.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The vulnerability stems from concurrent connect/disconnect allowing a socket in an invalid/closed state to be attached to a new SCO connection. Adding a busy-state check before attaching a socket to a SCO connection directly targets that improper attachment condition and helps prevent the double-association/use-after-free scenario."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: they add proper socket locking before checking sk_state/sk_type in the SCO connect path, revalidate state under the lock, and clean up raced/failed connection setup to prevent attaching a closed socket and the resulting double sock_put/use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 659,
+            "content": "if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND)",
+            "rationale": "This socket state validation was performed before taking the socket lock, which is the core race described: concurrent connect/disconnect could change sk_state after this check and before attachment, allowing a closed or zapped socket to proceed."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 662,
+            "content": "if (sk->sk_type != SOCK_SEQPACKET)",
+            "rationale": "This socket type validation was also done before lock_sock(sk), matching the root cause that state/type were read without holding the socket lock and thus could race with concurrent operations."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 356,
+            "content": "err = sco_chan_add(conn, sk, NULL);",
+            "rationale": "The connect path attached the socket to the SCO connection after relying on earlier unlocked validation, enabling a raced closed socket to be associated with a new conn and trigger double sock_put/use-after-free."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 304,
+            "content": "__sco_chan_add(conn, sk, parent);",
+            "rationale": "Without an existing busy-state guard on conn->sk, this attachment could proceed even when a socket was already associated, contributing to the raced double-association scenario described in the root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/bluetooth/sco.c",
+            "stmt_text": "if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND)",
+            "location": "hunk",
+            "explanation": "This statement performs socket state validation before the socket lock is held. That matches the root cause directly: sk_state could change concurrently during connect or disconnect handling, so passing this unchecked pre-lock validation could allow a closed or zapped socket to continue into attachment."
+          },
+          {
+            "vuln_file": "net/bluetooth/sco.c",
+            "stmt_text": "if (sk->sk_type != SOCK_SEQPACKET)",
+            "location": "hunk",
+            "explanation": "This statement reads and validates sk_type before taking the socket lock. It is part of the same unsafe unlocked validation window in sco_sock_connect(), contributing to the race condition described in the root cause."
+          },
+          {
+            "vuln_file": "net/bluetooth/sco.c",
+            "stmt_text": "err = sco_chan_add(conn, sk, NULL);",
+            "location": "hunk",
+            "explanation": "This is the point where the socket is attached to the SCO connection. Because earlier state validation was done without locking, a raced closed or zapped socket could reach this statement and be attached to a new conn, leading to the double sock_put/use-after-free scenario."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a834a0b66ec6",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 659
+        },
+        "commit": "9a8ec9e8ebb5a7c0cfbce2d6b4a6b67b2b78e8f3",
+        "commit_short": "9a8ec9e8ebb5",
+        "commit_msg": "Bluetooth: SCO: Fix possible circular locking dependency on sco_connect_cfm\n\nThis attempts to fix the following trace:\n\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 599,
+        "code_snippet": "commit 9a8ec9e8ebb5a7c0cfbce2d6b4a6b67b2b78e8f3\nAuthor: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>\nDate:   Thu Mar 30 14:15:50 2023 -0700\n\n    Bluetooth: SCO: Fix possible circular locking dependency on sco_connect_cfm\n    \n    This attempts to fix the following trace:\n    \n    ======================================================\n    WARNING: possible circular locking dependency detected\n    6.3.0-rc2-g0b93eeba4454 #4703 Not tainted\n    --------------------------------------------------",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the entire relevant connect path in `sco_sock_connect()` and the helper `sco_connect()`. The root cause is that `sco_sock_connect()` reads/validates socket state without holding the socket lock, enabling races with concurrent connect/disconnect. That exact pattern is present here: `if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND) return -EBADFD;` and `if (sk->sk_type != SOCK_SEQPACKET) err = -EINVAL;` both occur before `lock_sock(sk);`. The code only acquires the socket lock later, around setting `sco_pi(sk)->dst`, then immediately releases it before calling `sco_connect(sk)`, and later reacquires it for `bt_sock_wait_state()`. This means the state/type validation is still done unlocked, which matches the vulnerable construct described. The commit does add some locking inside `sco_connect()` (`lock_sock(sk); ... bacpy(&sco_pi(sk)->src, &hcon->src); ... sk->sk_state = ...; release_sock(sk);`), but that is not the fix for the reported race because the initial validation in `sco_sock_connect()` remains outside the socket lock. Therefore the vulnerable construct is present and the proper fix is not yet in this function version."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "b76abe4648c1",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 599
+        },
+        "commit": "734bc5ff783115aa3164f4e9dd5967ae78e0a8ab",
+        "commit_short": "734bc5ff7831",
+        "commit_msg": "Bluetooth: avoid circular locks in sco_sock_connect\n\nIn a future patch, calls to bh_lock_sock in sco.c should be replace",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 603,
+        "code_snippet": "commit 734bc5ff783115aa3164f4e9dd5967ae78e0a8ab\nAuthor: Desmond Cheong Zhi Xi <desmondcheongzx@gmail.com>\nDate:   Tue Aug 10 12:14:06 2021 +0800\n\n    Bluetooth: avoid circular locks in sco_sock_connect\n    \n    In a future patch, calls to bh_lock_sock in sco.c should be replaced\n    by lock_sock now that none of the functions are run in IRQ context.\n    \n    However, doing so results in a circular locking dependency:\n    \n    ======================================================\n    WARNING: po",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full body of `sco_sock_connect()` and shows the ordering of the relevant state checks and locking. The root cause is reading/validating socket state without holding the socket lock. In this commit, `sco_sock_connect()` still performs checks before `lock_sock(sk)`: `if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND) return -EBADFD;` and `if (sk->sk_type != SOCK_SEQPACKET) return -EINVAL;` occur prior to `lock_sock(sk);`. Only after additional work (`hci_get_route`, `hci_dev_lock`) does it call `lock_sock(sk)`. Thus the vulnerable construct is present: `sk_state`/`sk_type` are validated without the socket lock, allowing races with concurrent connect/disconnect as described. The shown changes only move `hci_dev_lock` outside `sco_connect()` to avoid circular locking; they do not move the `sk_state`/`sk_type` validation under `lock_sock(sk)`, nor otherwise add protection against the race. Therefore `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ba316be1b6a0",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 603
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 518,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable logic is clearly visible in `sco_sock_connect()`. It performs state/type validation before taking the socket lock: `if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND) return -EBADFD;` and `if (sk->sk_type != SOCK_SEQPACKET) return -EINVAL;` both occur before `lock_sock(sk);`. This matches the root cause: `sk_state`/`sk_type` are read and validated without holding the socket lock, so concurrent `connect()` or close/disconnect activity can race with these checks. After those unlocked checks, the function acquires the lock and proceeds to modify the socket and call `sco_connect(sk)`, with no revalidation under lock. The fix would require taking the socket lock before validating state/type (or rechecking after lock acquisition), but that is not present here."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a834a0b66ec6",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 662
+        },
+        "commit": "9a8ec9e8ebb5a7c0cfbce2d6b4a6b67b2b78e8f3",
+        "commit_short": "9a8ec9e8ebb5",
+        "commit_msg": "Bluetooth: SCO: Fix possible circular locking dependency on sco_connect_cfm\n\nThis attempts to fix the following trace:\n\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 602,
+        "code_snippet": "commit 9a8ec9e8ebb5a7c0cfbce2d6b4a6b67b2b78e8f3\nAuthor: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>\nDate:   Thu Mar 30 14:15:50 2023 -0700\n\n    Bluetooth: SCO: Fix possible circular locking dependency on sco_connect_cfm\n    \n    This attempts to fix the following trace:\n    \n    ======================================================\n    WARNING: possible circular locking dependency detected\n    6.3.0-rc2-g0b93eeba4454 #4703 Not tainted\n    --------------------------------------------------",
+        "exists": true,
+        "reason": "The shown function body is sufficient because it directly contains the connect-path state/type checks and locking behavior relevant to the race. In `sco_sock_connect`, the code now checks `if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND) return -EBADFD;` before taking the socket lock, and similarly checks `if (sk->sk_type != SOCK_SEQPACKET) err = -EINVAL;` before `lock_sock(sk);`. This matches the root cause: `sk_state` and `sk_type` are read/validated without holding the socket lock. The function only locks later around updating the destination address (`lock_sock(sk); ... bacpy(&sco_pi(sk)->dst, &sa->sco_bdaddr); release_sock(sk);`) and then calls `sco_connect(sk)` without the socket lock held across the validation-and-connect sequence. That means concurrent connect/disconnect can still race after the unlocked validation, so the vulnerable construct is present. The commit's changes are about avoiding a circular locking dependency by moving HCI device locking into `sco_connect` and adding a short `lock_sock(sk)` there only around source-address/state updates; they do not fix the root issue that `sco_sock_connect()` must validate state/type while holding the socket lock for the connect path. Therefore, `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "b76abe4648c1",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 602
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 527,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable construct is present in `sco_sock_connect()`. The function performs state/type validation before taking the socket lock: `if (sk->sk_state != BT_OPEN && sk->sk_state != BT_BOUND) return -EBADFD;` and `if (sk->sk_type != SOCK_SEQPACKET) return -EINVAL;` both occur before `lock_sock(sk);`. This matches the root cause: `sk_state`/`sk_type` are read and validated without holding the socket lock, so concurrent `connect()` or close/disconnect handling can race. The function only locks afterward, then proceeds to modify the socket and call `sco_connect(sk)`. There is no revalidation of `sk->sk_state` after `lock_sock(sk)`, and no early check for a zapped/closed socket under the lock. Therefore the buggy race window exists, and the fix is not present."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a834a0b66ec6",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 356
+        },
+        "commit": "3dcaa192ac2159193bc6ab57bc5369dcb84edd8e",
+        "commit_short": "3dcaa192ac21",
+        "commit_msg": "Bluetooth: SCO: fix sco_conn related locking and validity issues\n\nOperations that check/update sk_state and access conn ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 283,
+        "code_snippet": "commit 3dcaa192ac2159193bc6ab57bc5369dcb84edd8e\nAuthor: Pauli Virtanen <pav@iki.fi>\nDate:   Mon Jul 10 19:48:19 2023 +0300\n\n    Bluetooth: SCO: fix sco_conn related locking and validity issues\n    \n    Operations that check/update sk_state and access conn should hold\n    lock_sock, otherwise they can race.\n    \n    The order of taking locks is hci_dev_lock > lock_sock > sco_conn_lock,\n    which is how it is in connect/disconnect_cfm -> sco_conn_del ->\n    sco_chan_del.\n    \n    Fix locking in sc",
+        "exists": false,
+        "reason": "The provided diff is sufficient because it shows the exact locking and state-update changes in the vulnerable path. The root cause was that connect-side logic checked/updated socket state and accessed/attached connection data without holding the socket lock, allowing races with concurrent connect/disconnect. In this commit version, the function already adds the relevant protection: after creating/getting the SCO connection, it now does `lock_sock(sk);` before `sco_chan_add(conn, sk, NULL);` and before updating socket fields such as `bacpy(&sco_pi(sk)->src, &hcon->src);` and the subsequent state handling. The commit message also explicitly states: `Fix locking in sco_connect to take lock_sock around updating sk_state and conn.` Additionally, the function now keeps `hdev->lock` held longer by removing the earlier `hci_dev_unlock(hdev); hci_dev_put(hdev);` before `sco_conn_add(hcon)`, and instead goes to the common `unlock:` path only after the critical section, matching the fix described: `sco_conn_del must not occur during sco_connect`. The helper `sco_conn_add()` is also fixed so reused connections have a valid `hcon` again: `if (!conn->hcon) conn->hcon = hcon;`. Therefore, the vulnerable construct is not present in this commit version, and the fix is present."
+      }
+    },
+    {
+      "bic_found": "3dcaa192ac2159193bc6ab57bc5369dcb84edd8e",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 2,
+        "3dcaa192ac2159193bc6ab57bc5369dcb84edd8e": 1
+      },
+      "bic_candidates": [
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "3dcaa192ac2159193bc6ab57bc5369dcb84edd8e"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

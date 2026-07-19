@@ -1,0 +1,354 @@
+{
+  "cveid": "CVE-2026-53222",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "627366c51145a07f675b1800fb5ea2ec960bd900"
+  ],
+  "ground_truth_bic": "a60fc3294a377204664b5484e4a487fa124155da",
+  "predicted_bic": [
+    "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+    "1aa66a3a135a25bd8ce25165b4e550159a3dc849"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 27667,
+  "root_cause": {
+    "text": "The ptp_ocp_detach() function was freeing pin configuration resources (kfree(bp->ptp_info.pin_config)) and unregistering external timestampers before calling ptp_clock_unregister(), which triggers ptp_disable_all_events() that attempts to reconfigure pins, causing use-after-free access to already-freed pin structures.",
+    "evidence": "The patch moves ptp_clock_unregister(bp->ptp) and kfree(bp->ptp_info.pin_config) to execute BEFORE ptp_ocp_unregister_ext() calls and pin resource cleanup. The commit message explicitly states that ptp_disable_all_events() (called by ptp_clock_unregister()) \"changes the configuration of pins if they support EXTTS events\" and that the original code \"pins resources are freed before ptp_clock_unregister() and it leads to use-after-free during driver removal.\" Additionally, the patch adds synchronize_irq() calls in ptp_ocp_ts_enable() to ensure no IRQ handlers access pin structures while they are being disabled.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/ptp/ptp_ocp.c",
+      "lineno": 4889,
+      "content": "kfree(bp->ptp_info.pin_config);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/ptp/ptp_ocp.c",
+      "lineno": 4870,
+      "content": "ptp_ocp_unregister_ext(bp->ts0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/ptp/ptp_ocp.c",
+      "lineno": 4871,
+      "content": "ptp_ocp_unregister_ext(bp->ts1);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/ptp/ptp_ocp.c",
+      "lineno": 4872,
+      "content": "ptp_ocp_unregister_ext(bp->ts2);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The ptp_ocp_detach() function was freeing pin configuration resources before calling ptp_clock_unregister(), which now invokes ptp_disable_all_events() that attempts to access and modify those freed pin structures, causing a use-after-free vulnerability.",
+      "evidence_points": "The patch moves the ptp_clock_unregister() call and kfree(bp->ptp_info.pin_config) to occur BEFORE the ptp_ocp_unregister_ext() calls that free pin resources. Additionally, the patch adds explicit calls to ptp_ocp_ts_enable() with synchronize_irq() to safely disable interrupts before unregistration, preventing the IRQ handler from accessing freed pin memory during the unregister process. The commit message explicitly states: \"Commit a60fc3294a37 added a call to ptp_disable_all_events() which changes the configuration of pins if they support EXTTS events. In ptp_ocp_detach() pins resources are freed before ptp_clock_unregister() and it leads to use-after-free during driver removal.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The proposed root cause contains a critical factual error that contradicts the patch itself."
+      }
+    },
+    {
+      "root_cause_candidate": "The ptp_ocp_detach() function was freeing pin configuration resources (kfree(bp->ptp_info.pin_config)) and unregistering external timestampers before calling ptp_clock_unregister(), which triggers ptp_disable_all_events() that attempts to reconfigure pins, causing use-after-free access to already-freed pin structures.",
+      "evidence_points": "The patch moves ptp_clock_unregister(bp->ptp) and kfree(bp->ptp_info.pin_config) to execute BEFORE ptp_ocp_unregister_ext() calls and pin resource cleanup. The commit message explicitly states that ptp_disable_all_events() (called by ptp_clock_unregister()) \"changes the configuration of pins if they support EXTTS events\" and that the original code \"pins resources are freed before ptp_clock_unregister() and it leads to use-after-free during driver removal.\" Additionally, the patch adds synchronize_irq() calls in ptp_ocp_ts_enable() to ensure no IRQ handlers access pin structures while they are being disabled."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/ptp/ptp_ocp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/ptp/ptp_ocp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/ptp/ptp_ocp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add IRQ synchronization during timestamp disable to prevent race conditions between register disabling and in-flight interrupt handlers.",
+        "what": "Added three lines in the else branch: (1) a local variable `irq_vec` that retrieves the IRQ vector from the PCI device, (2) an `ioread32()` call to read back the interrupt mask register, and (3) a conditional check that calls `synchronize_irq()` if the IRQ vector is valid (> 0).",
+        "how": "When disabling the timestamp, the code now ensures proper synchronization with the IRQ handler. The `ioread32()` provides a memory barrier to flush pending writes, and `synchronize_irq()` blocks until any in-flight IRQ handler completes, preventing race conditions where the handler might access registers after they've been disabled."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Disable timestamper interrupts and properly unregister ptp clock before device unregistration to prevent interrupt handling on freed resources.",
+        "what": "Added explicit interrupt disabling for all timestampers (ts0-ts4, pps) by calling ptp_ocp_ts_enable with false parameter, unregistered ptp clock, and freed pin_config memory before calling ptp_ocp_unregister_ext functions in the ptp_ocp_detach cleanup sequence.",
+        "how": "This change ensures that hardware interrupts are properly disabled on all timestamper devices before their unregistration, and that the ptp clock is unregistered and associated memory is freed during device detachment. This prevents potential interrupt handlers from firing after device structures are torn down, and ensures proper cleanup order to avoid use-after-free or resource leak issues."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Move ptp_clock and pin_config cleanup from explicit detach calls to implicit device_unregister() cleanup path.",
+        "what": "Removed three lines from ptp_ocp_detach(): the conditional check and call to ptp_clock_unregister(bp->ptp), and the kfree(bp->ptp_info.pin_config) call.",
+        "how": "The ptp_clock_unregister() and pin_config deallocation are no longer explicitly performed in the detach function. These cleanup operations are now presumably handled elsewhere, likely through device_unregister(&bp->dev) which may trigger automatic cleanup via device release callbacks or other mechanisms."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add IRQ synchronization during timestamp disable to prevent race conditions between register disabling and in-flight interrupt handlers."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Disable timestamper interrupts and properly unregister ptp clock before device unregistration to prevent interrupt handling on freed resources."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Move ptp_clock and pin_config cleanup from explicit detach calls to implicit device_unregister() cleanup path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses IRQ synchronization and race conditions between register disabling and interrupt handlers. The root cause is a use-after-free issue caused by freeing pin configuration resources before calling ptp_clock_unregister(). These are distinct problems - one is about interrupt handler timing, the other is about resource cleanup ordering. The fix for the root cause would require reordering the cleanup sequence (calling ptp_clock_unregister() before freeing pin_config), not adding IRQ synchronization."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "This group directly addresses the root cause by reordering operations to call ptp_clock_unregister() before freeing pin configuration resources. This prevents the use-after-free vulnerability where ptp_disable_all_events() (triggered by ptp_clock_unregister()) attempts to access already-freed pin structures. The group's focus on proper sequencing of unregistration and resource cleanup matches the core issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by moving ptp_clock and pin_config cleanup to occur after ptp_clock_unregister() completes (via device_unregister() cleanup path), rather than before it. This prevents the use-after-free vulnerability where ptp_disable_all_events() attempts to access already-freed pin structures during unregistration."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/ptp/ptp_ocp.c",
+            "lineno": 4870,
+            "content": "ptp_ocp_unregister_ext(bp->ts0);",
+            "rationale": "Unregistering external timestampers before ptp_clock_unregister() causes the pin reconfiguration in ptp_disable_all_events() to access freed pin structures."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/ptp/ptp_ocp.c",
+            "lineno": 4871,
+            "content": "ptp_ocp_unregister_ext(bp->ts1);",
+            "rationale": "Unregistering external timestampers before ptp_clock_unregister() causes the pin reconfiguration in ptp_disable_all_events() to access freed pin structures."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/ptp/ptp_ocp.c",
+            "lineno": 4872,
+            "content": "ptp_ocp_unregister_ext(bp->ts2);",
+            "rationale": "Unregistering external timestampers before ptp_clock_unregister() causes the pin reconfiguration in ptp_disable_all_events() to access freed pin structures."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/ptp/ptp_ocp.c",
+            "lineno": 4889,
+            "content": "kfree(bp->ptp_info.pin_config);",
+            "rationale": "Freeing pin_config before ptp_clock_unregister() causes use-after-free when ptp_disable_all_events() attempts to reconfigure pins during unregistration."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/ptp/ptp_ocp.c",
+            "stmt_text": "kfree(bp->ptp_info.pin_config);",
+            "location": "hunk",
+            "explanation": "This statement frees the pin configuration structure before ptp_clock_unregister() is called. When ptp_clock_unregister() subsequently calls ptp_disable_all_events(), it attempts to reconfigure pins using the already-freed pin_config pointer, causing a use-after-free vulnerability."
+          },
+          {
+            "vuln_file": "drivers/ptp/ptp_ocp.c",
+            "stmt_text": "ptp_ocp_unregister_ext(bp->ts0);",
+            "location": "hunk",
+            "explanation": "Unregistering external timestampers before ptp_clock_unregister() allows interrupt handlers to remain active while pin configuration resources are being freed, creating a race condition where ptp_disable_all_events() accesses freed pin structures."
+          },
+          {
+            "vuln_file": "drivers/ptp/ptp_ocp.c",
+            "stmt_text": "ptp_ocp_unregister_ext(bp->ts1);",
+            "location": "hunk",
+            "explanation": "Unregistering external timestampers before ptp_clock_unregister() allows interrupt handlers to remain active while pin configuration resources are being freed, creating a race condition where ptp_disable_all_events() accesses freed pin structures."
+          },
+          {
+            "vuln_file": "drivers/ptp/ptp_ocp.c",
+            "stmt_text": "ptp_ocp_unregister_ext(bp->ts2);",
+            "location": "hunk",
+            "explanation": "Unregistering external timestampers before ptp_clock_unregister() allows interrupt handlers to remain active while pin configuration resources are being freed, creating a race condition where ptp_disable_all_events() accesses freed pin structures."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7f2fcff15e99",
+          "anchor_file": "drivers/ptp/ptp_ocp.c",
+          "anchor_lineno": 4889
+        },
+        "commit": "1aa66a3a135a25bd8ce25165b4e550159a3dc849",
+        "commit_short": "1aa66a3a135a",
+        "commit_msg": "ptp: ocp: Program the signal generators via PTP_CLK_REQ_PEROUT\n\nThe signal generators can be programmed either via the s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/ptp/ptp_ocp.c",
+        "display_lineno": 3325,
+        "code_snippet": "commit 1aa66a3a135a25bd8ce25165b4e550159a3dc849\nAuthor: Jonathan Lemon <jonathan.lemon@gmail.com>\nDate:   Thu Mar 10 12:19:09 2022 -0800\n\n    ptp: ocp: Program the signal generators via PTP_CLK_REQ_PEROUT\n    \n    The signal generators can be programmed either via the sysfs\n    file or through a PTP_CLK_REQ_PEROUT ioctl request.\n    \n    Signed-off-by: Jonathan Lemon <jonathan.lemon@gmail.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/drivers/ptp/ptp_ocp.c b/drivers/",
+        "exists": false,
+        "reason": "This commit introduces the ptp_ocp_fb_set_pins() function that allocates pin_config via kzalloc() and assigns it to bp->ptp_info.pin_config. The commit also adds kfree(bp->ptp_info.pin_config) in ptp_ocp_detach() AFTER ptp_clock_unregister(bp->ptp) is called. However, the vulnerability root cause describes a use-after-free where pin_config is freed BEFORE ptp_clock_unregister(), which triggers ptp_disable_all_events() that accesses the freed pins. In this commit, the kfree() is placed AFTER ptp_clock_unregister(), which is the correct order and prevents the use-after-free. Therefore, this commit does not contain the vulnerable construct - it actually has the correct ordering that prevents the vulnerability. The vulnerable construct (freeing pin_config before ptp_clock_unregister) is not present in this code."
+      }
+    },
+    {
+      "bic_found": "1aa66a3a135a25bd8ce25165b4e550159a3dc849",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7f2fcff15e99",
+          "anchor_file": "drivers/ptp/ptp_ocp.c",
+          "anchor_lineno": 4870
+        },
+        "commit": "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+        "commit_short": "590f5d1fa6ee",
+        "commit_msg": "ptp: ocp: Make ptp_ocp_unregister_ext() NULL-aware\n\nIt's a common practice to make resource release functions be NULL-aw",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/ptp/ptp_ocp.c",
+        "display_lineno": 4564,
+        "code_snippet": "commit 590f5d1fa6ee22b1ec07283d5fa870326f47b2f6\nAuthor: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\nDate:   Mon Nov 24 09:45:46 2025 +0100\n\n    ptp: ocp: Make ptp_ocp_unregister_ext() NULL-aware\n    \n    It's a common practice to make resource release functions be NULL-aware.\n    Make ptp_ocp_unregister_ext() NULL-aware.\n    \n    Reviewed-by: Vadim Fedorenko <vadim.fedorenko@linux.dev>\n    Signed-off-by: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\n    Link: https://patch.msgid.li",
+        "exists": false,
+        "reason": "This commit is a fix, not a bug-introducing commit. The vulnerability root cause describes a use-after-free where ptp_ocp_detach() frees pin resources before calling ptp_clock_unregister(), which then tries to reconfigure pins. This commit addresses part of the problem by making ptp_ocp_unregister_ext() NULL-aware (adding 'if (!ext) return;' at lines 2228-2229) and simplifying the detach logic by removing NULL checks before calling ptp_ocp_unregister_ext() (lines 4564-4574). By making the unregister function NULL-aware, the code can safely call it without pre-checking for NULL values. However, this commit alone does not fully address the root cause (the ordering issue of freeing pin_config before ptp_clock_unregister), but it is a defensive improvement that prevents crashes from NULL pointer dereferences. The commit introduces the fix for NULL-awareness, not the vulnerable construct."
+      }
+    },
+    {
+      "bic_found": "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7f2fcff15e99",
+          "anchor_file": "drivers/ptp/ptp_ocp.c",
+          "anchor_lineno": 4871
+        },
+        "commit": "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+        "commit_short": "590f5d1fa6ee",
+        "commit_msg": "ptp: ocp: Make ptp_ocp_unregister_ext() NULL-aware\n\nIt's a common practice to make resource release functions be NULL-aw",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/ptp/ptp_ocp.c",
+        "display_lineno": 4565,
+        "code_snippet": "commit 590f5d1fa6ee22b1ec07283d5fa870326f47b2f6\nAuthor: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\nDate:   Mon Nov 24 09:45:46 2025 +0100\n\n    ptp: ocp: Make ptp_ocp_unregister_ext() NULL-aware\n    \n    It's a common practice to make resource release functions be NULL-aware.\n    Make ptp_ocp_unregister_ext() NULL-aware.\n    \n    Reviewed-by: Vadim Fedorenko <vadim.fedorenko@linux.dev>\n    Signed-off-by: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\n    Link: https://patch.msgid.li",
+        "exists": false,
+        "reason": "This commit is a fix, not a bug-introducing commit. The vulnerability root cause describes a use-after-free where ptp_ocp_detach() frees pin resources and unregisters external timestampers BEFORE calling ptp_clock_unregister(). This commit addresses part of the problem by making ptp_ocp_unregister_ext() NULL-aware (adding 'if (!ext) return;' at lines 2228-2229). The commit then simplifies the ptp_ocp_detach() function by removing the NULL checks before calling ptp_ocp_unregister_ext() (lines 4564-4575), since the function now handles NULL pointers safely. This is a defensive programming improvement that prevents potential issues if any of the ext pointers are NULL. However, this commit alone does not fully fix the root cause vulnerability (which requires reordering when ptp_clock_unregister() is called relative to freeing resources), but it does add the NULL-aware check that prevents crashes when ext pointers are NULL. The code shown is sufficient to determine this is a fix/improvement commit, not a bug-introducing one."
+      }
+    },
+    {
+      "bic_found": "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7f2fcff15e99",
+          "anchor_file": "drivers/ptp/ptp_ocp.c",
+          "anchor_lineno": 4872
+        },
+        "commit": "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+        "commit_short": "590f5d1fa6ee",
+        "commit_msg": "ptp: ocp: Make ptp_ocp_unregister_ext() NULL-aware\n\nIt's a common practice to make resource release functions be NULL-aw",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/ptp/ptp_ocp.c",
+        "display_lineno": 4566,
+        "code_snippet": "commit 590f5d1fa6ee22b1ec07283d5fa870326f47b2f6\nAuthor: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\nDate:   Mon Nov 24 09:45:46 2025 +0100\n\n    ptp: ocp: Make ptp_ocp_unregister_ext() NULL-aware\n    \n    It's a common practice to make resource release functions be NULL-aware.\n    Make ptp_ocp_unregister_ext() NULL-aware.\n    \n    Reviewed-by: Vadim Fedorenko <vadim.fedorenko@linux.dev>\n    Signed-off-by: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\n    Link: https://patch.msgid.li",
+        "exists": false,
+        "reason": "This commit is a fix, not a bug-introducing commit. The vulnerability root cause describes a use-after-free where ptp_ocp_detach() frees pin resources before calling ptp_clock_unregister(), which then tries to reconfigure those freed pins. This commit addresses part of the cleanup sequence by making ptp_ocp_unregister_ext() NULL-aware (adding 'if (!ext) return;' at lines 2228-2229). This allows the caller to unconditionally call ptp_ocp_unregister_ext() without checking for NULL first (removing the 'if (bp->ts0)' guards at lines 4564-4577). While this commit alone doesn't fully fix the root cause (which requires reordering the cleanup sequence to call ptp_clock_unregister() before freeing pin resources), it is a preparatory fix that makes the code safer by allowing NULL-aware cleanup. The commit does not introduce the vulnerable construct; rather, it adds defensive NULL checking to prevent crashes from NULL pointer dereferences during cleanup."
+      }
+    },
+    {
+      "bic_found": "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "1aa66a3a135a25bd8ce25165b4e550159a3dc849": 1,
+        "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6": 3
+      },
+      "bic_candidates": [
+        "590f5d1fa6ee22b1ec07283d5fa870326f47b2f6",
+        "1aa66a3a135a25bd8ce25165b4e550159a3dc849"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

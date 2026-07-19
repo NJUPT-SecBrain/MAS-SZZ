@@ -1,0 +1,326 @@
+{
+  "cveid": "CVE-2026-23110",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "fe2f8ad6f0999db3b318359a01ee0108c703a8c3"
+  ],
+  "ground_truth_bic": "6eb045e092efefafc6687409a6fa6d1dabf0fb69",
+  "predicted_bic": [
+    "4e6c9011990726f4d175e2cdfebe5b0b8cce4839",
+    "76aaf87b4cdc7f7115a32e4fda88310d42ce7fde",
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 42238,
+  "root_cause": {
+    "text": "The SCSI core error-handling wakeup logic had incorrect cross-CPU ordering in `scsi_dec_host_busy()` and `scsi_eh_inc_host_failed()`, allowing `SCMD_STATE_INFLIGHT` clearing, busy-command counting, and `host_failed` incrementing to race so no CPU observed `host_busy == host_failed` and the error handler was never woken.",
+    "evidence": "The CVE/commit explicitly states a “memory ordering issue within `scsi_dec_host_busy()`” where clearing `SCMD_STATE_INFLIGHT` could be reordered with `scsi_host_busy()` reads, and a “general ordering issue with `scsi_eh_inc_host_failed()`” where it counted busy commands before incrementing `host_failed`; the patch adds `smp_mb()` before `scsi_host_busy()` in `scsi_dec_host_busy()` and moves `scsi_host_busy(shost)` to after `shost->host_failed++` in `scsi_eh_inc_host_failed()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/scsi/scsi_error.c",
+      "lineno": 285,
+      "content": "unsigned int busy = scsi_host_busy(shost);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/scsi/scsi_lib.c",
+      "lineno": 285,
+      "content": "unsigned int busy = scsi_host_busy(shost);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/scsi/scsi_lib.c",
+      "lineno": 377,
+      "content": "__clear_bit(SCMD_STATE_INFLIGHT, &cmd->state);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The SCSI core error-handling wakeup logic had incorrect cross-CPU ordering in `scsi_dec_host_busy()` and `scsi_eh_inc_host_failed()`, allowing `SCMD_STATE_INFLIGHT` clearing, busy-command counting, and `host_failed` incrementing to race so no CPU observed `host_busy == host_failed` and the error handler was never woken.",
+      "evidence_points": "The CVE/commit explicitly states a “memory ordering issue within `scsi_dec_host_busy()`” where clearing `SCMD_STATE_INFLIGHT` could be reordered with `scsi_host_busy()` reads, and a “general ordering issue with `scsi_eh_inc_host_failed()`” where it counted busy commands before incrementing `host_failed`; the patch adds `smp_mb()` before `scsi_host_busy()` in `scsi_dec_host_busy()` and moves `scsi_host_busy(shost)` to after `shost->host_failed++` in `scsi_eh_inc_host_failed()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/scsi/scsi_error.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/scsi/scsi_lib.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix a race in SCSI error handling by updating `host_failed` before checking host busy state so error-handler wakeups are not missed.",
+        "what": "The code removes the inline initialization of `busy` with `scsi_host_busy(shost)`, changes it to a separate declaration, increments `shost->host_failed` under `host_lock`, then releases the lock before calling `scsi_host_busy(shost)`, adds a comment explaining the required ordering to avoid a race, and finally reacquires `host_lock` before calling `scsi_eh_wakeup(shost, busy)`.",
+        "how": "This changes the runtime ordering so the host's failed-command count is updated before the busy-request count is observed, preventing a race with host-unbusy processing that could otherwise cause an error-handling wakeup to be missed. The wakeup decision is therefore based on state sampled after `host_failed` has been recorded."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a memory barrier in SCSI host recovery so inflight-state clearing is visible before busy counting, preventing missed error-handler wakeups due to CPU reordering.",
+        "what": "A comment block and an `smp_mb();` full memory barrier were added inside `scsi_dec_host_busy()` in the `if (unlikely(scsi_host_in_recovery(shost)))` branch, immediately after `__clear_bit(SCMD_STATE_INFLIGHT, &cmd->state);` and before reading `unsigned int busy = scsi_host_busy(shost);`.",
+        "how": "At runtime, this forces the clearing of `SCMD_STATE_INFLIGHT` to become globally visible before the code counts busy requests during host recovery. This prevents CPU reordering from causing races where different CPUs observe inconsistent command-completion state and busy counts, which could otherwise lead to missing an error-handler wakeup when all requests are finished or timed out."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add a memory barrier in SCSI host recovery so inflight-state clearing is visible before busy counting, preventing missed error-handler wakeups due to CPU reordering."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix a race in SCSI error handling/recovery so error-handler wakeups are not missed by ensuring failed/inflight state updates are visible before host busy checks.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target the described SCSI error-handling race: they enforce ordering between inflight-state clearing, host_busy counting, and host_failed updates so the equality check is observed correctly and the error handler wakeup is not missed."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/scsi/scsi_error.c",
+            "lineno": 285,
+            "content": "unsigned int busy = scsi_host_busy(shost);",
+            "rationale": "This reads host_busy before taking host_lock and before incrementing host_failed, creating the cross-CPU ordering race where the later wakeup check can use a stale busy count and miss the host_busy == host_failed transition."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/scsi/scsi_lib.c",
+            "lineno": 379,
+            "content": "unsigned int busy = scsi_host_busy(shost);",
+            "rationale": "This busy-count read occurs after clearing SCMD_STATE_INFLIGHT but without the needed ordering guarantee, so another CPU may not observe the inflight-state update before checking host_busy, contributing directly to the missed error-handler wakeup race."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/scsi/scsi_lib.c",
+            "lineno": 377,
+            "content": "__clear_bit(SCMD_STATE_INFLIGHT, &cmd->state);",
+            "rationale": "Clearing the inflight bit without a barrier before host_busy is sampled allows reordering/visibility issues across CPUs, which is a core part of the race causing no CPU to observe host_busy == host_failed."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/scsi/scsi_error.c",
+            "stmt_text": "unsigned int busy = scsi_host_busy(shost);",
+            "location": "hunk",
+            "explanation": "This statement samples host_busy before host_failed is incremented and before taking host_lock, enabling the cross-CPU ordering race described in the root cause. Because the wakeup decision can be made using this stale busy count, the transition where host_busy equals host_failed may be missed and the error handler not awakened."
+          },
+          {
+            "vuln_file": "drivers/scsi/scsi_lib.c",
+            "stmt_text": "unsigned int busy = scsi_host_busy(shost);",
+            "location": "hunk",
+            "explanation": "This host_busy read occurs after clearing SCMD_STATE_INFLIGHT but without the required ordering guarantee, so other CPUs may not observe the inflight-state clear before busy counting. That visibility/reordering issue contributes directly to the missed host_busy == host_failed observation."
+          },
+          {
+            "vuln_file": "drivers/scsi/scsi_lib.c",
+            "stmt_text": "__clear_bit(SCMD_STATE_INFLIGHT, &cmd->state);",
+            "location": "hunk",
+            "explanation": "Clearing SCMD_STATE_INFLIGHT without a barrier before host_busy is sampled permits reordering/visibility issues across CPUs. This is one of the operations involved in the race where inflight clearing, busy counting, and host_failed incrementing can be observed inconsistently, preventing the error-handler wakeup."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9eacec5d18f9",
+          "anchor_file": "drivers/scsi/scsi_error.c",
+          "anchor_lineno": 285
+        },
+        "commit": "4e6c9011990726f4d175e2cdfebe5b0b8cce4839",
+        "commit_short": "4e6c90119907",
+        "commit_msg": "scsi: core: Move scsi_host_busy() out of host lock if it is for per-command\n\nCommit 4373534a9850 (\"scsi: core: Move scsi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/scsi/scsi_error.c",
+        "display_lineno": 285,
+        "code_snippet": "commit 4e6c9011990726f4d175e2cdfebe5b0b8cce4839\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Sat Feb 3 10:45:21 2024 +0800\n\n    scsi: core: Move scsi_host_busy() out of host lock if it is for per-command\n    \n    Commit 4373534a9850 (\"scsi: core: Move scsi_host_busy() out of host lock\n    for waking up EH handler\") intended to fix a hard lockup issue triggered by\n    EH. The core idea was to move scsi_host_busy() out of the host lock when\n    processing individual commands for EH. However, a s",
+        "exists": false,
+        "reason": "The diff shows the relevant logic in `scsi_eh_inc_host_failed()` clearly enough to decide. In this commit, `scsi_host_busy()` is evaluated before taking `shost->host_lock`: `unsigned int busy = scsi_host_busy(shost);` and then, under the lock, the code does `shost->host_failed++;` followed by `scsi_eh_wakeup(shost, busy);`. This matches the intended fix described in the commit message: moving `scsi_host_busy()` out of the host lock for per-command EH processing. The vulnerable construct for this function would be calling `scsi_host_busy(shost)` while still under `host_lock` in the wakeup path, i.e. `scsi_eh_wakeup(shost, scsi_host_busy(shost));` after acquiring the spinlock. That old form is removed here and replaced with the precomputed `busy` value. Therefore this function, in this commit version, already contains the fix and does not contain the vulnerable construct."
+      }
+    },
+    {
+      "bic_found": "4e6c9011990726f4d175e2cdfebe5b0b8cce4839",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9eacec5d18f9",
+          "anchor_file": "drivers/scsi/scsi_lib.c",
+          "anchor_lineno": 285
+        },
+        "commit": "76aaf87b4cdc7f7115a32e4fda88310d42ce7fde",
+        "commit_short": "76aaf87b4cdc",
+        "commit_msg": "scsi: merge __scsi_execute into scsi_execute\n\nAll but one caller want the decoded sense header, so offer the existing\n__",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/scsi/scsi_lib.c",
+        "display_lineno": 222,
+        "code_snippet": "commit 76aaf87b4cdc7f7115a32e4fda88310d42ce7fde\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Thu Feb 23 16:02:36 2017 +0100\n\n    scsi: merge __scsi_execute into scsi_execute\n    \n    All but one caller want the decoded sense header, so offer the existing\n    __scsi_execute helper as the public scsi_execute API to simply the\n    callers.\n    \n    Signed-off-by: Christoph Hellwig <hch@lst.de>\n    Signed-off-by: Martin K. Petersen <martin.petersen@oracle.com>\n\ndiff --git a/drivers/scsi/scsi_lib.c",
+        "exists": false,
+        "reason": "The provided snippet only shows the declaration and start of `scsi_execute()` (`int scsi_execute(...){`) plus comments. It does not include any of the function body logic, and it does not show the vulnerable error-handling wakeup paths described in the root cause (`scsi_dec_host_busy()` / `scsi_eh_inc_host_failed()`, ordering between clearing `SCMD_STATE_INFLIGHT`, host busy counting, and `host_failed` increment). Since the relevant logic is completely absent from this snippet, there is not enough code to determine whether the vulnerable construct is present or already fixed."
+      }
+    },
+    {
+      "bic_found": "76aaf87b4cdc7f7115a32e4fda88310d42ce7fde",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9eacec5d18f9",
+          "anchor_file": "drivers/scsi/scsi_lib.c",
+          "anchor_lineno": 377
+        },
+        "commit": "6eb045e092efefafc6687409a6fa6d1dabf0fb69",
+        "commit_short": "6eb045e092ef",
+        "commit_msg": "scsi: core: avoid host-wide host_busy counter for scsi_mq\n\nIt isn't necessary to check the host depth in scsi_queue_rq()",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/scsi/scsi_lib.c",
+        "display_lineno": 337,
+        "code_snippet": "commit 6eb045e092efefafc6687409a6fa6d1dabf0fb69\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Fri Oct 25 14:58:55 2019 +0800\n\n    scsi: core: avoid host-wide host_busy counter for scsi_mq\n    \n    It isn't necessary to check the host depth in scsi_queue_rq() any more\n    since it has been respected by blk-mq before calling scsi_queue_rq() via\n    getting driver tag.\n    \n    Lots of LUNs may attach to same host and per-host IOPS may reach millions,\n    so we should avoid expensive atomic operat",
+        "exists": true,
+        "reason": "The diff shows the exact error-handling wakeup logic and how this commit changes it, so it is sufficient. The vulnerable construct is still present in `scsi_dec_host_busy()`: it now does `__clear_bit(SCMD_STATE_INFLIGHT, &cmd->state);` and then, if recovery is active, checks `if (shost->host_failed || shost->host_eh_scheduled) scsi_eh_wakeup(shost);`. The root cause describes a cross-CPU ordering race between clearing `SCMD_STATE_INFLIGHT`, counting busy commands, and incrementing `host_failed`, such that no CPU observes `host_busy == host_failed` (here effectively 'in-flight requests number == shost->host_failed') and EH is not woken. This commit explicitly converts the logic from an atomic `host_busy` decrement to clearing `SCMD_STATE_INFLIGHT` and relying on counting in-flight requests, as stated in the updated comment: `Wake up the error handler if necessary ... if host in-flight requests number == shost->host_failed`. That means the problematic scheme is present. There is no added ordering primitive or synchronization here to guarantee correct observation across CPUs between `__clear_bit(SCMD_STATE_INFLIGHT, &cmd->state)` and `host_failed` updates; only the preexisting `rcu_read_lock()` remains, which the root-cause description indicates was insufficient for the ordering bug. Hence this version still contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7f674c38a38e",
+          "anchor_file": "drivers/scsi/scsi_lib.c",
+          "anchor_lineno": 337
+        },
+        "commit": "d772a65d8a6c45c376a8200a38f7f82fb480af6a",
+        "commit_short": "d772a65d8a6c",
+        "commit_msg": "Revert \"scsi: core: avoid host-wide host_busy counter for scsi_mq\"\n\nThis reverts commit 328728630d9f2bf14b82ca30b5e47489",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/scsi/scsi_lib.c",
+        "display_lineno": 348,
+        "code_snippet": "commit d772a65d8a6c45c376a8200a38f7f82fb480af6a\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Mon Aug 27 15:24:43 2018 +0800\n\n    Revert \"scsi: core: avoid host-wide host_busy counter for scsi_mq\"\n    \n    This reverts commit 328728630d9f2bf14b82ca30b5e47489beefe361.\n    \n    There is fundamental issue in commit 328728630d9f2bf1 (scsi: core: avoid\n    host-wide host_busy counter for scsi_mq) because SCSI's host busy counter\n    may not be same with counter of blk-mq's inflight tags, especially ",
+        "exists": true,
+        "reason": "The diff is sufficient because it directly shows the relevant host_busy accounting logic in the functions involved in SCSI host busy tracking and EH interaction. The commit message itself says this revert is done to fix an EH-path issue caused by the prior optimization. In the shown code, `scsi_dec_host_busy()` now unconditionally executes `atomic_dec(&shost->host_busy);` before checking recovery state, and `scsi_host_queue_ready()` now unconditionally executes `busy = atomic_inc_return(&shost->host_busy) - 1;`. Likewise, `scsi_kill_request()` now unconditionally does `atomic_inc(&shost->host_busy);`. These changes restore host-wide `host_busy` accounting for blk-mq instead of skipping it under `if (!shost->use_blk_mq)`. The vulnerable construct described in the root cause is the incorrect cross-CPU ordering/racy observation involving host-wide busy-command counting and EH wakeup logic. This revert removes the prior special-casing that avoided maintaining `host_busy` for blk-mq, which was the problematic behavior. Therefore the buggy construct is not the code shown here; rather, this code restores the correct accounting path. Since the code already contains the reverting/fixing behavior—specifically removing all `!shost->use_blk_mq` guards around `host_busy` updates and checks—the function version shown is fixed, not vulnerable."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "23aa8e69f2c6",
+          "anchor_file": "drivers/scsi/scsi_lib.c",
+          "anchor_lineno": 348
+        },
+        "commit": "328728630d9f2bf14b82ca30b5e47489beefe361",
+        "commit_short": "328728630d9f",
+        "commit_msg": "scsi: core: avoid host-wide host_busy counter for scsi_mq\n\nIt isn't necessary to check the host depth in scsi_queue_rq()",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/scsi/scsi_lib.c",
+        "display_lineno": 348,
+        "code_snippet": "commit 328728630d9f2bf14b82ca30b5e47489beefe361\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Sun Jun 24 22:03:27 2018 +0800\n\n    scsi: core: avoid host-wide host_busy counter for scsi_mq\n    \n    It isn't necessary to check the host depth in scsi_queue_rq() any more\n    since it has been respected by blk-mq before calling scsi_queue_rq() via\n    getting driver tag.\n    \n    Lots of LUNs may attach to same host and per-host IOPS may reach millions,\n    so we should avoid expensive atomic operat",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the relevant host_busy accounting logic in `scsi_dec_host_busy()` and related queueing paths. The vulnerable construct is present: in `scsi_dec_host_busy()` the code still performs `atomic_dec(&shost->host_busy);` for non-blk-mq hosts, and then, if recovery is active, checks `if (shost->host_failed || shost->host_eh_scheduled)` under `host_lock`. This preserves the old cross-CPU ordering pattern where decrementing `host_busy` and the later recovery/wakeup logic are not synchronized in a way that guarantees observation of `host_busy == host_failed`. Nothing in this diff adds ordering primitives or changes the recovery-side interaction described in the root cause. Instead, the commit mainly changes host_busy handling for blk-mq: `if (!shost->use_blk_mq) atomic_dec(&shost->host_busy);`, `if (!shost->use_blk_mq) busy = atomic_inc_return(&shost->host_busy) - 1; else busy = 0;`, and `if (!shost->use_blk_mq && shost->can_queue > 0 && busy >= shost->can_queue)`. These are performance/blk-mq conditional changes, not the fix for the ordering race. Because the problematic decrement/check structure remains present and no explicit ordering or corrected wakeup handling is introduced, this version still contains the bug and is not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "c84b023a4c14",
+          "anchor_file": "drivers/scsi/scsi_lib.c",
+          "anchor_lineno": 348
+        },
+        "commit": "74665016086615bbaa3fa6f83af410a0a4e029ee",
+        "commit_short": "746650160866",
+        "commit_msg": "scsi: convert host_busy to atomic_t\n\nAvoid taking the host-wide host_lock to check the per-host queue limit.\nInstead we ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/scsi/scsi_lib.c",
+        "display_lineno": 295,
+        "code_snippet": "commit 74665016086615bbaa3fa6f83af410a0a4e029ee\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Wed Jan 22 15:29:29 2014 +0100\n\n    scsi: convert host_busy to atomic_t\n    \n    Avoid taking the host-wide host_lock to check the per-host queue limit.\n    Instead we do an atomic_inc_return early on to grab our slot in the queue,\n    and if necessary decrement it after finishing all checks.\n    \n    Signed-off-by: Christoph Hellwig <hch@lst.de>\n    Reviewed-by: Martin K. Petersen <martin.petersen@ora",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the relevant host_busy manipulation and wakeup logic in the affected paths. The vulnerable construct is present: this commit converts host_busy to atomic operations without adding the required cross-CPU ordering around the error-handling wakeup condition described in the root cause. In `scsi_device_unbusy()`, the code now does `atomic_dec(&shost->host_busy);` and then, if recovery is active, checks `if (unlikely(scsi_host_in_recovery(shost) && (shost->host_failed || shost->host_eh_scheduled))) { ... scsi_eh_wakeup(shost); }`. This shows host_busy is decremented outside the `host_lock`, while wakeup remains conditional and only later takes the lock. That matches the root cause pattern where clearing inflight / decrementing busy and incrementing host_failed can race such that no CPU observes the equality needed for EH wakeup. Likewise, `scsi_host_queue_ready()` now uses `busy = atomic_inc_return(&shost->host_busy) - 1;` and `atomic_dec(&shost->host_busy);`, confirming the commit's conversion of host_busy to atomic_t. There is no visible fix here such as explicit memory-ordering/barrier pairing or a corrected synchronization scheme between `scsi_dec_host_busy()` / unbusy and `scsi_eh_inc_host_failed()`. Therefore this version contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 4,
+        "blame_input": {
+          "anchor_commit": "7ae65c0f9646",
+          "anchor_file": "drivers/scsi/scsi_lib.c",
+          "anchor_lineno": 295
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/scsi/scsi_lib.c",
+        "display_lineno": 357,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The function body is sufficient because it shows the exact error-handling wakeup logic around `host_busy` decrement. The vulnerable construct is present: after `shost->host_busy--;` the code checks only `if (unlikely(test_bit(SHOST_RECOVERY, &shost->shost_state) && shost->host_failed)) scsi_eh_wakeup(shost);` (lines 358-361). This matches the pre-fix behavior implicated in the root cause: wakeup is based on `host_failed` merely being nonzero rather than using the corrected ordering/condition that ensures the error handler is woken when the busy/failed accounting reaches the required state. There is no visible fix here for the cross-CPU ordering issue described in the root cause; the function still performs the old decrement-and-conditional-wakeup logic under `host_lock` with no additional ordering or revised equality-based handling. Therefore the vulnerable logic is present and the fix is not."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_votes": {
+        "4e6c9011990726f4d175e2cdfebe5b0b8cce4839": 1,
+        "76aaf87b4cdc7f7115a32e4fda88310d42ce7fde": 1,
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 1
+      },
+      "bic_candidates": [
+        "4e6c9011990726f4d175e2cdfebe5b0b8cce4839",
+        "76aaf87b4cdc7f7115a32e4fda88310d42ce7fde",
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

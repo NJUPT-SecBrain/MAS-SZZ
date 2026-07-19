@@ -1,0 +1,424 @@
+{
+  "cveid": "CVE-2026-43042",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "629ec78ef8608d955ce217880cdc3e1873af3a15"
+  ],
+  "ground_truth_bic": "dde1b38e873cff70f0af36e884bbeb1b14a536ed",
+  "predicted_bic": [
+    "73e40539399101667945ed8b8299d0fa67a4fca2",
+    "19d0c341d9d5cd186661fef58e7264a9701ef71d",
+    "7720c01f3f590116882e251f13c7e1d5602f8643"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 29118,
+  "root_cause": {
+    "text": "The MPLS subsystem updated `net->mpls.platform_labels` and `net->mpls.platform_label` separately during table resize, while RCU readers in `mpls_forward()` and `mpls_dump_routes()` could read them without synchronization, allowing a torn/inconsistent snapshot that could make an index check pass against one table size and then dereference a different table, leading to out-of-bounds access.",
+    "evidence": "The patch message states that “RCU-protected codepaths (mpls_forward, mpls_dump_routes) can have an inconsistent view of platform_labels vs platform_label in case of a concurrent resize … This can lead to OOB accesses,” and the diff shows the resize path writing `platform_labels` and `platform_label` under `platform_mutex` but only after the fix wrapping both with `write_seqcount_begin/end`, while readers were changed to retry via `read_seqcount_begin/retry` in `mpls_platform_label_rcu()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mpls/af_mpls.c",
+      "lineno": 90,
+      "content": "if (index >= net->mpls.platform_labels)",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mpls/af_mpls.c",
+      "lineno": 93,
+      "content": "platform_label = rcu_dereference(net->mpls.platform_label);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mpls/af_mpls.c",
+      "lineno": 2244,
+      "content": "platform_labels = net->mpls.platform_labels;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mpls/af_mpls.c",
+      "lineno": 2648,
+      "content": "net->mpls.platform_labels = limit;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mpls/af_mpls.c",
+      "lineno": 2649,
+      "content": "rcu_assign_pointer(net->mpls.platform_label, labels);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The MPLS subsystem updated `net->mpls.platform_labels` and `net->mpls.platform_label` separately during table resize, while RCU readers in `mpls_forward()` and `mpls_dump_routes()` could read them without synchronization, allowing a torn/inconsistent snapshot that could make an index check pass against one table size and then dereference a different table, leading to out-of-bounds access.",
+      "evidence_points": "The patch message states that “RCU-protected codepaths (mpls_forward, mpls_dump_routes) can have an inconsistent view of platform_labels vs platform_label in case of a concurrent resize … This can lead to OOB accesses,” and the diff shows the resize path writing `platform_labels` and `platform_label` under `platform_mutex` but only after the fix wrapping both with `write_seqcount_begin/end`, while readers were changed to retry via `read_seqcount_begin/retry` in `mpls_platform_label_rcu()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/netns/mpls.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/mpls/af_mpls.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/mpls/af_mpls.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/mpls/af_mpls.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/mpls/af_mpls.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add sequence-counter synchronization state to `netns_mpls` for safe concurrent access to MPLS platform labels.",
+        "what": "A new field, `seqcount_mutex_t platform_label_seq`, was added to the `struct netns_mpls` definition immediately after `platform_mutex`.",
+        "how": "This extends the MPLS namespace state with a sequence-counter protected by the existing mutex, enabling coordinated read/write access patterns for `platform_label` data and supporting safer concurrent updates."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Read MPLS platform label pointer and size atomically under seqcount to avoid inconsistent RCU snapshots in the input path.",
+        "what": "A new helper function, `mpls_platform_label_rcu()`, was added to read `net->mpls.platform_label` and `net->mpls.platform_labels` together under `platform_label_seq` using a seqcount retry loop. In `mpls_route_input_rcu()`, the code now calls this helper, stores the returned label count in a local `platform_labels` variable, and uses that value for the bounds check instead of reading `net->mpls.platform_labels` directly. The direct `rcu_dereference(net->mpls.platform_label)` in `mpls_route_input_rcu()` was removed.",
+        "how": "This change makes the RCU read path obtain a consistent snapshot of the platform label pointer and its valid size, preventing races where the array pointer and length could be observed from different updates. As a result, the bounds check and subsequent indexed dereference are performed against matching data, reducing the risk of out-of-bounds access or dereferencing an entry based on stale sizing information."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Switch MPLS route dumping to use the shared RCU helper for retrieving platform label state.",
+        "what": "In mpls_dump_routes(), the code that separately read net->mpls.platform_label with rcu_dereference() and net->mpls.platform_labels was replaced by a single call to mpls_platform_label_rcu(net, &platform_labels), which returns the platform_label and writes platform_labels through an आउट parameter.",
+        "how": "This changes how the dump routine acquires MPLS platform label state by using the helper to fetch the RCU-protected label and associated label count together, reducing duplicated access logic and ensuring the two values are obtained through the same accessor path during route dumping."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Make MPLS platform label table resizing safely serialized by protecting updates with BH disable and seqcount synchronization.",
+        "what": "In resize_platform_label_table(), the update of net->mpls.platform_labels and net->mpls.platform_label was wrapped with local_bh_disable()/local_bh_enable() and a seqcount critical section using write_seqcount_begin(&net->mpls.platform_label_seq) and write_seqcount_end(&net->mpls.platform_label_seq).",
+        "how": "This makes the global MPLS platform-label table update atomic with respect to readers that use the seqcount, and prevents softirq/bottom-half concurrency from observing a partially updated state while the pointer and size are being changed."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize the MPLS platform label seqcount with its mutex to make concurrent access to platform label state safe.",
+        "what": "In mpls_net_init(), after initializing net->mpls.platform_mutex, a new call to seqcount_mutex_init() was added to initialize net->mpls.platform_label_seq with the same mutex.",
+        "how": "This sets up a sequence counter protected by the platform mutex so concurrent readers and writers of platform label state can use proper seqcount synchronization, reducing the risk of inconsistent or torn reads."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Initialize the MPLS platform label seqcount with its mutex to make concurrent access to platform label state safe."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Switch MPLS route dumping to use the shared RCU helper for retrieving platform label state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add and use seqcount-based synchronization for MPLS platform label state to make concurrent access and resizing safe.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: inconsistent concurrent updates/reads of MPLS platform label state during resize. Adding seqcount-based synchronization and using it in readers and resizing prevents torn snapshots between the table pointer and size, which is exactly the issue behind the out-of-bounds access."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the described race by making MPLS route dumping use the shared RCU helper to read platform label state consistently, which targets the torn/inconsistent snapshot issue in the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "net/mpls/af_mpls.c",
+            "lineno": 2648,
+            "content": "net->mpls.platform_labels = limit;",
+            "rationale": "This updates the table size independently from the pointer update, creating a window where readers can observe a new size with an old table or vice versa, which matches the torn snapshot root cause."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/mpls/af_mpls.c",
+            "lineno": 2649,
+            "content": "rcu_assign_pointer(net->mpls.platform_label, labels);",
+            "rationale": "This pointer update is performed separately from the size update, so RCU readers may combine it with a mismatched platform_labels value and perform an index check against one snapshot then dereference another."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/mpls/af_mpls.c",
+            "lineno": 90,
+            "content": "if (index >= net->mpls.platform_labels)",
+            "rationale": "This bounds check reads platform_labels without synchronization, so it can pass based on one size while the subsequent dereference uses a different platform_label table, enabling out-of-bounds access."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/mpls/af_mpls.c",
+            "lineno": 93,
+            "content": "platform_label = rcu_dereference(net->mpls.platform_label);",
+            "rationale": "This fetches the table pointer separately from the size check; if resizing races with the read, the code can dereference a different table than the one used for the index validation."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mpls/af_mpls.c",
+            "lineno": 2244,
+            "content": "platform_labels = net->mpls.platform_labels;",
+            "rationale": "This dump-path read of the size is unsynchronized with the pointer read, so a concurrent resize can produce an inconsistent snapshot and lead to invalid indexing into the label table."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mpls/af_mpls.c",
+            "stmt_text": "if (index >= net->mpls.platform_labels)",
+            "location": "hunk",
+            "explanation": "This unsynchronized bounds check reads platform_labels independently of the table pointer, so a concurrent resize can change the size after the check and before dereference, creating the torn snapshot that can lead to out-of-bounds access."
+          },
+          {
+            "vuln_file": "net/mpls/af_mpls.c",
+            "stmt_text": "platform_label = rcu_dereference(net->mpls.platform_label);",
+            "location": "hunk",
+            "explanation": "This statement fetches the table pointer separately from the earlier size check, so the code can validate against one platform_labels value and then dereference a different table after resize, matching the race-induced inconsistency."
+          },
+          {
+            "vuln_file": "net/mpls/af_mpls.c",
+            "stmt_text": "platform_labels = net->mpls.platform_labels;",
+            "location": "hunk",
+            "explanation": "This dump-path read of platform_labels is unsynchronized with the corresponding pointer read, allowing a concurrent resize to produce a mismatched snapshot and invalid indexing into the MPLS label table."
+          },
+          {
+            "vuln_file": "net/mpls/af_mpls.c",
+            "stmt_text": "net->mpls.platform_labels = limit;",
+            "location": "hunk",
+            "explanation": "The resize path updates platform_labels separately from the pointer update, which creates the torn/inconsistent snapshot observed by RCU readers."
+          },
+          {
+            "vuln_file": "net/mpls/af_mpls.c",
+            "stmt_text": "rcu_assign_pointer(net->mpls.platform_label, labels);",
+            "location": "hunk",
+            "explanation": "The resize path updates the table pointer independently of platform_labels, so readers may combine a new pointer with an old size or vice versa, enabling the out-of-bounds race."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45dbf8fcea4d",
+          "anchor_file": "net/mpls/af_mpls.c",
+          "anchor_lineno": 90
+        },
+        "commit": "73e40539399101667945ed8b8299d0fa67a4fca2",
+        "commit_short": "73e405393991",
+        "commit_msg": "mpls: Add mpls_route_input().\n\nmpls_route_input_rcu() is called from mpls_forward() and\nmpls_getroute().\n\nThe former is ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mpls/af_mpls.c",
+        "display_lineno": 90,
+        "code_snippet": "commit 73e40539399101667945ed8b8299d0fa67a4fca2\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Wed Oct 29 17:33:00 2025 +0000\n\n    mpls: Add mpls_route_input().\n    \n    mpls_route_input_rcu() is called from mpls_forward() and\n    mpls_getroute().\n    \n    The former is under RCU, and the latter is under RTNL, so\n    mpls_route_input_rcu() uses rcu_dereference_rtnl().\n    \n    Let's use rcu_dereference() in mpls_route_input_rcu() and\n    add an RTNL variant for mpls_getroute().\n    \n    L",
+        "exists": false,
+        "reason": "This diff shows the lookup logic being split into an RTNL-safe helper and an RCU-safe helper, with the key fix being the added bounds check before dereference in the RCU path: `if (index >= net->mpls.platform_labels) return NULL;` and in `mpls_getroute()` the call is now guarded by `if (in_label < net->mpls.platform_labels) rt = mpls_route_input(net, in_label);`. The vulnerable construct described in the root cause was the unsynchronized/torn snapshot between `platform_labels` and `platform_label` leading to an out-of-bounds dereference. In this snippet, the previously unsafe pattern is no longer present in the shown code paths, and the helper names/usage indicate corrected handling. The snippet is sufficient to determine that this commit already contains the fix for the lookup side."
+      }
+    },
+    {
+      "bic_found": "73e40539399101667945ed8b8299d0fa67a4fca2",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45dbf8fcea4d",
+          "anchor_file": "net/mpls/af_mpls.c",
+          "anchor_lineno": 93
+        },
+        "commit": "73e40539399101667945ed8b8299d0fa67a4fca2",
+        "commit_short": "73e405393991",
+        "commit_msg": "mpls: Add mpls_route_input().\n\nmpls_route_input_rcu() is called from mpls_forward() and\nmpls_getroute().\n\nThe former is ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mpls/af_mpls.c",
+        "display_lineno": 93,
+        "code_snippet": "commit 73e40539399101667945ed8b8299d0fa67a4fca2\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Wed Oct 29 17:33:00 2025 +0000\n\n    mpls: Add mpls_route_input().\n    \n    mpls_route_input_rcu() is called from mpls_forward() and\n    mpls_getroute().\n    \n    The former is under RCU, and the latter is under RTNL, so\n    mpls_route_input_rcu() uses rcu_dereference_rtnl().\n    \n    Let's use rcu_dereference() in mpls_route_input_rcu() and\n    add an RTNL variant for mpls_getroute().\n    \n    L",
+        "exists": false,
+        "reason": "The shown code already separates the RTNL and RCU access paths in a way that avoids the torn snapshot issue described. In the RCU path, it first checks the bound with `if (index >= net->mpls.platform_labels) return NULL;` and then uses `rcu_dereference(net->mpls.platform_label)` followed by `rcu_dereference(platform_label[index])`. In the RTNL path, `mpls_route_input()` uses `rtnl_dereference(net->mpls.platform_label)` and `rtnl_dereference(platform_label[index])`. The previously problematic pattern of mixing an index check with a different dereference mode is not present here. Also, `mpls_getroute()` now does `if (in_label < net->mpls.platform_labels) rt = mpls_route_input(net, in_label);`, which avoids calling into the lookup when out of range. Therefore the vulnerable construct is absent and the fix is already present in this snippet."
+      }
+    },
+    {
+      "bic_found": "73e40539399101667945ed8b8299d0fa67a4fca2",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45dbf8fcea4d",
+          "anchor_file": "net/mpls/af_mpls.c",
+          "anchor_lineno": 2244
+        },
+        "commit": "19d0c341d9d5cd186661fef58e7264a9701ef71d",
+        "commit_short": "19d0c341d9d5",
+        "commit_msg": "mpls: Cleanup the rcu usage in the code.\n\nSparse was generating a lot of warnings mostly from missing annotations\nin the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mpls/af_mpls.c",
+        "display_lineno": 719,
+        "code_snippet": "commit 19d0c341d9d5cd186661fef58e7264a9701ef71d\nAuthor: Eric W. Biederman <ebiederm@xmission.com>\nDate:   Sat Mar 7 16:21:56 2015 -0600\n\n    mpls: Cleanup the rcu usage in the code.\n    \n    Sparse was generating a lot of warnings mostly from missing annotations\n    in the code.  Add missing annotations and in a few cases tweak the code\n    for performance by moving work before loops.\n    \n    This also fixes a problematic ommision of rcu_assign_pointer and\n    rcu_dereference.\n    \n    Hopefull",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": false,\n  \"is_fixed\": true,\n  \"reason\": \"The vulnerable torn-snapshot pattern is already corrected in this commit. In `resize_platform_label_table()` the code now u"
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "d865616e1889",
+          "anchor_file": "net/mpls/af_mpls.c",
+          "anchor_lineno": 719
+        },
+        "commit": "8de147dc8e2adea82b8a1a2a08fcc983330f6770",
+        "commit_short": "8de147dc8e2a",
+        "commit_msg": "mpls: Multicast route table change notifications\n\nUnlike IPv4 this code notifies on all cases where mpls routes\nare adde",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mpls/af_mpls.c",
+        "display_lineno": 715,
+        "code_snippet": "commit 8de147dc8e2adea82b8a1a2a08fcc983330f6770\nAuthor: Eric W. Biederman <ebiederm@xmission.com>\nDate:   Tue Mar 3 19:14:31 2015 -0600\n\n    mpls: Multicast route table change notifications\n    \n    Unlike IPv4 this code notifies on all cases where mpls routes\n    are added or removed and it never automatically removes routes.\n    Avoiding both the userspace confusion that is caused by omitting\n    route updates and the possibility of a flood of netlink traffic\n    when an interface goes doew.\n ",
+        "exists": false,
+        "reason": "The shown function `lfib_nlmsg_size()` only computes netlink message size: `if (rt->rt_labels) payload += nla_total_size(rt->rt_labels * 4);`. It does not access `net->mpls.platform_labels` or `net->mpls.platform_label`, does not perform any table resize, and does not contain the RCU reader/index-check logic described in the root cause. Because the vulnerable construct is absent from this snippet, it is not possible to mark this function as containing the bug or the fix."
+      }
+    },
+    {
+      "bic_found": "19d0c341d9d5cd186661fef58e7264a9701ef71d",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45dbf8fcea4d",
+          "anchor_file": "net/mpls/af_mpls.c",
+          "anchor_lineno": 2648
+        },
+        "commit": "7720c01f3f590116882e251f13c7e1d5602f8643",
+        "commit_short": "7720c01f3f59",
+        "commit_msg": "mpls: Add a sysctl to control the size of the mpls label table\n\nThis sysctl gives two benefits.  By defaulting the table",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mpls/af_mpls.c",
+        "display_lineno": 350,
+        "code_snippet": "commit 7720c01f3f590116882e251f13c7e1d5602f8643\nAuthor: Eric W. Biederman <ebiederm@xmission.com>\nDate:   Tue Mar 3 19:11:20 2015 -0600\n\n    mpls: Add a sysctl to control the size of the mpls label table\n    \n    This sysctl gives two benefits.  By defaulting the table size to 0\n    mpls even when compiled in and enabled defaults to not forwarding\n    any packets.  This prevents unpleasant surprises for users.\n    \n    The other benefit is that as mpls labels are allocated locally a dense\n    ta",
+        "exists": false,
+        "reason": "The shown function `resize_platform_label_table()` already updates the two fields together under `rtnl_lock()`: it first records `old = net->mpls.platform_label; old_limit = net->mpls.platform_labels;`, then after preparing the new table it performs the paired update `net->mpls.platform_labels = limit; net->mpls.platform_label = labels;`. That means the vulnerable torn update pattern described in the root cause is not present in this code snippet. Although readers are not shown here, the specific buggy construct (separate unsynchronized updates of `platform_labels` and `platform_label`) is absent from this function body, and the commit appears to introduce the resize path rather than the later fix for an existing bug."
+      }
+    },
+    {
+      "bic_found": "7720c01f3f590116882e251f13c7e1d5602f8643",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "45dbf8fcea4d",
+          "anchor_file": "net/mpls/af_mpls.c",
+          "anchor_lineno": 2649
+        },
+        "commit": "19d0c341d9d5cd186661fef58e7264a9701ef71d",
+        "commit_short": "19d0c341d9d5",
+        "commit_msg": "mpls: Cleanup the rcu usage in the code.\n\nSparse was generating a lot of warnings mostly from missing annotations\nin the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mpls/af_mpls.c",
+        "display_lineno": 847,
+        "code_snippet": "commit 19d0c341d9d5cd186661fef58e7264a9701ef71d\nAuthor: Eric W. Biederman <ebiederm@xmission.com>\nDate:   Sat Mar 7 16:21:56 2015 -0600\n\n    mpls: Cleanup the rcu usage in the code.\n    \n    Sparse was generating a lot of warnings mostly from missing annotations\n    in the code.  Add missing annotations and in a few cases tweak the code\n    for performance by moving work before loops.\n    \n    This also fixes a problematic ommision of rcu_assign_pointer and\n    rcu_dereference.\n    \n    Hopefull",
+        "exists": false,
+        "reason": "The shown diff already contains the synchronization fix for the torn-snapshot issue. In the resize path, the code now updates the table pointer with `rcu_assign_pointer(net->mpls.platform_label, labels);` while the size is still stored separately, and readers are changed to take a consistent snapshot with `platform_label = rtnl_dereference(net->mpls.platform_label);` and then `platform_labels = net->mpls.platform_labels;` before iterating. The vulnerable construct described in the root cause—unsynchronized separate reads of `platform_labels` and `platform_label` leading to index/table mismatch—is no longer present in this function body. The fix is also reinforced by converting individual route/device accesses to RCU-safe forms such as `rt = rtnl_dereference(platform_label[index]);` and `out_dev = rcu_dereference(rt->rt_dev);`."
+      }
+    },
+    {
+      "bic_found": "19d0c341d9d5cd186661fef58e7264a9701ef71d",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "73e40539399101667945ed8b8299d0fa67a4fca2": 2,
+        "19d0c341d9d5cd186661fef58e7264a9701ef71d": 2,
+        "7720c01f3f590116882e251f13c7e1d5602f8643": 1
+      },
+      "bic_candidates": [
+        "73e40539399101667945ed8b8299d0fa67a4fca2",
+        "19d0c341d9d5cd186661fef58e7264a9701ef71d",
+        "7720c01f3f590116882e251f13c7e1d5602f8643"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

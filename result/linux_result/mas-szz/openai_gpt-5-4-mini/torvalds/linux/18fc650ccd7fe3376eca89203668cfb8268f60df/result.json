@@ -1,0 +1,148 @@
+{
+  "cveid": "CVE-2026-52910",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "18fc650ccd7fe3376eca89203668cfb8268f60df"
+  ],
+  "ground_truth_bic": "538950a1b7527a0a52ccd9337e3fcd304f027f13",
+  "predicted_bic": [
+    "8217ca653ec601246832d562207bc24bdf652d2f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 8,
+  "llm_tokens": 17045,
+  "root_cause": {
+    "text": "`sk_reuseport_prog_free()` freed classic reuseport cBPF programs synchronously, so detaching/replacing a `SO_ATTACH_REUSEPORT_[CE]BPF` filter could reclaim the `bpf_prog` before concurrent RCU readers in `reuseport_select_sock()` finished using it, creating a use-after-free race.",
+    "evidence": "The CVE says “If a reuseport prog is detached from the setsockopt() path … sk_reuseport_prog_free() is called without waiting for RCU readers to complete,” and the patch changes `sk_reuseport_prog_free()` to call `call_rcu(&prog->aux->rcu, sk_reuseport_prog_free_rcu)` for classic BPF, with the new RCU callback doing `bpf_release_orig_filter(prog); bpf_prog_free(prog);` instead of immediate free.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/core/filter.c",
+      "lineno": 1663,
+      "content": "bpf_prog_put(prog);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`sk_reuseport_prog_free()` freed classic reuseport cBPF programs synchronously, so detaching/replacing a `SO_ATTACH_REUSEPORT_[CE]BPF` filter could reclaim the `bpf_prog` before concurrent RCU readers in `reuseport_select_sock()` finished using it, creating a use-after-free race.",
+      "evidence_points": "The CVE says “If a reuseport prog is detached from the setsockopt() path … sk_reuseport_prog_free() is called without waiting for RCU readers to complete,” and the patch changes `sk_reuseport_prog_free()` to call `call_rcu(&prog->aux->rcu, sk_reuseport_prog_free_rcu)` for classic BPF, with the new RCU callback doing `bpf_release_orig_filter(prog); bpf_prog_free(prog);` instead of immediate free."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/core/filter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Defer freeing classic reuseport BPF programs through RCU to safely release the original filter and prevent premature teardown.",
+        "what": "A new static RCU callback function, sk_reuseport_prog_free_rcu(), was added; it derives bpf_prog_aux from the rcu_head, gets the associated bpf_prog, then calls bpf_release_orig_filter(prog) followed by bpf_prog_free(prog). In sk_reuseport_prog_free(), the free path was changed from checking prog->type == BPF_PROG_TYPE_SK_REUSEPORT and calling bpf_prog_put() / bpf_prog_destroy() to instead checking bpf_prog_was_classic(prog): classic programs are now freed via call_rcu(&prog->aux->rcu, sk_reuseport_prog_free_rcu), while all other programs use bpf_prog_put().",
+        "how": "This changes teardown behavior for reuseport BPF programs so that classic BPF programs are released after an RCU grace period, allowing any concurrent readers to finish before the original filter is released and the program memory is freed. Non-classic programs continue to be reference-counted and dropped with bpf_prog_put()."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Defer freeing classic reuseport BPF programs through RCU to safely release the original filter and prevent premature teardown."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it fixes premature synchronous freeing of reuseport cBPF programs by deferring release through RCU, preventing the use-after-free race in concurrent reuseport_select_sock() readers."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/filter.c",
+            "lineno": 1663,
+            "content": "bpf_prog_put(prog);",
+            "rationale": "This is the synchronous release path for classic reuseport BPF programs. If called during detach/replace, it can drop the last reference and free the program immediately, racing with concurrent RCU readers in reuseport_select_sock()."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/filter.c",
+            "lineno": 1665,
+            "content": "bpf_prog_destroy(prog);",
+            "rationale": "This is the alternate immediate destruction path for non-reuseport programs in the same helper. While not the root cause for SK_REUSEPORT specifically, it represents the same premature teardown pattern in the pre-fix code."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/core/filter.c",
+            "stmt_text": "bpf_prog_put(prog);",
+            "location": "hunk",
+            "explanation": "This is the synchronous release of the classic reuseport BPF program. In the vulnerable code path, detaching or replacing a SO_ATTACH_REUSEPORT_[CE]BPF filter could drop the last reference immediately, allowing the bpf_prog to be freed before concurrent RCU readers in reuseport_select_sock() finished using it."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f3b8c28135c3",
+          "anchor_file": "net/core/filter.c",
+          "anchor_lineno": 1663
+        },
+        "commit": "8217ca653ec601246832d562207bc24bdf652d2f",
+        "commit_short": "8217ca653ec6",
+        "commit_msg": "bpf: Enable BPF_PROG_TYPE_SK_REUSEPORT bpf prog in reuseport selection\n\nThis patch allows a BPF_PROG_TYPE_SK_REUSEPORT b",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/filter.c",
+        "display_lineno": 1616,
+        "code_snippet": "commit 8217ca653ec601246832d562207bc24bdf652d2f\nAuthor: Martin KaFai Lau <kafai@fb.com>\nDate:   Wed Aug 8 01:01:26 2018 -0700\n\n    bpf: Enable BPF_PROG_TYPE_SK_REUSEPORT bpf prog in reuseport selection\n    \n    This patch allows a BPF_PROG_TYPE_SK_REUSEPORT bpf prog to select a\n    SO_REUSEPORT sk from a BPF_MAP_TYPE_REUSEPORT_ARRAY introduced in\n    the earlier patch.  \"bpf_run_sk_reuseport()\" will return -ECONNREFUSED\n    when the BPF_PROG_TYPE_SK_REUSEPORT prog returns SK_DROP.\n    The caller",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the synchronous freeing of reuseport programs in `sk_reuseport_prog_free()`, which could reclaim a `bpf_prog` before RCU readers finished. This snippet already shows the new fix: `void sk_reuseport_prog_free(struct bpf_prog *prog)` now distinguishes program type and for `BPF_PROG_TYPE_SK_REUSEPORT` does `bpf_prog_put(prog)` instead of immediate destruction: `if (prog->type == BPF_PROG_TYPE_SK_REUSEPORT) bpf_prog_put(prog); else bpf_prog_destroy(prog);`. That change avoids the old synchronous free behavior for reuseport BPF programs. The prior helper that directly destroyed the old program (`if (old_prog) bpf_prog_destroy(old_prog);`) has also been removed from this diff, and `reuseport_attach_prog(sk, prog)` is now responsible for attachment/freeing. Therefore, the vulnerable freeing pattern is absent here and the fix is present."
+      }
+    },
+    {
+      "bic_found": "8217ca653ec601246832d562207bc24bdf652d2f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "8217ca653ec601246832d562207bc24bdf652d2f": 1
+      },
+      "bic_candidates": [
+        "8217ca653ec601246832d562207bc24bdf652d2f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

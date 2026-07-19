@@ -1,0 +1,305 @@
+{
+  "cveid": "CVE-2026-23186",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "615901b57b7ef8eb655f71358f7e956e42bcd16b"
+  ],
+  "ground_truth_bic": "16746ce8adfe04f9ff8df75c1133286ba93c0e17",
+  "predicted_bic": [
+    "16746ce8adfe04f9ff8df75c1133286ba93c0e17",
+    "badcd4546d52ae4318f2bcfda0e47a1394b60e38"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 35740,
+  "root_cause": {
+    "text": "The acpi_power_meter_notify() callback was calling hwmon_device_unregister() while holding a lock (resource->lock) that is also acquired by sysfs attribute callbacks, creating a circular lock dependency that leads to deadlock when sysfs access occurs during device removal.",
+    "evidence": "The patch moves hwmon_device_unregister() outside the resource->lock critical section and introduces a new static mutex (acpi_notify_lock) to serialize the entire switch statement in acpi_power_meter_notify(). The commit message explicitly states: \"calls hwmon_device_unregister() under a lock that is also acquired by callbacks in sysfs attributes of the device being unregistered which is prone to deadlocks between sysfs access and device removal.\" Additionally, the patch adds IS_ERR() checks for resource->hwmon_dev to handle cases where hwmon_device_register_with_info() fails and leaves an error pointer, preventing attempts to unregister invalid device pointers.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/hwmon/acpi_power_meter.c",
+      "lineno": 831,
+      "content": "hwmon_device_unregister(resource->hwmon_dev);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/hwmon/acpi_power_meter.c",
+      "lineno": 828,
+      "content": "mutex_lock(&resource->lock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The acpi_power_meter_notify() callback was calling hwmon_device_unregister() while holding a lock (resource->lock) that is also acquired by sysfs attribute callbacks, creating a circular lock dependency that leads to deadlock when sysfs access occurs during device removal.",
+      "evidence_points": "The patch moves hwmon_device_unregister() outside the resource->lock critical section and introduces a new static mutex (acpi_notify_lock) to serialize the entire switch statement in acpi_power_meter_notify(). The commit message explicitly states: \"calls hwmon_device_unregister() under a lock that is also acquired by callbacks in sysfs attributes of the device being unregistered which is prone to deadlocks between sysfs access and device removal.\" Additionally, the patch adds IS_ERR() checks for resource->hwmon_dev to handle cases where hwmon_device_register_with_info() fails and leaves an error pointer, preventing attempts to unregister invalid device pointers."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/hwmon/acpi_power_meter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/hwmon/acpi_power_meter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/hwmon/acpi_power_meter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/hwmon/acpi_power_meter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a mutex lock to protect ACPI notification handling from concurrent access race conditions.",
+        "what": "Added a static mutex declaration `static DEFINE_MUTEX(acpi_notify_lock);` at module scope, after existing static variable declarations and before the `can_cap_in_hardware()` function.",
+        "how": "This introduces a mutual exclusion lock that can be used to synchronize access to shared resources in subsequent code. The mutex will serialize concurrent access to protected critical sections, preventing race conditions when multiple threads or contexts attempt to access or modify shared state related to ACPI notifications."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential race condition and use-after-free in acpi_power_meter_notify by properly sequencing lock acquisition, adding device validity checks, and explicitly managing mutex scope to prevent concurrent access to shared resources.",
+        "what": "Added guard(mutex)(&acpi_notify_lock) at function entry, moved hwmon_device_unregister() before mutex_lock(&resource->lock), added IS_ERR() check before unregister call, and explicitly added mutex_unlock(&resource->lock) after capability/domain operations.",
+        "how": "This change ensures acpi_notify_lock is held for the entire notify handler execution via guard macro (auto-unlock on scope exit), prevents potential use-after-free by unregistering hwmon device before acquiring resource->lock, validates hwmon_dev validity before unregistration, and makes the mutex unlock explicit rather than implicit at function end, reducing lock hold time and improving clarity of critical section boundaries."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove premature mutex unlock that was incorrectly releasing a lock during hwmon device registration in the power meter notify handler.",
+        "what": "Removed the `mutex_unlock(&resource->lock);` call that was executed after registering the hwmon device in the METER_NOTIFY_CONFIG case, replacing it with a blank line.",
+        "how": "This change removes the mutex unlock operation that was protecting the hwmon device registration. The mutex is no longer released after the registration attempt, which means any lock acquired before this code path would remain held when execution continues to the break statement. This could cause deadlocks or unintended lock retention depending on where the lock was originally acquired."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "guard",
+        "intent_summary": "Add error pointer check before unregistering hwmon device to prevent invalid pointer dereference during device removal.",
+        "what": "Wrapped the hwmon_device_unregister() call with an IS_ERR() check to conditionally unregister only if resource->hwmon_dev is not an error pointer.",
+        "how": "This prevents calling hwmon_device_unregister() on an invalid or error pointer, which would cause undefined behavior or a crash. The check ensures the device was successfully registered before attempting to unregister it during cleanup."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a mutex lock to protect ACPI notification handling from concurrent access race conditions."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Remove premature mutex unlock that was incorrectly releasing a lock during hwmon device registration in the power meter notify handler."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add error pointer check before unregistering hwmon device to prevent invalid pointer dereference during device removal."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix synchronization issues in acpi_power_meter_notify by correcting mutex lock/unlock sequencing and preventing race conditions during hwmon device registration.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group adds a mutex lock for protecting ACPI notification handling from concurrent access, but the root cause is specifically about a circular lock dependency (deadlock) caused by calling hwmon_device_unregister() while holding resource->lock that is also acquired by sysfs callbacks. Adding another mutex does not address the circular dependency issue; the fix requires either releasing the lock before unregistering or restructuring the locking to avoid the circular wait condition."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by fixing mutex lock/unlock sequencing in acpi_power_meter_notify(). The hunks focus on correcting synchronization issues during hwmon device registration/unregistration and preventing concurrent access to shared resources while holding locks. This directly mitigates the circular lock dependency that occurs when hwmon_device_unregister() is called while holding resource->lock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group adds an error pointer check before hwmon_device_unregister(), which addresses invalid pointer dereference prevention. However, the root cause is a circular lock dependency (holding resource->lock while calling hwmon_device_unregister(), which conflicts with sysfs callbacks that also need the lock). The error pointer check does not resolve the deadlock issue caused by the lock ordering problem - it only prevents a different type of error (null/invalid pointer dereference). The fix should involve releasing the lock before unregistering or restructuring the locking mechanism, not adding pointer validation."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/hwmon/acpi_power_meter.c",
+            "lineno": 831,
+            "content": "hwmon_device_unregister(resource->hwmon_dev);",
+            "rationale": "This line calls hwmon_device_unregister() while holding resource->lock (acquired at line 828). The hwmon device unregistration triggers sysfs attribute callbacks that also try to acquire resource->lock, creating a circular lock dependency and deadlock."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/hwmon/acpi_power_meter.c",
+            "lineno": 828,
+            "content": "mutex_lock(&resource->lock);",
+            "rationale": "The lock is acquired before hwmon_device_unregister() is called. The lock should not be held during hwmon device unregistration since sysfs callbacks triggered by unregistration also need this lock, causing deadlock."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/hwmon/acpi_power_meter.c",
+            "lineno": 846,
+            "content": "mutex_unlock(&resource->lock);",
+            "rationale": "This premature unlock at line 846 occurs after hwmon_device_register_with_info() completes, but the lock should be released before any hwmon device operations that might trigger sysfs callbacks requiring the lock."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/hwmon/acpi_power_meter.c",
+            "stmt_text": "hwmon_device_unregister(resource->hwmon_dev);",
+            "location": "hunk",
+            "explanation": "This statement calls hwmon_device_unregister() while holding resource->lock (acquired at line 828). The hwmon device unregistration triggers sysfs attribute callbacks that also attempt to acquire resource->lock, creating a circular lock dependency that leads to deadlock."
+          },
+          {
+            "vuln_file": "drivers/hwmon/acpi_power_meter.c",
+            "stmt_text": "mutex_lock(&resource->lock);",
+            "location": "hunk",
+            "explanation": "This lock acquisition at line 828 is held across the subsequent hwmon_device_unregister() call at line 831. Since hwmon device unregistration triggers sysfs callbacks that also need this lock, holding the lock during unregistration creates a circular dependency and deadlock condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "830e0bef79aa",
+          "anchor_file": "drivers/hwmon/acpi_power_meter.c",
+          "anchor_lineno": 831
+        },
+        "commit": "16746ce8adfe04f9ff8df75c1133286ba93c0e17",
+        "commit_short": "16746ce8adfe",
+        "commit_msg": "hwmon: (acpi_power_meter) Replace the deprecated hwmon_device_register\n\nWhen load this mode, we can see the following lo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/hwmon/acpi_power_meter.c",
+        "display_lineno": 831,
+        "code_snippet": "commit 16746ce8adfe04f9ff8df75c1133286ba93c0e17\nAuthor: Huisong Li <lihuisong@huawei.com>\nDate:   Wed Mar 19 10:06:38 2025 +0800\n\n    hwmon: (acpi_power_meter) Replace the deprecated hwmon_device_register\n    \n    When load this mode, we can see the following log:\n    \"power_meter ACPI000D:00: hwmon_device_register() is deprecated. Please\n     convert the driver to use hwmon_device_register_with_info().\"\n    \n    So replace hwmon_device_register with hwmon_device_register_with_info.\n    \n    The",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the acpi_power_meter_notify() function. At lines 852-870 (in the METER_NOTIFY_CONFIG case), the code calls hwmon_device_unregister(resource->hwmon_dev) at line 830 while holding resource->lock (acquired at line 828 via mutex_lock). The hwmon_device_unregister() function triggers sysfs attribute removal, which can invoke sysfs callbacks that also try to acquire resource->lock, creating a circular lock dependency and potential deadlock. The lock is not released until line 846 (mutex_unlock), meaning hwmon_device_unregister() is called with the lock held. This is the exact vulnerable pattern described in the root cause: calling hwmon_device_unregister() while holding a lock that sysfs attribute callbacks also need to acquire."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bf1bb26f23f1",
+          "anchor_file": "drivers/hwmon/acpi_power_meter.c",
+          "anchor_lineno": 831
+        },
+        "commit": "de584afa5e188a2da484bb5373d449598cdb9f5e",
+        "commit_short": "de584afa5e18",
+        "commit_msg": "hwmon driver for ACPI 4.0 power meters\n\nThis driver exposes ACPI 4.0 compliant power meters as hardware monitoring\ndevic",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/hwmon/acpi_power_meter.c",
+        "display_lineno": 823,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided code snippet (lines 755-832) shows a function that parses ACPI power meter capabilities and extracts string data. This function does not contain the vulnerable construct described in the root cause. The vulnerability root cause specifically mentions acpi_power_meter_notify() callback calling hwmon_device_unregister() while holding resource->lock. The provided function does not call hwmon_device_unregister(), does not appear to be a notify callback, and does not show any lock acquisition or release. To properly assess whether this commit introduces the vulnerability, the acpi_power_meter_notify() function body would need to be examined, as that is where the vulnerable construct (calling hwmon_device_unregister() under lock) would be located. The current snippet is insufficient to determine if this commit contains the bug."
+      }
+    },
+    {
+      "bic_found": "16746ce8adfe04f9ff8df75c1133286ba93c0e17",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "830e0bef79aa",
+          "anchor_file": "drivers/hwmon/acpi_power_meter.c",
+          "anchor_lineno": 828
+        },
+        "commit": "badcd4546d52ae4318f2bcfda0e47a1394b60e38",
+        "commit_short": "badcd4546d52",
+        "commit_msg": "hwmon: (acpi_power_meter) Fix lockdep splat\n\nDamien Le Moal reports a lockdep splat with the acpi_power_meter,\nobserved ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/hwmon/acpi_power_meter.c",
+        "display_lineno": 825,
+        "code_snippet": "commit badcd4546d52ae4318f2bcfda0e47a1394b60e38\nAuthor: Guenter Roeck <linux@roeck-us.net>\nDate:   Wed Feb 19 14:36:14 2020 -0800\n\n    hwmon: (acpi_power_meter) Fix lockdep splat\n    \n    Damien Le Moal reports a lockdep splat with the acpi_power_meter,\n    observed with Linux v5.5 and later.\n    \n    ======================================================\n    WARNING: possible circular locking dependency detected\n    5.6.0-rc2+ #629 Not tainted\n    -----------------------------------------------",
+        "exists": false,
+        "reason": "This commit is a FIX commit, not a bug-introducing commit. The diff shows the correction of the circular lock dependency vulnerability. The vulnerable construct (holding resource->lock while calling hwmon_device_unregister() and remove_attrs()) is being REMOVED and FIXED in this commit. Specifically: (1) The mutex_lock(&resource->lock) at line 820 is removed from the start of acpi_power_meter_notify(), eliminating the lock held during sysfs attribute removal. (2) Selective locking is added only around free_capabilities() and read_capabilities() in the METER_NOTIFY_CONFIG case (lines 825-828). (3) The update_meter(), update_cap(), and update_avg_interval() calls are removed from the notification handler (lines 837, 841, 845 in original are deleted). (4) In acpi_power_meter_remove(), the order is changed to call remove_attrs() BEFORE free_capabilities() (lines 915-916), preventing race conditions. (5) In show_str(), mutex protection is added around the string access (lines 360, 378-379) to protect against concurrent modification. These changes directly address the root cause by eliminating the lock ordering problem that created the circular dependency."
+      }
+    },
+    {
+      "bic_found": "badcd4546d52ae4318f2bcfda0e47a1394b60e38",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "16746ce8adfe04f9ff8df75c1133286ba93c0e17": 1,
+        "badcd4546d52ae4318f2bcfda0e47a1394b60e38": 1
+      },
+      "bic_candidates": [
+        "16746ce8adfe04f9ff8df75c1133286ba93c0e17",
+        "badcd4546d52ae4318f2bcfda0e47a1394b60e38"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

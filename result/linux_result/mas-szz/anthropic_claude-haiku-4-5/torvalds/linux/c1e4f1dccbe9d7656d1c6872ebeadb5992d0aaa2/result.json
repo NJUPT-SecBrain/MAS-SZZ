@@ -1,0 +1,353 @@
+{
+  "cveid": "CVE-2026-45944",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "c1e4f1dccbe9d7656d1c6872ebeadb5992d0aaa2"
+  ],
+  "ground_truth_bic": "ba39592764ed20cee09aae5352e603a27bf56b0d",
+  "predicted_bic": [
+    "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+    "80b79e141da7251d6ea82573f058ee9418896465"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 26735,
+  "root_cause": {
+    "text": "The VT-d IOMMU context entry teardown lacked proper ownership handshake semantics, allowing the hardware to fetch a \"torn\" 128-bit entry where the Present bit remained set while other fields were already zeroed due to non-atomic multi-write operations and potential compiler reordering.",
+    "evidence": "The patch implements the VT-d specification's recommended invalidation guidance (Section 6.5.3.3) by separating the teardown into phases: (1) clearing only the Present bit first with `context_clear_present()` and a `dma_wmb()` barrier to signal ownership transition to software, (2) performing cache and context-cache invalidation via `intel_context_flush_no_pasid()`, and (3) only then fully zeroing the entry with `context_clear_entry()`. The original code called `context_clear_entry()` directly, which performed multiple 64-bit writes to zero the entire entry without atomicity guarantees or proper memory barriers, creating a window where hardware could observe an inconsistent state with the Present bit still set.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/iommu/intel/iommu.c",
+      "lineno": 1243,
+      "content": "context_clear_entry(context);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/iommu/intel/pasid.c",
+      "lineno": 1243,
+      "content": "context_clear_entry(context);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/iommu/intel/iommu.h",
+      "lineno": 903,
+      "content": "context->lo |= 1;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/iommu/intel/iommu.c",
+      "lineno": 1244,
+      "content": "__iommu_flush_cache(iommu, context, sizeof(*context));",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The VT-d IOMMU context entry teardown lacked proper ownership handshake semantics, allowing the hardware to fetch a \"torn\" 128-bit entry where the Present bit remained set while other fields were already zeroed due to non-atomic multi-write operations and potential compiler reordering.",
+      "evidence_points": "The patch implements the VT-d specification's recommended invalidation guidance (Section 6.5.3.3) by separating the teardown into phases: (1) clearing only the Present bit first with `context_clear_present()` and a `dma_wmb()` barrier to signal ownership transition to software, (2) performing cache and context-cache invalidation via `intel_context_flush_no_pasid()`, and (3) only then fully zeroing the entry with `context_clear_entry()`. The original code called `context_clear_entry()` directly, which performed multiple 64-bit writes to zero the entire entry without atomicity guarantees or proper memory barriers, creating a window where hardware could observe an inconsistent state with the Present bit still set."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/iommu/intel/iommu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/iommu/intel/iommu.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/iommu/intel/pasid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix context clearing race condition by splitting entry clear into present-bit clear (under lock) and full clear (after flush) with proper cache synchronization.",
+        "what": "Replaced `context_clear_entry(context)` with `context_clear_present(context)` before the unlock, moved the original `context_clear_entry(context)` call to after `intel_context_flush_no_pasid()`, and added a second `__iommu_flush_cache()` call after the moved `context_clear_entry()`.",
+        "how": "This change reorders the context clearing operations to split the clearing into two phases: first clearing only the present bit (while holding the lock), then performing a context flush, and finally clearing the entire entry (after releasing the lock). This ensures the hardware sees the present bit cleared before the full entry is cleared, and adds an additional cache flush after the final clear to guarantee coherency."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add memory barriers and volatile accessors to context_set_present() to ensure proper hardware synchronization, and introduce context_clear_present() with correct ordering for safe ownership transitions per VT-d specification.",
+        "what": "Replaced a simple bitwise OR assignment (context->lo |= 1) with a READ_ONCE/WRITE_ONCE pattern preceded by dma_wmb(). Added a new function context_clear_present() that clears bit 0 using READ_ONCE, GENMASK_ULL masking, WRITE_ONCE, and dma_wmb().",
+        "how": "The change enforces memory ordering guarantees and prevents compiler optimizations that could reorder memory operations relative to hardware. dma_wmb() ensures write-memory-barrier semantics before the present bit is set. READ_ONCE/WRITE_ONCE prevent the compiler from eliding or reordering the volatile access. The new context_clear_present() function provides the inverse operation with proper synchronization, enabling safe clearing of the present bit with hardware-software ownership handshake compliance."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace full context entry clearing with selective present-bit clearing to correctly invalidate context entries when PASID table setup detects a copied context.",
+        "what": "Changed function call from `context_clear_entry(context)` to `context_clear_present(context)` on line 1027 within the `device_pasid_table_setup()` function.",
+        "how": "This substitutes the clearing operation applied to a context entry. Instead of clearing the entire context entry structure, the code now calls a function that specifically clears only the 'present' bit/flag of the context. This is a more targeted operation that preserves other context entry fields while invalidating its presence."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear and flush the context entry cache after TLB invalidation to ensure the IOMMU hardware sees the updated state during PASID table setup.",
+        "what": "Added two function calls after TLB and device TLB invalidation: context_clear_entry(context) to clear the context entry, and __iommu_flush_cache(iommu, context, sizeof(*context)) to flush the cache for that context.",
+        "how": "This change ensures that after invalidating TLBs and device TLBs during PASID table setup, the context entry is explicitly cleared from memory and the CPU cache is flushed to make the cleared state visible to the IOMMU hardware. This prevents stale context data from being used by the device after the invalidation operations."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add memory barriers and volatile accessors to context_set_present() to ensure proper hardware synchronization, and introduce context_clear_present() with correct ordering for safe ownership transitions per VT-d specification."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Replace full context entry clearing with selective present-bit clearing to correctly invalidate context entries when PASID table setup detects a copied context."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear and flush the context entry cache after TLB invalidation to ensure the IOMMU hardware sees the updated state during PASID table setup."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix context clearing race conditions by implementing proper memory barriers, volatile accessors, and split clearing operations to ensure correct hardware synchronization and safe ownership transitions per VT-d specification.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by implementing proper ownership handshake semantics for VT-d IOMMU context entry teardown. Specifically: (1) splitting the clearing operation to handle the Present bit separately under lock before full clearing, (2) adding memory barriers to prevent compiler reordering, (3) using volatile accessors for hardware synchronization, and (4) introducing context_clear_present() with correct ordering. These changes directly mitigate the race condition where hardware could fetch a 'torn' 128-bit entry with Present bit set while other fields were zeroed."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by replacing full context entry clearing with selective present-bit clearing. This ensures the Present bit is cleared atomically/selectively rather than through non-atomic multi-write operations that could leave the entry in a 'torn' state where Present remains set while other fields are zeroed. This implements proper ownership handshake semantics to prevent hardware from fetching inconsistent 128-bit entries."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group addresses cache flushing after TLB invalidation during PASID table setup, which is a different concern than the root cause. The vulnerability stems from non-atomic 128-bit context entry teardown with improper ownership handshake semantics (Present bit remaining set while other fields are zeroed). This group does not address the atomic write ordering or ownership handshake mechanisms needed to prevent the hardware from fetching a 'torn' entry during teardown."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/iommu/intel/iommu.c",
+            "lineno": 1243,
+            "content": "context_clear_entry(context);",
+            "rationale": "This function performs a non-atomic 128-bit clear operation on the context entry. Without proper synchronization, the hardware can observe a torn state where the Present bit is cleared in one write while other fields are cleared in subsequent writes, or vice versa, violating the VT-d specification's ownership handshake semantics."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/iommu/intel/iommu.h",
+            "lineno": 903,
+            "content": "context->lo |= 1;",
+            "rationale": "The context_set_present() function lacks memory barriers and volatile accessors, allowing compiler reordering and non-atomic updates. This enables the hardware to observe inconsistent state during context entry modifications, particularly when the Present bit is set without proper synchronization with other field updates."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/iommu/intel/pasid.c",
+            "lineno": 1027,
+            "content": "context_clear_entry(context);",
+            "rationale": "Similar to Hunk 0, this non-atomic clearing of the full context entry when a copied context is detected allows the hardware to fetch a torn 128-bit entry. The Present bit may remain set while other fields are zeroed, violating safe ownership transition semantics required by the VT-d specification."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/iommu/intel/iommu.c",
+            "lineno": 1244,
+            "content": "__iommu_flush_cache(iommu, context, sizeof(*context));",
+            "rationale": "The cache flush occurs after the full context_clear_entry() call without proper ordering guarantees. This allows a race condition where the hardware can fetch the context entry between individual writes within context_clear_entry() and the subsequent cache flush, observing a torn state."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/iommu/intel/iommu.c",
+            "stmt_text": "context_clear_entry(context);",
+            "location": "hunk",
+            "explanation": "This statement performs a non-atomic 128-bit clear operation on the VT-d context entry. Without proper synchronization and ownership handshake semantics, the hardware can observe a torn state where the Present bit is cleared in one write while other fields are cleared in subsequent writes, violating VT-d specification requirements. The fix splits this into a present-bit clear (under lock) followed by a full clear after cache flush."
+          },
+          {
+            "vuln_file": "drivers/iommu/intel/pasid.c",
+            "stmt_text": "context_clear_entry(context);",
+            "location": "hunk",
+            "explanation": "Similar to the iommu.c instance, this non-atomic clearing of the full context entry when a copied context is detected allows the hardware to fetch a torn 128-bit entry. The Present bit may remain set while other fields are zeroed, violating safe ownership transition semantics required by the VT-d specification."
+          },
+          {
+            "vuln_file": "drivers/iommu/intel/iommu.h",
+            "stmt_text": "context->lo |= 1;",
+            "location": "hunk",
+            "explanation": "The context_set_present() function lacks memory barriers and volatile accessors, allowing compiler reordering and non-atomic updates. This enables the hardware to observe inconsistent state during context entry modifications, particularly when the Present bit is set without proper synchronization with other field updates, violating ownership handshake semantics."
+          },
+          {
+            "vuln_file": "drivers/iommu/intel/iommu.c",
+            "stmt_text": "__iommu_flush_cache(iommu, context, sizeof(*context));",
+            "location": "hunk",
+            "explanation": "The cache flush occurs after the full context_clear_entry() call without proper ordering guarantees. This allows a race condition where the hardware can fetch the context entry between individual writes within context_clear_entry() and the subsequent cache flush, observing a torn state with the Present bit potentially still set."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75ed00055c05",
+          "anchor_file": "drivers/iommu/intel/iommu.c",
+          "anchor_lineno": 1243
+        },
+        "commit": "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+        "commit_short": "5082219b6a61",
+        "commit_msg": "iommu/vt-d: Don't be too aggressive when clearing one context entry\n\nPreviously, we were invalidating context cache and ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/intel/iommu.c",
+        "display_lineno": 2364,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function calls context_clear_entry(context) at line 2364, which performs a non-atomic multi-write operation to clear the 128-bit context entry. The vulnerability root cause describes that this operation lacks proper ownership handshake semantics, allowing hardware to fetch a 'torn' entry where the Present bit remains set while other fields are zeroed. The code then calls __iommu_flush_cache() at line 2365 to flush the cache, but this does not address the fundamental issue of non-atomic clearing. The subsequent flush_context() and flush_iotlb() calls at lines 2367-2376 occur after the lock is released (line 2366), which is too late to prevent the hardware from observing an inconsistent state during the clearing operation itself. The fix would require atomic clearing or proper ownership handshake semantics (e.g., clearing the Present bit last, or using atomic operations), which is not present in this code."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace": "blame failed at depth 0"
+    },
+    {
+      "bic_found": null,
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75ed00055c05",
+          "anchor_file": "drivers/iommu/intel/iommu.h",
+          "anchor_lineno": 903
+        },
+        "commit": "80b79e141da7251d6ea82573f058ee9418896465",
+        "commit_short": "80b79e141da7",
+        "commit_msg": "iommu/vt-d: Move inline helpers to header files\n\nMove inline helpers to header files so that other files can use them\nwi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/intel/iommu.h",
+        "display_lineno": 922,
+        "code_snippet": "commit 80b79e141da7251d6ea82573f058ee9418896465\nAuthor: Lu Baolu <baolu.lu@linux.intel.com>\nDate:   Mon Dec 18 15:34:45 2023 +0800\n\n    iommu/vt-d: Move inline helpers to header files\n    \n    Move inline helpers to header files so that other files can use them\n    without duplicating the code.\n    \n    Signed-off-by: Lu Baolu <baolu.lu@linux.intel.com>\n    Reviewed-by: Kevin Tian <kevin.tian@intel.com>\n    Link: https://lore.kernel.org/r/20231116015048.29675-5-baolu.lu@linux.intel.com\n    Signe",
+        "exists": false,
+        "reason": "The provided code snippet is insufficient to make a determination. Only line 922 showing 'context->lo |= 1;' is visible, which appears to be setting the Present bit in a context entry. However, the function signature, complete function body, and surrounding context are missing. The vulnerability root cause describes a teardown operation with non-atomic multi-write operations and compiler reordering issues affecting a 128-bit entry. Without seeing: (1) the complete function name and purpose, (2) the full function implementation, (3) how the 'context' structure is defined (particularly whether it's a 128-bit entry with 'lo' and 'hi' fields), and (4) the sequence of operations being performed, it is impossible to determine if this function contains the vulnerable construct or if proper ownership handshake semantics are implemented. The single line shown could be part of a setup operation (setting Present bit) rather than a teardown operation (clearing it), which would be a different context entirely."
+      }
+    },
+    {
+      "bic_found": "80b79e141da7251d6ea82573f058ee9418896465",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75ed00055c05",
+          "anchor_file": "drivers/iommu/intel/iommu.c",
+          "anchor_lineno": 1244
+        },
+        "commit": "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+        "commit_short": "5082219b6a61",
+        "commit_msg": "iommu/vt-d: Don't be too aggressive when clearing one context entry\n\nPreviously, we were invalidating context cache and ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/iommu/intel/iommu.c",
+        "display_lineno": 2365,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function calls context_clear_entry(context) at line 2364, which performs a multi-word write to clear the 128-bit context entry. The vulnerability root cause describes that this operation lacks proper ownership handshake semantics - the Present bit can remain set while other fields are zeroed due to non-atomic writes and compiler reordering. Line 2365 calls __iommu_flush_cache() to flush the cache, but this does not prevent the hardware from fetching a 'torn' entry during the clearing operation itself. The code does not implement any atomic clearing mechanism or proper handshake (such as clearing the Present bit last, or using a two-phase teardown with proper synchronization). The subsequent cache invalidation and IOTLB flush operations (lines 2367-2376) occur after the context entry has already been cleared, but they do not address the race condition that can occur during the clearing itself where hardware may see an inconsistent state with Present bit set but other fields zeroed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc": 2,
+        "80b79e141da7251d6ea82573f058ee9418896465": 1
+      },
+      "bic_candidates": [
+        "5082219b6a61cab585765a2ce4cd2a1f2f15dcdc",
+        "80b79e141da7251d6ea82573f058ee9418896465"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

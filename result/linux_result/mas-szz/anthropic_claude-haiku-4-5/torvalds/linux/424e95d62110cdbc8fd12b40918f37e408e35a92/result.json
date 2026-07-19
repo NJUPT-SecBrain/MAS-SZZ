@@ -1,0 +1,219 @@
+{
+  "cveid": "CVE-2026-31474",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "424e95d62110cdbc8fd12b40918f37e408e35a92"
+  ],
+  "ground_truth_bic": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+  "predicted_bic": [
+    "96d1c81e6a0478535342dff6c730adb076cd84e8"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 19727,
+  "root_cause": {
+    "text": "Insufficient synchronization between isotp_sendmsg() and isotp_release() allows isotp_release() to free so->tx.buf via kfree() while isotp_sendmsg() is still reading from it in isotp_fill_dataframe(), because wait_event_interruptible() can be interrupted by signals before tx.state reaches ISOTP_IDLE.",
+    "evidence": "The CVE description explicitly states that \"If a signal interrupts the wait_event_interruptible() inside close() while tx.state is ISOTP_SENDING, the loop exits early and release proceeds to force ISOTP_SHUTDOWN and continues to kfree(so->tx.buf) while sendmsg may still be reading so->tx.buf for the final CAN frame in isotp_fill_dataframe().\" The patch resolves this by deferring kfree() of tx.buf from isotp_release() to sk_destruct time, ensuring the buffer is only freed after both sendmsg and release operations have completely finished.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/can/isotp.c",
+      "lineno": 1255,
+      "content": "kfree(so->tx.buf);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/can/isotp.c",
+      "lineno": 1252,
+      "content": "kfree(so->rx.buf);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Insufficient synchronization between isotp_sendmsg() and isotp_release() allows isotp_release() to free so->tx.buf via kfree() while isotp_sendmsg() is still reading from it in isotp_fill_dataframe(), because wait_event_interruptible() can be interrupted by signals before tx.state reaches ISOTP_IDLE.",
+      "evidence_points": "The CVE description explicitly states that \"If a signal interrupts the wait_event_interruptible() inside close() while tx.state is ISOTP_SENDING, the loop exits early and release proceeds to force ISOTP_SHUTDOWN and continues to kfree(so->tx.buf) while sendmsg may still be reading so->tx.buf for the final CAN frame in isotp_fill_dataframe().\" The patch resolves this by deferring kfree() of tx.buf from isotp_release() to sk_destruct time, ensuring the buffer is only freed after both sendmsg and release operations have completely finished."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/can/isotp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/can/isotp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/can/isotp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove redundant or incorrect buffer deallocation in isotp_release() that was causing memory management issues.",
+        "what": "Removed two conditional kfree() calls that freed dynamically allocated rx.buf and tx.buf buffers if they were not pointing to the static sbuf members in the isotp_release() function.",
+        "how": "This change eliminates explicit memory deallocation for rx.buf and tx.buf during socket release. The buffers will no longer be freed at this point, potentially causing memory leaks if these buffers were dynamically allocated elsewhere in the code, or indicating that memory management was moved to a different cleanup path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add socket destructor to prevent memory leaks from dynamically allocated ISO-TP PDU buffers.",
+        "what": "Added a new function `isotp_sock_destruct()` that performs socket cleanup for ISO-TP protocol sockets. The function calls the standard CAN socket destructor and conditionally frees dynamically allocated RX and TX buffers if they differ from their static buffer counterparts.",
+        "how": "This function enables proper resource cleanup when ISO-TP sockets are destroyed. It prevents memory leaks by freeing extended PDU buffers that were dynamically allocated during socket operation, while avoiding double-free errors by checking if buffers point to static storage before freeing them. The function will be invoked as a destructor callback during socket teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Assign isotp-specific destructor callback to ensure proper cleanup of isotp socket resources during socket destruction.",
+        "what": "Added three lines after the notifier list registration in isotp_init(): a comment explaining the purpose and an assignment setting sk->sk_destruct to isotp_sock_destruct.",
+        "how": "This change ensures that when an isotp socket is destroyed, the isotp_sock_destruct callback is invoked instead of the default CAN socket destructor. This allows isotp-specific cleanup logic (such as notifier list removal) to execute during socket teardown, preventing resource leaks or dangling references."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Assign isotp-specific destructor callback to ensure proper cleanup of isotp socket resources during socket destruction."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix memory management issues in ISO-TP socket cleanup by implementing proper destructor callbacks and removing redundant deallocation.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses memory management and cleanup through destructor callbacks, but does not address the core synchronization issue. The vulnerability requires preventing isotp_release() from freeing so->tx.buf while isotp_sendmsg() is actively reading from it. This requires synchronization mechanisms (e.g., locks, proper state management, or preventing interruption of critical sections), not just improved destructor patterns. The group's focus on 'proper cleanup' and 'preventing memory leaks' treats the symptom rather than the root cause of the race condition."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/can/isotp.c",
+            "lineno": 1255,
+            "content": "kfree(so->tx.buf);",
+            "rationale": "This line directly frees so->tx.buf in isotp_release() without proper synchronization. The root cause indicates that isotp_release() can free tx.buf while isotp_sendmsg() is still reading from it in isotp_fill_dataframe(), because wait_event_interruptible() can be interrupted before tx.state reaches ISOTP_IDLE. This kfree() call is the direct cause of the use-after-free vulnerability."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/can/isotp.c",
+            "lineno": 1252,
+            "content": "kfree(so->rx.buf);",
+            "rationale": "Similar to tx.buf, this line frees so->rx.buf in isotp_release() without proper synchronization. While the root cause specifically mentions tx.buf, the same synchronization issue applies to rx.buf, making it a potential use-after-free vulnerability if isotp_recvmsg() or related functions are interrupted."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/can/isotp.c",
+            "stmt_text": "kfree(so->tx.buf);",
+            "location": "hunk",
+            "explanation": "This statement at line 1255 in isotp_release() directly frees so->tx.buf without proper synchronization. The vulnerability occurs because isotp_release() can execute and free tx.buf while isotp_sendmsg() is still reading from it in isotp_fill_dataframe(). Since wait_event_interruptible() can be interrupted by signals before tx.state reaches ISOTP_IDLE, there is no guarantee that the sender has finished using the buffer when isotp_release() frees it, resulting in a use-after-free condition."
+          },
+          {
+            "vuln_file": "net/can/isotp.c",
+            "stmt_text": "kfree(so->rx.buf);",
+            "location": "hunk",
+            "explanation": "This statement at line 1252 in isotp_release() frees so->rx.buf without proper synchronization. While the primary root cause focuses on tx.buf, the same synchronization issue applies to rx.buf. The buffer can be freed in isotp_release() while receiver-side functions may still be accessing it if wait_event_interruptible() is interrupted before the receive operation completes, creating a similar use-after-free vulnerability."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b9c310d72783",
+          "anchor_file": "net/can/isotp.c",
+          "anchor_lineno": 1255
+        },
+        "commit": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+        "commit_short": "96d1c81e6a04",
+        "commit_msg": "can: isotp: add module parameter for maximum pdu size\n\nWith ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (40",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/can/isotp.c",
+        "display_lineno": 1235,
+        "code_snippet": "commit 96d1c81e6a0478535342dff6c730adb076cd84e8\nAuthor: Oliver Hartkopp <socketcan@hartkopp.net>\nDate:   Sun Mar 26 13:59:11 2023 +0200\n\n    can: isotp: add module parameter for maximum pdu size\n    \n    With ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (4095)\n    bytes but can be represented as a 32 bit unsigned integer value which\n    allows 2^32 - 1 bytes (~4GB). The use-cases like automotive unified\n    diagnostic services (UDS) and flashing of ECUs still use the small\n    static",
+        "exists": false,
+        "reason": "This commit introduces dynamic buffer allocation for isotp sockets to support larger PDU sizes. The vulnerable construct described in the root cause (insufficient synchronization between isotp_sendmsg() and isotp_release()) is NOT present in this commit's changes. The commit adds: (1) dynamic buffer allocation in isotp_sendmsg() and isotp_rcv_ff() via kmalloc(), (2) proper initialization of buf pointers to sbuf in isotp_init(), and (3) conditional kfree() in isotp_release() that checks if buf != sbuf before freeing. However, the root cause vulnerability requires a race condition where wait_event_interruptible() can be interrupted before tx.state reaches ISOTP_IDLE, allowing isotp_release() to free buffers while isotp_sendmsg() is still using them. This commit does not introduce or demonstrate this synchronization issue - it only changes buffer management from static to dynamic allocation. The vulnerability would require missing locking/synchronization around the wait_event_interruptible() call and the subsequent buffer access, which is not shown in this diff."
+      }
+    },
+    {
+      "bic_found": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b9c310d72783",
+          "anchor_file": "net/can/isotp.c",
+          "anchor_lineno": 1252
+        },
+        "commit": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+        "commit_short": "96d1c81e6a04",
+        "commit_msg": "can: isotp: add module parameter for maximum pdu size\n\nWith ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (40",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/can/isotp.c",
+        "display_lineno": 1232,
+        "code_snippet": "commit 96d1c81e6a0478535342dff6c730adb076cd84e8\nAuthor: Oliver Hartkopp <socketcan@hartkopp.net>\nDate:   Sun Mar 26 13:59:11 2023 +0200\n\n    can: isotp: add module parameter for maximum pdu size\n    \n    With ISO 15765-2:2016 the PDU size is not limited to 2^12 - 1 (4095)\n    bytes but can be represented as a 32 bit unsigned integer value which\n    allows 2^32 - 1 bytes (~4GB). The use-cases like automotive unified\n    diagnostic services (UDS) and flashing of ECUs still use the small\n    static",
+        "exists": false,
+        "reason": "This commit introduces dynamic buffer allocation for isotp_sock structures, changing from fixed static buffers (u8 buf[MAX_MSG_LENGTH + 1]) to dynamically allocated buffers (u8 *buf with u8 sbuf[DEFAULT_MAX_PDU_SIZE] as fallback). The vulnerability root cause describes a race condition where isotp_release() frees so->tx.buf via kfree() while isotp_sendmsg() is still reading from it. However, this commit does NOT introduce the vulnerable construct - it actually adds the infrastructure that ENABLES the vulnerability by introducing dynamic allocation. The commit itself shows proper initialization in isotp_init() (lines 1633-1636: so->rx.buf = so->rx.sbuf; so->tx.buf = so->tx.sbuf) and proper cleanup in isotp_release() (lines 1231-1236: conditional kfree of buffers). The vulnerability would only manifest if there's missing synchronization between isotp_sendmsg() and isotp_release() that allows wait_event_interruptible() to be interrupted before tx.state reaches ISOTP_IDLE, but that synchronization issue is not introduced by THIS commit - it would be a pre-existing or separately introduced issue. This commit itself does not contain the vulnerable construct of unsynchronized concurrent access."
+      }
+    },
+    {
+      "bic_found": "96d1c81e6a0478535342dff6c730adb076cd84e8",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "96d1c81e6a0478535342dff6c730adb076cd84e8": 2
+      },
+      "bic_candidates": [
+        "96d1c81e6a0478535342dff6c730adb076cd84e8"
+      ]
+    }
+  ],
+  "used_fallback": true,
+  "error": ""
+}

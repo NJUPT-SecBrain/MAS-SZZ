@@ -1,0 +1,258 @@
+{
+  "cveid": "CVE-2026-53005",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "965dc93481d1b80d341bdd16c27b16fe197175ee"
+  ],
+  "ground_truth_bic": "77462de14a43f4d98dbd8de0f5743a4e02450b1d",
+  "predicted_bic": [
+    "638f32604385fd23059985da8de918e9c18f0b98"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 32409,
+  "root_cause": {
+    "text": "When an AF_UNIX socket attached to a SOCKMAP receives an skb with SCM_RIGHTS (inflight file descriptors), the skb is redirected to the psock's ingress queue without stripping the SCM attributes, hiding the inflight sockets from the AF_UNIX garbage collector and breaking its invariant that `unix_edge.successor` remains alive, leading to a use-after-free in the GC.",
+    "evidence": "The commit message explicitly states \"SOCKMAP can hide inflight fd from AF_UNIX GC\" and \"SOCKMAP redirect breaks the Tarjan-based GC's assumption that unix_edge.successor is always alive, which is no longer true once skb is redirected, resulting in use-after-free.\" The KASAN trace shows the use-after-free in `unix_del_edges` during GC processing. The patch resolves this by adding `unix_orphan_scm()` to drop all SCM attributes before passing the skb to the SOCKMAP layer via `recv_actor`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 2891,
+      "content": "return recv_actor(sk, skb);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "When an AF_UNIX socket attached to a SOCKMAP receives an skb with SCM_RIGHTS (inflight file descriptors), the skb is redirected to the psock's ingress queue without stripping the SCM attributes, hiding the inflight sockets from the AF_UNIX garbage collector and breaking its invariant that `unix_edge.successor` remains alive, leading to a use-after-free in the GC.",
+      "evidence_points": "The commit message explicitly states \"SOCKMAP can hide inflight fd from AF_UNIX GC\" and \"SOCKMAP redirect breaks the Tarjan-based GC's assumption that unix_edge.successor is always alive, which is no longer true once skb is redirected, resulting in use-after-free.\" The KASAN trace shows the use-after-free in `unix_del_edges` during GC processing. The patch resolves this by adding `unix_orphan_scm()` to drop all SCM attributes before passing the skb to the SOCKMAP layer via `recv_actor`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential reference count and ownership issues in UNIX domain socket skb destructor by properly transferring the PID and separating socket wfree from scm cleanup.",
+        "what": "In unix_destruct_scm, changed initialization to zero-initialized struct, replaced assignment of scm.pid with a swap, removed a comment, and moved the sock_wfree call to a new wrapper function unix_wfree that first calls unix_destruct_scm then sock_wfree.",
+        "how": "The swap clears UNIXCB(skb).pid while setting scm.pid, ensuring the PID is only transferred once. The sock_wfree call is now separated into unix_wfree, which is likely set as the skb destructor, allowing unix_destruct_scm to be reused without releasing the socket reference count."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix skb destructor in unix_scm_to_skb to use unix_wfree instead of unix_destruct_scm, correcting cleanup behavior for SCM data.",
+        "what": "Changed the skb destructor assignment in unix_scm_to_skb from unix_destruct_scm to unix_wfree.",
+        "how": "When the skb is freed, the destructor function invoked will be unix_wfree instead of unix_destruct_scm, altering the cleanup path for skbs carrying SCM ancillary data (e.g., file descriptors)."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Introduce a helper function `unix_orphan_scm` to factor out common SCM skb orphan logic, improving code organization and reducing duplication.",
+        "what": "Added a new static function `unix_orphan_scm` that takes a sock and an sk_buff, calls `scm_stat_del(sk, skb)`, then `unix_destruct_scm(skb)`, and sets `skb->destructor = sock_wfree`.",
+        "how": "This change introduces a helper function that encapsulates the sequence of operations needed to orphan an SCM skb from its socket: removing the skb from socket statistics, performing SCM destruction, and resetting the destructor to the default `sock_wfree` for proper cleanup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix missing orphan of SCM data in unix_read_skb by calling unix_orphan_scm under the iolock before releasing the lock.",
+        "what": "Moved mutex_unlock inside if (!skb) block for early return, and added a call to unix_orphan_scm(sk, skb) before mutex_unlock in the non-NULL skb path.",
+        "how": "The mutex is now held while calling unix_orphan_scm, ensuring protection of SCM data orphaning. On error (skb NULL), the mutex is unlocked before returning. On success, the function is called under the lock, then the lock is released before recv_actor."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix missing SCM data cleanup by calling unix_orphan_scm after reading an skb to prevent resource leaks.",
+        "what": "Added a call to `unix_orphan_scm(sk, skb)` between `spin_unlock(&queue->lock)` and `mutex_unlock(&u->iolock)` in `unix_stream_read_skb`.",
+        "how": "After reading an skb from the receive queue and releasing the queue spin lock, the function now invokes `unix_orphan_scm` to properly handle any SCM (socket control message) data associated with the skb, ensuring resources such as file descriptors are orphaned or transferred correctly before the mutex is released."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix missing SCM data cleanup by calling unix_orphan_scm after reading an skb to prevent resource leaks."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Introduce a helper function `unix_orphan_scm` to factor out common SCM skb orphan logic, improving code organization and reducing duplication."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix missing orphan of SCM data in unix_read_skb by calling unix_orphan_scm under the iolock before releasing the lock."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix SCM data cleanup and destructor handling in UNIX domain sockets to prevent resource leaks.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group's changes directly address the missing SCM data cleanup (including inflight file descriptors) when an skb is redirected, which is the root cause of the use-after-free in the AF_UNIX garbage collector."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "Group 1 introduces a helper function for code organization and deduplication, but does not address the core issue of stripping SCM_RIGHTS from SKBs before redirecting them to the psock's ingress queue to prevent use-after-free."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The fix directly addresses the root cause by ensuring that SCM_RIGHTS data is properly orphaned (stripped) when reading an skb from a unix socket, which prevents hiding inflight file descriptors from the garbage collector and avoids the use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2891,
+            "content": "return recv_actor(sk, skb);",
+            "rationale": "This line directly calls recv_actor without first calling unix_orphan_scm, which would strip SCM_RIGHTS attributes. When an skb with SCM_RIGHTS is redirected via SOCKMAP, the missing orphan causes inflight file descriptors to be hidden from the garbage collector, leading to use-after-free."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2891,
+            "content": "return recv_actor(sk, skb);",
+            "rationale": "Same as above – this line also calls recv_actor without prior orphan of SCM data. In the context of sockmap redirect, the skb bypasses normal UNIX receive cleanup, so this statement is vulnerable."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "return recv_actor(sk, skb);",
+            "location": "hunk",
+            "explanation": "This statement is called in unix_read_skb without first stripping SCM_RIGHTS attributes via unix_orphan_scm. When an AF_UNIX socket attached to SOCKMAP redirects an skb carrying inflight file descriptors, the missing orphan hides those sockets from the garbage collector, breaking the invariant that unix_edge.successor remains alive and leading to a use-after-free in the GC."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2891
+        },
+        "commit": "638f32604385fd23059985da8de918e9c18f0b98",
+        "commit_short": "638f32604385",
+        "commit_msg": "af_unix: Disable MSG_OOB handling for sockets in sockmap/sockhash\n\nAF_UNIX socket tracks the most recent OOB packet (in ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2766,
+        "code_snippet": "commit 638f32604385fd23059985da8de918e9c18f0b98\nAuthor: Michal Luczaj <mhal@rbox.co>\nDate:   Sat Jul 13 21:41:38 2024 +0200\n\n    af_unix: Disable MSG_OOB handling for sockets in sockmap/sockhash\n    \n    AF_UNIX socket tracks the most recent OOB packet (in its receive queue)\n    with an `oob_skb` pointer. BPF redirecting does not account for that: when\n    an OOB packet is moved between sockets, `oob_skb` is left outdated. This\n    results in a single skb that may be accessed from two different ",
+        "exists": false,
+        "reason": "The shown function `unix_stream_read_skb` deals with OOB packet handling and reading from a stream socket. The vulnerable construct (attaching SCM_RIGHTS without stripping during sockmap redirect) is not present in this function. The code does not address that root cause, so has_bug is false and is_fixed is false."
+      }
+    },
+    {
+      "bic_found": "638f32604385fd23059985da8de918e9c18f0b98",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "638f32604385fd23059985da8de918e9c18f0b98": 1
+      },
+      "bic_candidates": [
+        "638f32604385fd23059985da8de918e9c18f0b98"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,181 @@
+{
+  "cveid": "CVE-2025-71104",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "18ab3fc8e880791aa9f7c000261320fc812b5465"
+  ],
+  "ground_truth_bic": "d8f2f498d9ed0c5010bc1bbc1146f94c8bf9f8cc",
+  "predicted_bic": [
+    "8003c9ae204e21204e49816c5ea629357e283b06"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 10,
+  "llm_tokens": 19956,
+  "root_cause": {
+    "text": "In KVM x86 LAPIC periodic timer handling, `advance_periodic_target_expiration()` blindly advanced `target_expiration` by one period without clamping past-due expirations to the current time, allowing a stale expiration after long vCPU inactivity to produce a negative delta, unsigned `tscdeadline` overflow, and repeated reprogramming of expired software timers.",
+    "evidence": "The patch adds `if (ktime_before(apic->lapic_timer.target_expiration, now)) apic->lapic_timer.target_expiration = now;` in `arch/x86/kvm/lapic.c`, and the commit/CVE explicitly states that “blindly adding the period to the previous target expiration” leaves the expiration in the past, makes the delta negative, converts it to an oversized unsigned `tscdeadline`, forces fallback from the HV timer to hrtimers, and causes consecutive timer callbacks/hard lockup.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/x86/kvm/lapic.c",
+      "lineno": 2141,
+      "content": "ktime_add_ns(apic->lapic_timer.target_expiration,",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In KVM x86 LAPIC periodic timer handling, `advance_periodic_target_expiration()` blindly advanced `target_expiration` by one period without clamping past-due expirations to the current time, allowing a stale expiration after long vCPU inactivity to produce a negative delta, unsigned `tscdeadline` overflow, and repeated reprogramming of expired software timers.",
+      "evidence_points": "The patch adds `if (ktime_before(apic->lapic_timer.target_expiration, now)) apic->lapic_timer.target_expiration = now;` in `arch/x86/kvm/lapic.c`, and the commit/CVE explicitly states that “blindly adding the period to the previous target expiration” leaves the expiration in the past, makes the delta negative, converts it to an oversized unsigned `tscdeadline`, forces fallback from the HV timer to hrtimers, and causes consecutive timer callbacks/hard lockup."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/x86/kvm/lapic.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Clamp overdue periodic LAPIC timer expirations to the current time to avoid catch-up loops, hard lockups, and invalid oversized TSC deadlines.",
+        "what": "The change updates the comments in advance_periodic_target_expiration() for clarity, adds a conditional check after advancing apic->lapic_timer.target_expiration by one period to clamp it to now if the computed expiration is earlier than now, and adds a comment noting that this also prevents delta from becoming negative before computing delta and the TSC deadline.",
+        "how": "At runtime, if a periodic LAPIC timer expiration has fallen behind the current time, the code now stops trying to preserve or catch up missed past expirations and instead resets the next expiration to the current time. This avoids repeatedly restarting a timer with an already-expired deadline, prevents wasted host CPU work and possible hard lockups, and ensures the delta used for the TSC deadline is non-negative so the unsigned TSC deadline does not wrap into an excessively large value."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clamp overdue periodic LAPIC timer expirations to the current time to avoid catch-up loops, hard lockups, and invalid oversized TSC deadlines."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it clamps overdue periodic LAPIC timer expirations to the current time instead of blindly advancing by one period, preventing stale expirations, negative deltas, overflowed TSC deadlines, and repeated expired timer reprogramming."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kvm/lapic.c",
+            "lineno": 2141,
+            "content": "ktime_add_ns(apic->lapic_timer.target_expiration,",
+            "rationale": "This is the core faulty operation: it blindly advances target_expiration from its previous value by exactly one period, instead of clamping an overdue expiration to the current time. After long inactivity, this leaves target_expiration stale and still in the past."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kvm/lapic.c",
+            "lineno": 2143,
+            "content": "delta = ktime_sub(apic->lapic_timer.target_expiration, now);",
+            "rationale": "Because target_expiration may remain in the past, this subtraction can produce a negative delta, directly triggering the downstream overflow/invalid deadline behavior described in the root cause."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kvm/lapic.c",
+            "lineno": 2144,
+            "content": "apic->lapic_timer.tscdeadline = kvm_read_l1_tsc(apic->vcpu, tscl) +",
+            "rationale": "This statement consumes the potentially negative delta-derived cycle count; when converted to an unsigned deadline, it can overflow and cause repeated reprogramming of expired timers."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "arch/x86/kvm/lapic.c",
+            "lineno": 2140,
+            "content": "apic->lapic_timer.target_expiration =",
+            "rationale": "This assignment is part of the vulnerable update logic that preserves an outdated expiration basis instead of resetting/clamping it when overdue."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/x86/kvm/lapic.c",
+            "stmt_text": "ktime_add_ns(apic->lapic_timer.target_expiration,",
+            "location": "hunk",
+            "explanation": "This is the core vulnerable operation identified by the root cause: it advances the periodic timer's target_expiration from its prior value by one period, even when that prior expiration is already far in the past. Without clamping to the current time, the timer remains stale after long vCPU inactivity, which leads to negative deltas and the downstream overflow/reprogramming issues."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9633f180ce99",
+          "anchor_file": "arch/x86/kvm/lapic.c",
+          "anchor_lineno": 2141
+        },
+        "commit": "8003c9ae204e21204e49816c5ea629357e283b06",
+        "commit_short": "8003c9ae204e",
+        "commit_msg": "KVM: LAPIC: add APIC Timer periodic/oneshot mode VMX preemption timer support\n\nMost windows guests still utilize APIC Ti",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/lapic.c",
+        "display_lineno": 1420,
+        "code_snippet": "commit 8003c9ae204e21204e49816c5ea629357e283b06\nAuthor: Wanpeng Li <wanpeng.li@hotmail.com>\nDate:   Mon Oct 24 18:23:13 2016 +0800\n\n    KVM: LAPIC: add APIC Timer periodic/oneshot mode VMX preemption timer support\n    \n    Most windows guests still utilize APIC Timer periodic/oneshot mode\n    instead of tsc-deadline mode, and the APIC Timer periodic/oneshot\n    mode are still emulated by high overhead hrtimer on host. This patch\n    converts the expected expire time of the periodic/oneshot mode ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the exact periodic timer advancement logic and the places where `target_expiration`/`tscdeadline` are computed and reused. The vulnerable construct is present in `advance_periodic_target_expiration(struct kvm_lapic *apic)`, which does only: `apic->lapic_timer.tscdeadline += nsec_to_cycles(apic->vcpu, apic->lapic_timer.period);` and `apic->lapic_timer.target_expiration = ktime_add_ns(apic->lapic_timer.target_expiration, apic->lapic_timer.period);`. This blindly advances by exactly one period from the previous expiration and does not compare against current time or clamp stale expirations. The root cause description matches this behavior exactly: after long inactivity, `target_expiration` can remain far in the past, and advancing it by one period still leaves it expired. The rest of the snippet shows that stale `target_expiration` is then used directly, e.g. `start_sw_period()` starts the timer at `apic->lapic_timer.target_expiration`, and `apic_get_tmcct()` computes `remaining = ktime_sub(apic->lapic_timer.target_expiration, now);`, confirming that an outdated target can produce negative remaining time. `set_target_expiration()` initializes `tscdeadline` and `target_expiration`, but there is no corrective logic in `advance_periodic_target_expiration()` to fast-forward/clamp to `now`. Therefore the vulnerable logic is present, and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7e810a38e6c7",
+          "anchor_file": "arch/x86/kvm/lapic.c",
+          "anchor_lineno": 1420
+        },
+        "commit": "7e810a38e6c7166b91968e83dee4cf7a4ef5dc80",
+        "commit_short": "7e810a38e6c7",
+        "commit_msg": "KVM: LAPIC: rename start/cancel_hv_tscdeadline to start/cancel_hv_timer\n\nRename start/cancel_hv_tscdeadline to start/can",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/lapic.c",
+        "display_lineno": 1420,
+        "code_snippet": "commit 7e810a38e6c7166b91968e83dee4cf7a4ef5dc80\nAuthor: Wanpeng Li <wanpeng.li@hotmail.com>\nDate:   Mon Oct 24 18:23:12 2016 +0800\n\n    KVM: LAPIC: rename start/cancel_hv_tscdeadline to start/cancel_hv_timer\n    \n    Rename start/cancel_hv_tscdeadline to start/cancel_hv_timer since\n    they will handle both APIC Timer periodic/oneshot mode and tsc-deadline\n    mode.\n    \n    Cc: Paolo Bonzini <pbonzini@redhat.com>\n    Cc: Radim Krčmář <rkrcmar@redhat.com>\n    Cc: Yunhong Jiang <yunhong.jiang@int",
+        "exists": false,
+        "reason": "The root cause is in periodic LAPIC expiration advancement: specifically, logic like advance_periodic_target_expiration() incorrectly advancing target_expiration without clamping overdue expirations to the current time, which can yield a negative delta and overflowed tscdeadline. The provided function start_hv_timer() only reads an already-computed value, `u64 tscdeadline = apic->lapic_timer.tscdeadline;`, and passes it to `kvm_x86_ops->set_hv_timer(apic->vcpu, tscdeadline)`. There is no code here that computes or advances `target_expiration`, no periodic expiration adjustment, and no clamping against current time. Because the vulnerable construct is not shown in this function body at all, this function itself does not contain the vulnerable logic. However, the snippet is not sufficient to determine whether the surrounding commit version is vulnerable overall, since the relevant logic lives elsewhere."
+      }
+    },
+    {
+      "bic_found": "8003c9ae204e21204e49816c5ea629357e283b06",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "8003c9ae204e21204e49816c5ea629357e283b06": 1
+      },
+      "bic_candidates": [
+        "8003c9ae204e21204e49816c5ea629357e283b06"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

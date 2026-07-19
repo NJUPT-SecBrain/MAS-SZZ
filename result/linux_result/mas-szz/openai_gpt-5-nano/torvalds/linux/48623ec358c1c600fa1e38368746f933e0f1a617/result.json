@@ -1,0 +1,430 @@
+{
+  "cveid": "CVE-2026-31444",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "48623ec358c1c600fa1e38368746f933e0f1a617"
+  ],
+  "ground_truth_bic": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+  "predicted_bic": [
+    "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+    "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 25710,
+  "root_cause": {
+    "text": "smb_grant_oplock() published oplock_info to shared ksmbd lists in the wrong order and before fully initializing required fields, while still allowing a later allocation failure path to free the still-linked object, causing concurrent readers to hit a use-after-free or NULL dereference.",
+    "evidence": "The CVE/commit states that opinfo was added to ci->m_op_list before add_lease_global_list(), and if add_lease_global_list() failed on kmalloc, err_out called __free_opinfo() while the node remained linked; it also states opinfo->o_fp was assigned only after add_lease_global_list() published opinfo on the global lease list, allowing find_same_lease_key() to dereference opinfo->o_fp->f_ci while o_fp was NULL; the patch fixes this by setting o_fp before publication, preallocating lease_table before opinfo_add(), making add_lease_global_list() void/infallible after publication, and replacing __free_opinfo() with opinfo_put().",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1295,
+      "content": "opinfo_add(opinfo, fp);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1304,
+      "content": "opinfo->o_fp = fp;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1298,
+      "content": "err = add_lease_global_list(opinfo);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1308,
+      "content": "__free_opinfo(opinfo);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1054,
+      "content": "lease_add_list(opinfo);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "smb_grant_oplock() published oplock_info to shared ksmbd lists in the wrong order and before fully initializing required fields, while still allowing a later allocation failure path to free the still-linked object, causing concurrent readers to hit a use-after-free or NULL dereference.",
+      "evidence_points": "The CVE/commit states that opinfo was added to ci->m_op_list before add_lease_global_list(), and if add_lease_global_list() failed on kmalloc, err_out called __free_opinfo() while the node remained linked; it also states opinfo->o_fp was assigned only after add_lease_global_list() published opinfo on the global lease list, allowing find_same_lease_key() to dereference opinfo->o_fp->f_ci while o_fp was NULL; the patch fixes this by setting o_fp before publication, preallocating lease_table before opinfo_add(), making add_lease_global_list() void/infallible after publication, and replacing __free_opinfo() with opinfo_put()."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Replace the lease-table list insertion helper with an allocation-and-initialization helper that creates a properly initialized lease table for a client GUID.",
+        "what": "The static function `lb_add(struct lease_table *lb)`, which acquired `lease_list_lock` and added `lb->l_entry` to `lease_table_list`, was removed and replaced with a new static function `alloc_lease_table(struct oplock_info *opinfo)` that allocates a `struct lease_table` with `kmalloc_obj`, returns `NULL` on allocation failure, copies `opinfo->conn->ClientGUID` into `lb->client_guid`, initializes `lb->lease_list` with `INIT_LIST_HEAD`, initializes `lb->lb_lock` with `spin_lock_init`, and returns the allocated object.",
+        "how": "Instead of merely inserting an already existing lease table into the global list, the code now provides a constructor-style helper that creates and initializes a new `lease_table` instance and propagates allocation failure to callers. At runtime this enables proper setup of lease table state, including client GUID association and lock/list initialization, before any later use or insertion."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix a race in global lease table insertion by performing lookup and add under a write lock and reusing or freeing a preallocated lease table as needed.",
+        "what": "The function `add_lease_global_list` was changed from returning `int` to returning `void` and now takes an additional `struct lease_table *new_lb` parameter. Its internal locking was changed from `read_lock`/`read_unlock` to `write_lock`/`write_unlock`. The in-function allocation and initialization of a new `lease_table` (`kmalloc_obj`, `memcpy`, `INIT_LIST_HEAD`, `spin_lock_init`) and `-ENOMEM` error handling were removed. When an existing matching lease table is found, the code now frees `new_lb` before returning; otherwise it assigns `new_lb` to `opinfo->o_lease->l_lb`, adds the lease, inserts `new_lb` into `lease_table_list` with `list_add`, and unlocks.",
+        "how": "This change makes the search-and-insert sequence for the global lease table list execute under exclusive locking, preventing concurrent threads from racing while checking for an existing client GUID entry and potentially creating duplicate lease tables. It also shifts lease table allocation responsibility to the caller and removes allocation failure reporting from this function. At runtime, if another matching table already exists, the passed-in preallocated table is discarded; otherwise the new table is safely linked into the global list while holding the write lock."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add an initialized lease_table pointer in smb_grant_oplock() to support safe lease-table handling in the function.",
+        "what": "A new local variable declaration, `struct lease_table *new_lb = NULL;`, was added inside `smb_grant_oplock()` alongside the existing local variables.",
+        "how": "This introduces storage for a lease_table pointer initialized to NULL, enabling subsequent code in the function to track or use a newly allocated or selected lease table safely without relying on an undeclared or uninitialized variable."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix oplock/lease publication ordering and preallocate lease resources so concurrent readers never see a NULL o_fp and lease grant setup cannot fail after publication.",
+        "what": "The change moves assignment of opinfo->o_fp = fp to occur before publishing the oplock state, adds a preallocation step for lease handling with new_lb = alloc_lease_table(opinfo) and an -ENOMEM failure path before opinfo_add(), changes add_lease_global_list(opinfo) to add_lease_global_list(opinfo, new_lb), and replaces the err_out cleanup from __free_opinfo(opinfo) to kfree(new_lb) plus opinfo_put(opinfo).",
+        "how": "At runtime, this ensures concurrent readers cannot observe a published opinfo with a NULL o_fp pointer, preserves the existing publication order for in-flight grant visibility, and avoids failures after opinfo has been added by allocating lease-table resources up front; on allocation failure it now exits safely with proper cleanup instead of publishing partially initialized state."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Replace the lease-table list insertion helper with an allocation-and-initialization helper that creates a properly initialized lease table for a client GUID."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix oplock/lease publication ordering and preallocate lease resources so concurrent readers never see a NULL o_fp and lease grant setup cannot fail after publication."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add an initialized lease_table pointer in smb_grant_oplock() to support safe lease-table handling in the function."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix concurrency and publication-ordering bugs in oplock/lease management by making lease-table insertion atomic under proper locking and preallocating/reusing lease resources before publication.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change is about replacing a lease-table insertion helper with an allocation/initialization helper for client GUID lease tables, which is a different code path and data structure than smb_grant_oplock() publishing oplock_info in the wrong order and freeing a still-linked object. It does not directly address the oplock_info initialization/linking/use-after-free root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: they fix publication ordering of oplock/lease objects, ensure required fields/resources are initialized before insertion into shared lists/tables, and prevent post-publication allocation-failure cleanup from freeing still-visible objects. The added locking and atomic lease-table insertion also target the concurrent reader race described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change modifies smb_grant_oplock() to initialize and use the lease_table pointer safely, which is part of correctly setting up oplock/lease state before shared publication and failure handling. Since the root cause is improper initialization/order in smb_grant_oplock() leading to UAF/NULL dereference, this is directly related."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1295,
+            "content": "opinfo_add(opinfo, fp);",
+            "rationale": "This publishes opinfo onto shared per-file/inode lists before required fields are fully initialized, enabling concurrent readers to observe a partially initialized object."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1298,
+            "content": "err = add_lease_global_list(opinfo);",
+            "rationale": "This performs lease-table publication/allocation after opinfo was already linked, creating a failure path after publication; if it fails, later cleanup can free an object still visible from shared lists."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1304,
+            "content": "opinfo->o_fp = fp;",
+            "rationale": "The back-pointer needed by concurrent readers is initialized only after opinfo has already been published, so readers can dereference NULL or stale state."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1308,
+            "content": "__free_opinfo(opinfo);",
+            "rationale": "On add_lease_global_list() failure, this frees opinfo even though it may already have been linked by opinfo_add(), directly causing use-after-free for concurrent list readers."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1054,
+            "content": "lease_add_list(opinfo);",
+            "rationale": "This inserts the lease/oplock object into a shared global lease list during add_lease_global_list(); combined with the surrounding ordering, it contributes to premature publication before initialization/failure handling is complete."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "opinfo_add(opinfo, fp);",
+            "location": "hunk",
+            "explanation": "This is the primary premature-publication point: it links opinfo into shared per-file/inode lists before required fields such as o_fp are initialized and before all later setup steps are guaranteed to succeed, exposing partially initialized state to concurrent readers."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "opinfo->o_fp = fp;",
+            "location": "hunk",
+            "explanation": "This required back-pointer initialization occurs only after opinfo has already been published, so concurrent readers of the shared lists can observe opinfo with a NULL or uninitialized o_fp, matching the NULL dereference aspect of the root cause."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "err = add_lease_global_list(opinfo);",
+            "location": "hunk",
+            "explanation": "This performs additional lease publication/allocation after opinfo was already made visible via opinfo_add(). Because it can fail after publication, it creates the vulnerable post-publication failure path that can lead to freeing a still-linked object."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "__free_opinfo(opinfo);",
+            "location": "hunk",
+            "explanation": "On the failure path after add_lease_global_list(), this frees opinfo even though opinfo_add() may already have linked it into shared lists, directly enabling use-after-free for concurrent readers."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "lease_add_list(opinfo);",
+            "location": "hunk",
+            "explanation": "This inserts the object into the shared global lease list as part of add_lease_global_list(). In the buggy ordering, this contributes to making opinfo globally visible before initialization and failure handling are fully complete."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1295
+        },
+        "commit": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+        "commit_short": "1dfd062caa16",
+        "commit_msg": "ksmbd: fix use-after-free by using call_rcu() for oplock_info\n\nksmbd currently frees oplock_info immediately using kfree",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1293,
+        "code_snippet": "commit 1dfd062caa165ec9d7ee0823087930f3ab8a6294\nAuthor: Namjae Jeon <linkinjeon@kernel.org>\nDate:   Sat Mar 7 11:32:31 2026 +0900\n\n    ksmbd: fix use-after-free by using call_rcu() for oplock_info\n    \n    ksmbd currently frees oplock_info immediately using kfree(), even\n    though it is accessed under RCU read-side critical sections in places\n    like opinfo_get() and proc_show_files().\n    \n    Since there is no RCU grace period delay between nullifying the pointer\n    and freeing the memory, ",
+        "exists": true,
+        "reason": "The diff is sufficient because it directly shows the relevant logic in smb_grant_oplock() and the associated free path. The vulnerable construct is present in the pre-change code shown by removed lines in smb_grant_oplock(): `rcu_assign_pointer(fp->f_opinfo, opinfo);` followed by `opinfo->o_fp = fp;` and only later `opinfo_count_inc(fp);` / `opinfo_add(opinfo);`. This matches the root cause: the object is published via `fp->f_opinfo` before all required fields are initialized and before list/count setup is complete. The error path then shows `free_opinfo(opinfo);`, meaning a later failure after publication can free the object. The commit changes this by moving publication later: first `opinfo_count_inc(fp);`, `opinfo_add(opinfo, fp);`, optional `add_lease_global_list(opinfo);`, and only then `rcu_assign_pointer(fp->f_opinfo, opinfo);` and `opinfo->o_fp = fp;`, while the failure path is changed from `free_opinfo(opinfo);` to `__free_opinfo(opinfo);` to avoid deferred-free semantics on an unpublished object. Therefore, in the commit version being analyzed, the old vulnerable ordering exists and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "40955015fae4",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1293
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1220,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided snippet only shows the tail error path of a function: `err_out:`, `free_opinfo(opinfo);`, and `return err;`. The root cause is specifically about `smb_grant_oplock()` publishing `oplock_info` to shared lists before full initialization and then freeing it on a later allocation-failure path while it may still be linked. That requires seeing whether this `err_out` label belongs to `smb_grant_oplock()`, where `opinfo` is inserted into lists, what fields are initialized before/after publication, and whether the error path unlinks the object before `free_opinfo(opinfo)`. None of that critical logic is visible in this snippet, so the code shown is not sufficient to determine whether the vulnerable construct is present or already fixed."
+      }
+    },
+    {
+      "bic_found": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1304
+        },
+        "commit": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+        "commit_short": "1dfd062caa16",
+        "commit_msg": "ksmbd: fix use-after-free by using call_rcu() for oplock_info\n\nksmbd currently frees oplock_info immediately using kfree",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1302,
+        "code_snippet": "commit 1dfd062caa165ec9d7ee0823087930f3ab8a6294\nAuthor: Namjae Jeon <linkinjeon@kernel.org>\nDate:   Sat Mar 7 11:32:31 2026 +0900\n\n    ksmbd: fix use-after-free by using call_rcu() for oplock_info\n    \n    ksmbd currently frees oplock_info immediately using kfree(), even\n    though it is accessed under RCU read-side critical sections in places\n    like opinfo_get() and proc_show_files().\n    \n    Since there is no RCU grace period delay between nullifying the pointer\n    and freeing the memory, ",
+        "exists": false,
+        "reason": "The provided diff is sufficient because it shows the full relevant lifetime/publication/freeing logic in `smb_grant_oplock()`, `opinfo_add()`, and `free_opinfo()`. The root cause says `smb_grant_oplock()` used to publish `oplock_info` too early and could later free a still-linked object on allocation failure, and also that freeing under RCU readers was incorrect.\n\nIn this commit version, `smb_grant_oplock()` no longer publishes `fp->f_opinfo` before the failure point. The old order shown in the diff was removed from before list insertion/failure handling:\n- removed from before error-prone operations: `rcu_assign_pointer(fp->f_opinfo, opinfo);` and `opinfo->o_fp = fp;`\n- now the code does: `opinfo_count_inc(fp);`, `opinfo_add(opinfo, fp);`, then `if (opinfo->is_lease) { err = add_lease_global_list(opinfo); if (err) goto err_out; }`, and only after that publishes with `rcu_assign_pointer(fp->f_opinfo, opinfo);` and sets `opinfo->o_fp = fp;`\nThis means the object is not visible through `fp->f_opinfo` before the potentially failing `add_lease_global_list()` completes, preventing the earlier publish-then-free bug path.\n\nThe error path also changed from `free_opinfo(opinfo);` to `__free_opinfo(opinfo);`. In this commit, `free_opinfo()` now defers freeing via RCU: `call_rcu(&opinfo->rcu, free_opinfo_rcu);`, while `__free_opinfo()` performs immediate destruction. Using immediate free on the local unpublished error path is correct because the object has not yet been published through `fp->f_opinfo`.\n\nThe commit also contains the separate RCU fix: the old immediate free function was renamed `__free_opinfo`, and the public `free_opinfo()` now uses `call_rcu()`, which addresses readers under RCU critical sections.\n\nTherefore, for this commit version, the vulnerable construct is absent in the shown function logic, and the fix is present."
+      }
+    },
+    {
+      "bic_found": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1298
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1213,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the publication/order of the shared oplock_info object and the failure path trigger. The vulnerable construct is present: the object is published to shared state before the lease-global-list step can fail. Specifically, `rcu_assign_pointer(fp->f_opinfo, opinfo);` (line 1207) exposes `opinfo` through `fp->f_opinfo`, then `opinfo->o_fp = fp;` (line 1208) initializes a required field only after publication, and `opinfo_add(opinfo);` (line 1211) adds it to shared oplock lists before `add_lease_global_list(opinfo);` (line 1213). If `add_lease_global_list(opinfo)` fails, the code does `goto err_out;` (lines 1214-1215), which matches the described root cause: a later allocation failure occurs after the object has already been linked/published. This ordering allows concurrent readers to observe a partially initialized object or a still-linked object that may be freed on the error path. Therefore the bug is present, and the fix is not present because the code does not delay publication/list insertion until after all required initialization and failure-prone setup have completed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1308
+        },
+        "commit": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+        "commit_short": "1dfd062caa16",
+        "commit_msg": "ksmbd: fix use-after-free by using call_rcu() for oplock_info\n\nksmbd currently frees oplock_info immediately using kfree",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1306,
+        "code_snippet": "commit 1dfd062caa165ec9d7ee0823087930f3ab8a6294\nAuthor: Namjae Jeon <linkinjeon@kernel.org>\nDate:   Sat Mar 7 11:32:31 2026 +0900\n\n    ksmbd: fix use-after-free by using call_rcu() for oplock_info\n    \n    ksmbd currently frees oplock_info immediately using kfree(), even\n    though it is accessed under RCU read-side critical sections in places\n    like opinfo_get() and proc_show_files().\n    \n    Since there is no RCU grace period delay between nullifying the pointer\n    and freeing the memory, ",
+        "exists": false,
+        "reason": "The diff shows the relevant lifetime and publication ordering logic clearly enough to decide. The root cause described is that smb_grant_oplock() previously published `fp->f_opinfo` and linked the object before full initialization, and on a later failure path could free a still-visible object. In this commit, `smb_grant_oplock()` has been reordered so that `opinfo_count_inc(fp);` and `opinfo_add(opinfo, fp);` happen before publication, and the actual publication `rcu_assign_pointer(fp->f_opinfo, opinfo);` plus `opinfo->o_fp = fp;` occurs only after `add_lease_global_list(opinfo)` succeeds. The failure path now uses `__free_opinfo(opinfo);` instead of `free_opinfo(opinfo);`, which avoids RCU deferred-free only for the never-published object. Also, the commit introduces RCU-safe freeing: `free_opinfo()` now does `call_rcu(&opinfo->rcu, free_opinfo_rcu);` and the old immediate free logic was moved into `__free_opinfo()`. This directly addresses the commit message's use-after-free problem for objects accessed under RCU. Therefore the vulnerable construct is not present in this version, and the fix is present."
+      }
+    },
+    {
+      "bic_found": "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9bbb19d21ded",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1054
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1047,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the publication order of the lease/oplock object into shared lists. In both paths, the code links the object before the table entry is fully published/initialized in the safe order described by the root cause. In the existing-table path, after setting `opinfo->o_lease->l_lb = lb;` it immediately calls `lease_add_list(opinfo);` at line 1047 while only holding the read lock on `lease_list_lock`. In the new-table path, it allocates `lb` at lines 1054-1056, initializes some fields (`memcpy`, `INIT_LIST_HEAD`, `spin_lock_init`), then sets `opinfo->o_lease->l_lb = lb;` at line 1062 and again calls `lease_add_list(opinfo);` at line 1063 before `lb_add(lb);` at line 1064. This means the oplock/lease info is published to shared lease lists before the enclosing lease table is added to the global table list, matching the described wrong-order publication bug. There is also no visible fix here that would defer publication until after all required fields are initialized and all failure paths are no longer able to free a still-linked object. Therefore the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "1dfd062caa165ec9d7ee0823087930f3ab8a6294": 3,
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9": 2
+      },
+      "bic_candidates": [
+        "1dfd062caa165ec9d7ee0823087930f3ab8a6294",
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

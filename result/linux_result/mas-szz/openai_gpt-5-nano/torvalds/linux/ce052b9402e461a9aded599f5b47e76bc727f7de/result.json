@@ -1,0 +1,155 @@
+{
+  "cveid": "CVE-2025-71066",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ce052b9402e461a9aded599f5b47e76bc727f7de"
+  ],
+  "ground_truth_bic": "de6d25924c2a8c2988c6a385990cafbe742061bf",
+  "predicted_bic": [
+    "87c6efc5ce9c126ae4a781bc04504b83780e3650"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 8,
+  "llm_tokens": 20116,
+  "root_cause": {
+    "text": "In the ETS qdisc change path, `ets_qdisc_change()` removed shrinking-band classes from `q->active` only for non-strict classes with nonzero `qdisc->q.qlen`, allowing active classes to remain on the scheduler’s active list after their child `Qdisc` was freed and thus race with `ets_qdisc_dequeue()` into a use-after-free.",
+    "evidence": "The patch changes the deletion condition from `if (i >= q->nstrict && q->classes[i].qdisc->q.qlen)` to unconditional active-state checking `if (cl_is_active(&q->classes[i])) list_del_init(&q->classes[i].alist);`, and the commit/CVE explicitly states that “some of the classes have their qdiscs assigned to NULL, but remain in the active list,” causing a race between `ets_qdisc_dequeue` and `ets_qdisc_change` that leads to UAF on `struct Qdisc`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/sched/sch_ets.c",
+      "lineno": 655,
+      "content": "if (i >= q->nstrict && q->classes[i].qdisc->q.qlen)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the ETS qdisc change path, `ets_qdisc_change()` removed shrinking-band classes from `q->active` only for non-strict classes with nonzero `qdisc->q.qlen`, allowing active classes to remain on the scheduler’s active list after their child `Qdisc` was freed and thus race with `ets_qdisc_dequeue()` into a use-after-free.",
+      "evidence_points": "The patch changes the deletion condition from `if (i >= q->nstrict && q->classes[i].qdisc->q.qlen)` to unconditional active-state checking `if (cl_is_active(&q->classes[i])) list_del_init(&q->classes[i].alist);`, and the commit/CVE explicitly states that “some of the classes have their qdiscs assigned to NULL, but remain in the active list,” causing a race between `ets_qdisc_dequeue` and `ets_qdisc_change` that leads to UAF on `struct Qdisc`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/sched/sch_ets.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the class active-state check when removing ETS bands so the active list is updated correctly during qdisc reconfiguration.",
+        "what": "In the loop that handles bands being removed in ets_qdisc_change(), the condition for calling list_del_init(&q->classes[i].alist) was changed from checking whether the class index is in the non-strict range and whether its qdisc queue length is nonzero (i >= q->nstrict && q->classes[i].qdisc->q.qlen) to calling cl_is_active(&q->classes[i]) instead.",
+        "how": "At runtime, removal from the active list is now based on the class's actual active-state predicate rather than inferring activity from band type and queued packet count. This prevents incorrect list deletion decisions when a class is or is not considered active for reasons not fully captured by qlen, helping keep the active list state consistent while bands are removed and their queues purged."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use the class active-state check when removing ETS bands so the active list is updated correctly during qdisc reconfiguration."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause in ETS band removal: it fixes how classes are removed from the active list during qdisc reconfiguration by using the class active-state check, preventing stale active entries from remaining after child qdiscs are removed/freed."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/sched/sch_ets.c",
+            "lineno": 655,
+            "content": "if (i >= q->nstrict && q->classes[i].qdisc->q.qlen)",
+            "rationale": "This conditional uses the child qdisc queue length instead of the class active-state/list-membership check to decide whether to remove the class from q->active. As a result, an active class with qlen==0 can remain on the active list during shrinking, leaving a stale list entry after its child qdisc is freed."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/sched/sch_ets.c",
+            "lineno": 656,
+            "content": "list_del_init(&q->classes[i].alist);",
+            "rationale": "This is the removal from the scheduler active list, but it is guarded by the wrong condition. Because it may be skipped for still-active classes, the active list can retain a reference to a class whose child qdisc is subsequently purged/freed, enabling use-after-free during dequeue."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/sched/sch_ets.c",
+            "lineno": 657,
+            "content": "qdisc_purge_queue(q->classes[i].qdisc);",
+            "rationale": "This purges the child qdisc even when the class may not have been removed from q->active due to the incorrect qlen-based guard above. That ordering/combination is what leaves an active-list entry pointing at a freed child qdisc."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/sched/sch_ets.c",
+            "stmt_text": "if (i >= q->nstrict && q->classes[i].qdisc->q.qlen)",
+            "location": "hunk",
+            "explanation": "This guard is the root cause: it decides whether to remove a shrinking class from q->active based on child qdisc queue length instead of the class's active/list state. An active class with qlen == 0 can therefore remain on the active list while later teardown frees its child qdisc, enabling the use-after-free race with ets_qdisc_dequeue()."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "188e0fa5a679",
+          "anchor_file": "net/sched/sch_ets.c",
+          "anchor_lineno": 655
+        },
+        "commit": "87c6efc5ce9c126ae4a781bc04504b83780e3650",
+        "commit_short": "87c6efc5ce9c",
+        "commit_msg": "net/sched: ets: use old 'nbands' while purging unused classes\n\nShuang reported sch_ets test-case [1] crashing in ets_cla",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ets.c",
+        "display_lineno": 655,
+        "code_snippet": "commit 87c6efc5ce9c126ae4a781bc04504b83780e3650\nAuthor: Davide Caratti <dcaratti@redhat.com>\nDate:   Tue Aug 12 18:40:29 2025 +0200\n\n    net/sched: ets: use old 'nbands' while purging unused classes\n    \n    Shuang reported sch_ets test-case [1] crashing in ets_class_qlen_notify()\n    after recent changes from Lion [2]. The problem is: in ets_qdisc_change()\n    we purge unused DWRR queues; the value of 'q->nbands' is the new one, and\n    the cleanup should be done with the old one. The problem i",
+        "exists": false,
+        "reason": "The diff shows the relevant cleanup logic inside ets_qdisc_change() clearly enough to decide. The commit moves the purge loop to execute before updating q->nbands: `for (i = nbands; i < oldbands; i++) { ... list_del_init(&q->classes[i].alist); qdisc_purge_queue(q->classes[i].qdisc); }` followed only afterward by `WRITE_ONCE(q->nbands, nbands);`. The commit message explicitly states the fix is to 'use old nbands while purging unused classes' and 'purge idle DWRR queues before assigning a new value of q->nbands'. This means the buggy construct described in the root cause—cleanup using the new band configuration so active classes may remain linked while their child qdisc is freed—is not present in this version. The code already performs removal from the active list and purging while the old `q->nbands`/`q->nstrict` configuration is still in effect, which is the fix."
+      }
+    },
+    {
+      "bic_found": "87c6efc5ce9c126ae4a781bc04504b83780e3650",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "87c6efc5ce9c126ae4a781bc04504b83780e3650": 1
+      },
+      "bic_candidates": [
+        "87c6efc5ce9c126ae4a781bc04504b83780e3650"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

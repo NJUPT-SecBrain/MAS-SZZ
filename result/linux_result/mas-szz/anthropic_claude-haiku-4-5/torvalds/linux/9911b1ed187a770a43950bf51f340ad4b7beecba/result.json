@@ -1,0 +1,336 @@
+{
+  "cveid": "CVE-2026-31535",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "9911b1ed187a770a43950bf51f340ad4b7beecba"
+  ],
+  "ground_truth_bic": "5fb9b459b3686e366640edd4e62805ef7b4de927",
+  "predicted_bic": [
+    "c7316ec2d542e27ea717a0d7493902098329f908"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 27918,
+  "root_cause": {
+    "text": "A race condition exists in the SMBDirect recv credit management where credits are granted to the peer based on posted recv buffers without accounting for the window between hardware packet reception and completion processing, allowing the peer to consume credits that haven't actually been posted yet.",
+    "evidence": "The patch introduces a dedicated `recv_io.credits.available` counter that is incremented only when recv buffers are actually posted (in `smbd_post_send_credits`) and decremented only when credits are granted to the peer (in `manage_credits_prior_sending`). The original code calculated available credits by reading `recv_io.posted.count` directly, which created a race condition because \"the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist.\" The fix separates the tracking of posted buffers from the tracking of available credits to eliminate this window.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1041,
+      "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1045,
+      "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/client/smbdirect.c",
+      "lineno": 1220,
+      "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition exists in the SMBDirect recv credit management where credits are granted to the peer based on posted recv buffers without accounting for the window between hardware packet reception and completion processing, allowing the peer to consume credits that haven't actually been posted yet.",
+      "evidence_points": "The patch introduces a dedicated `recv_io.credits.available` counter that is incremented only when recv buffers are actually posted (in `smbd_post_send_credits`) and decremented only when credits are granted to the peer (in `manage_credits_prior_sending`). The original code calculated available credits by reading `recv_io.posted.count` directly, which created a race condition because \"the peer might already consumed a credit, but between receiving the incoming recv at the hardware and processing the completion in the 'recv_done' functions we likely have a window where we grant credits, which don't really exist.\" The fix separates the tracking of posted buffers from the tracking of available credits to eliminate this window."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/client/smbdirect.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/client/smbdirect.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/smb/client/smbdirect.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/smb/client/smbdirect.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize a posted credits counter variable to track the number of credits successfully posted in the send credits work handler.",
+        "what": "Added a new local variable `int posted = 0;` declaration in the `smbd_post_send_credits` function after the `struct smbdirect_socket *sc` variable initialization.",
+        "how": "This variable initialization provides a counter that will likely be used later in the function to track the number of credits posted. Without seeing the full function, this variable is set to zero and presumably incremented during credit posting operations, enabling the function to maintain state about how many credits have been successfully posted."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Optimize credit availability updates by batching multiple atomic increments into a single atomic add operation after the loop.",
+        "what": "Added a local variable `posted` that is incremented by 1 inside the loop whenever `atomic_inc(&sc->recv_io.posted.count)` is called, and after the loop completes, added a call to `atomic_add(posted, &sc->recv_io.credits.available)` to atomically add the accumulated count to the credits available counter.",
+        "how": "This change batches the credit availability updates. Instead of updating credits individually within the loop (which would require atomic operations for each iteration), the code now counts how many times credits were posted and performs a single atomic addition after the loop. This reduces the overhead of multiple atomic operations and improves performance by consolidating updates."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix credit management logic to prevent credit loss by properly tracking and restoring unused available credits while ensuring granted credits are atomically accounted.",
+        "what": "Replaced the credit calculation logic with a new algorithm that: (1) introduces two new local variables `missing` and `available`; (2) changes from reading `posted.count` to using `atomic_xchg` on `credits.available`; (3) calculates `new_credits` as the minimum of U16_MAX, missing credits, and available credits; (4) adds logic to restore unavailable credits back to the atomic counter if `new_credits <= 0`; (5) adds logic to restore remaining credits if `new_credits < available`; (6) adds an explicit `atomic_add` call to increment `credits.count` before returning.",
+        "how": "This changes how SMBD credits are managed during send operations. Previously, credits were calculated based on posted receive buffers and current credit count. Now, the function explicitly tracks missing credits (gap to target), atomically exchanges available credits, and grants only what's needed (capped at U16_MAX). Unused available credits are restored to the atomic counter, preventing credit loss. The explicit atomic_add ensures the granted credits are properly accounted in the count before returning."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove redundant or incorrect atomic credit increment that was duplicating credit accounting logic.",
+        "what": "Removed the line `atomic_add(new_credits, &sc->recv_io.credits.count);` that was atomically incrementing the receive I/O credits count after managing credits prior to sending.",
+        "how": "This change eliminates an atomic increment operation on the receive credits counter. The credits are still being granted to the packet via `packet->credits_granted = cpu_to_le16(new_credits);`, but the internal tracking of available credits in `sc->recv_io.credits.count` is no longer updated at this point. This likely means credit accounting is now handled elsewhere or the atomic operation was redundant/incorrect."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize a posted credits counter variable to track the number of credits successfully posted in the send credits work handler."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Optimize credit availability updates by batching multiple atomic increments into a single atomic add operation after the loop."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix credit management logic to prevent credit loss by properly tracking and restoring unused available credits while ensuring granted credits are atomically accounted."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove redundant or incorrect atomic credit increment that was duplicating credit accounting logic."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by introducing a posted credits counter to track successfully posted credits in the send credits work handler. This is a foundational step to distinguish between credits that have been posted versus credits that are merely pending, which is essential to close the race condition window between hardware packet reception and completion processing."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "This group optimizes the performance of credit availability updates through batching, but does not address the core vulnerability: the race condition between hardware packet reception and completion processing. The vulnerability requires synchronization logic or accounting for in-flight packets, not just optimization of how credits are accumulated. Batching atomic operations does not close the window where credits are granted before buffers are actually posted."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by fixing credit management logic to properly track and atomically account for granted credits. This prevents the race condition where credits are granted based on posted recv buffers without proper accounting for the window between hardware packet reception and completion processing. The fix ensures credits are not consumed before they are actually available."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability by removing redundant/incorrect atomic credit increment operations that were duplicating credit accounting logic. This redundancy is a key mechanism of the race condition - the duplicate accounting causes credits to be granted without proper synchronization between hardware packet reception and completion processing, allowing peers to consume credits prematurely. Removing this duplication fixes the core race condition in credit management."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1041,
+            "content": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "rationale": "This line reads the posted buffer count without any synchronization mechanism to account for the window between hardware packet reception and completion processing. Credits are granted based on this count, but the actual buffers may not be fully posted yet, creating a race condition where the peer can consume credits that haven't been properly accounted for."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1220,
+            "content": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "rationale": "This atomic increment grants credits to the peer based on the unverified posted count without ensuring those credits have actually been successfully posted. The race condition allows credits to be granted before the corresponding recv buffers are truly available, violating the credit protocol semantics."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/smb/client/smbdirect.c",
+            "lineno": 1045,
+            "content": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "rationale": "This calculation derives new credits from the posted count minus already-granted credits, but since the posted count itself is not properly synchronized with actual buffer availability, the resulting new_credits value can represent buffers that haven't been fully posted yet, propagating the race condition."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "new_credits = atomic_read(&sc->recv_io.posted.count);",
+            "location": "hunk",
+            "explanation": "This statement reads the posted buffer count without synchronization, creating a race condition. Credits are granted based on this unsynchronized count, but the actual buffers may not be fully posted yet due to the window between hardware packet reception and completion processing. This allows the peer to consume credits that haven't actually been posted."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "new_credits -= atomic_read(&sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "This calculation derives new credits from the posted count minus already-granted credits. Since the posted count itself is not properly synchronized with actual buffer availability, the resulting new_credits value can represent buffers that haven't been fully posted yet, propagating the race condition to the credit granting logic."
+          },
+          {
+            "vuln_file": "fs/smb/client/smbdirect.c",
+            "stmt_text": "atomic_add(new_credits, &sc->recv_io.credits.count);",
+            "location": "hunk",
+            "explanation": "This atomic increment grants credits to the peer based on the unverified posted count without ensuring those credits have actually been successfully posted. The race condition allows credits to be granted before the corresponding recv buffers are truly available, violating the credit protocol semantics and enabling the peer to consume credits prematurely."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1041
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 966,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": false,
+        "reason": "This commit is a refactoring that moves credit tracking variables from the old `smbd_connection` structure fields (`receive_credits`, `receive_posted`, `receive_credit_target`, `post_send_credits_work`) to new nested structure fields within `smbdirect_socket` (`sc->recv_io.credits.count`, `sc->recv_io.posted.count`, `sc->recv_io.credits.target`, `sc->recv_io.posted.refill_work`). The commit does not introduce any new vulnerable logic - it merely reorganizes existing code to use different variable names and locations. The vulnerable construct (granting credits based on posted buffers without accounting for the hardware reception-to-completion processing window) is not present in this diff because the actual credit granting logic remains unchanged. The refactoring preserves the same algorithmic behavior: `manage_credits_prior_sending()` still calculates `new_credits = atomic_read(&sc->recv_io.posted.count) - atomic_read(&sc->recv_io.credits.count)`, and credits are still granted based on posted count. This is a structural reorganization commit, not a bug-introducing or bug-fixing commit."
+      }
+    },
+    {
+      "bic_found": "c7316ec2d542e27ea717a0d7493902098329f908",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1045
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 970,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": false,
+        "reason": "This commit is a refactoring that consolidates credit tracking variables from the old `smbd_connection` structure into the new `smbdirect_socket.recv_io` structure. The diff shows a systematic replacement of field accesses (e.g., `info->receive_credits` → `sc->recv_io.credits.count`, `info->receive_posted` → `sc->recv_io.posted.count`, `info->receive_credit_target` → `sc->recv_io.credits.target`). The vulnerable construct described in the root cause—granting credits based on posted buffers without accounting for the window between hardware packet reception and completion processing—is not introduced or modified by this commit. The logic flow remains identical; only the data structure locations change. The race condition vulnerability would exist in the underlying logic (comparing `receive_posted` with `receive_credits` in `manage_credits_prior_sending` or the credit granting logic), but this commit does not introduce that vulnerability—it merely refactors variable locations. Since the vulnerable construct is not being introduced in this commit, has_bug=false."
+      }
+    },
+    {
+      "bic_found": "c7316ec2d542e27ea717a0d7493902098329f908",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9da82dc73cb0",
+          "anchor_file": "fs/smb/client/smbdirect.c",
+          "anchor_lineno": 1220
+        },
+        "commit": "c7316ec2d542e27ea717a0d7493902098329f908",
+        "commit_short": "c7316ec2d542",
+        "commit_msg": "smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n\nThis will make it possible to introduce common helpe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/client/smbdirect.c",
+        "display_lineno": 1124,
+        "code_snippet": "commit c7316ec2d542e27ea717a0d7493902098329f908\nAuthor: Stefan Metzmacher <metze@samba.org>\nDate:   Thu Aug 14 16:32:30 2025 +0200\n\n    smb: client: make use of smbdirect_socket.recv_io.{posted,credits}\n    \n    This will make it possible to introduce common helper functions\n    in future.\n    \n    Cc: Steve French <smfrench@gmail.com>\n    Cc: Tom Talpey <tom@talpey.com>\n    Cc: Long Li <longli@microsoft.com>\n    Cc: linux-cifs@vger.kernel.org\n    Cc: samba-technical@lists.samba.org\n    Acked-by",
+        "exists": false,
+        "reason": "This commit is a refactoring that consolidates credit management state from scattered fields (info->receive_credits, info->receive_posted, info->receive_credit_target) into a structured format (sc->recv_io.credits.count, sc->recv_io.posted.count, sc->recv_io.credits.target). The vulnerable construct described in the root cause - granting credits based on posted recv buffers without accounting for the window between hardware packet reception and completion processing - is NOT introduced by this commit. The commit merely reorganizes existing code without changing the fundamental logic of how credits are managed. The race condition vulnerability would exist in the underlying logic (comparing posted count vs credits count in manage_credits_prior_sending and smbd_post_send_credits), but this refactoring commit itself does not introduce that vulnerability - it preserves the same logic in a different data structure layout. Since the vulnerable construct is not being introduced here (it may have existed before or may be introduced in a different commit), has_bug=false."
+      }
+    },
+    {
+      "bic_found": "c7316ec2d542e27ea717a0d7493902098329f908",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "c7316ec2d542e27ea717a0d7493902098329f908": 3
+      },
+      "bic_candidates": [
+        "c7316ec2d542e27ea717a0d7493902098329f908"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

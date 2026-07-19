@@ -1,0 +1,370 @@
+{
+  "cveid": "CVE-2026-46036",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "670e8864b1a218d72f08db40d0103adf38fa1d9b"
+  ],
+  "ground_truth_bic": "848e447e000c41894ff931dc7c004fd42c8840f8",
+  "predicted_bic": [
+    "848e447e000c41894ff931dc7c004fd42c8840f8"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 28,
+  "llm_tokens": 24813,
+  "root_cause": {
+    "text": "The vfio/cdx interrupt path lacked synchronization in vfio_cdx_set_msi_trigger(), allowing concurrent VFIO_DEVICE_SET_IRQS operations to race on shared per-device MSI state (config_msi, cdx_irqs, msi_count) and use a freed cdx_irqs array.",
+    "evidence": "The CVE/commit explicitly states that vfio_cdx_set_msi_trigger() “reads vdev->config_msi and operates on the vdev->cdx_irqs array” with “no serialization against concurrent VFIO_DEVICE_SET_IRQS ioctls,” and the patch fixes this by adding and taking a per-device cdx_irqs_lock mutex around that chokepoint while also removing an unsynchronized !cdx_irqs check in vfio_cdx_irqs_cleanup().",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/vfio/cdx/intr.c",
+      "lineno": 156,
+      "content": "vfio_cdx_msi_disable(vdev);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/vfio/cdx/intr.c",
+      "lineno": 220,
+      "content": "vfio_cdx_set_msi_trigger(vdev, 0, 0, 0, VFIO_IRQ_SET_DATA_NONE, NULL);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/vfio/cdx/intr.c",
+      "lineno": 217,
+      "content": "if (!vdev->cdx_irqs)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The vfio/cdx interrupt path lacked synchronization in vfio_cdx_set_msi_trigger(), allowing concurrent VFIO_DEVICE_SET_IRQS operations to race on shared per-device MSI state (config_msi, cdx_irqs, msi_count) and use a freed cdx_irqs array.",
+      "evidence_points": "The CVE/commit explicitly states that vfio_cdx_set_msi_trigger() “reads vdev->config_msi and operates on the vdev->cdx_irqs array” with “no serialization against concurrent VFIO_DEVICE_SET_IRQS ioctls,” and the patch fixes this by adding and taking a per-device cdx_irqs_lock mutex around that chokepoint while also removing an unsynchronized !cdx_irqs check in vfio_cdx_irqs_cleanup()."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/vfio/cdx/intr.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/vfio/cdx/intr.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/vfio/cdx/main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/vfio/cdx/main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/vfio/cdx/private.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "drivers/vfio/cdx/private.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Protect MSI trigger updates in `vfio_cdx_set_msi_trigger()` with `cdx_irqs_lock` to prevent races during IRQ state changes.",
+        "what": "A scoped mutex guard, `guard(mutex)(&vdev->cdx_irqs_lock);`, was inserted in `vfio_cdx_set_msi_trigger()` after the MSI range validation and before the logic that disables MSI when `count` is zero and `VFIO_IRQ_SET_DATA_NONE` is set.",
+        "how": "This causes the function to acquire `vdev->cdx_irqs_lock` for the remaining scope of the function, including the MSI disable path, ensuring serialized access to IRQ/MSI state and preventing concurrent modifications or races while changing MSI trigger configuration."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Make CDX IRQ cleanup unconditional by always calling the MSI trigger teardown helper instead of returning early when no IRQ state is present.",
+        "what": "The function vfio_cdx_irqs_cleanup() was changed by removing an early-return guard and its accompanying comment that checked whether vdev->cdx_irqs was null before calling vfio_cdx_set_msi_trigger(vdev, 0, 0, 0, VFIO_IRQ_SET_DATA_NONE, NULL).",
+        "how": "Cleanup now always invokes vfio_cdx_set_msi_trigger() regardless of whether interrupt state was previously configured, making IRQ teardown unconditional and relying on the callee to safely handle the no-IRQs case instead of skipping cleanup entirely."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add VFIO CDX device init and release callbacks to initialize and destroy cdx_irqs_lock during the device lifecycle.",
+        "what": "The change adds two new static device lifecycle callbacks: vfio_cdx_init_dev(), which converts the generic vfio_device pointer to struct vfio_cdx_device and calls mutex_init(&vdev->cdx_irqs_lock) before returning 0, and vfio_cdx_release_dev(), which performs the same conversion and calls mutex_destroy(&vdev->cdx_irqs_lock).",
+        "how": "At runtime, the VFIO CDX device now explicitly initializes its cdx_irqs_lock mutex when the device is set up and destroys it when the device is released, ensuring the lock is in a valid state before use and properly torn down during cleanup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Register VFIO CDX device init and release callbacks so device lifecycle setup and cleanup are performed correctly.",
+        "what": "Two function pointers were added to the vfio_cdx_ops vfio_device_ops structure: .init = vfio_cdx_init_dev and .release = vfio_cdx_release_dev, while the existing operation entries remain unchanged.",
+        "how": "This causes the VFIO CDX device to invoke device-specific initialization and release callbacks through the vfio_device_ops interface, enabling setup and cleanup logic to run at the appropriate lifecycle stages instead of having no handlers for those operations."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Add the linux/mutex.h header so mutex-related declarations are available when this VFIO CDX private header is compiled.",
+        "what": "The header file adds a new preprocessor include directive for <linux/mutex.h> immediately after the include guard and before the existing macro definition.",
+        "how": "This makes mutex type and API declarations available to code including this header, allowing compilation of uses of mutex-related symbols that depend on this header and preventing missing declaration or incomplete type build errors."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "guard",
+        "intent_summary": "Add a mutex to vfio_cdx_device to protect IRQ state from concurrent access.",
+        "what": "A new field, `struct mutex cdx_irqs_lock;`, was added to the `struct vfio_cdx_device` definition between the `regions` and `cdx_irqs` members.",
+        "how": "This introduces a dedicated mutex in the device structure that can be used to serialize access to the `cdx_irqs` state at runtime, helping prevent concurrent races or inconsistent updates when IRQ-related data is accessed or modified."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Add a mutex to vfio_cdx_device to protect IRQ state from concurrent access."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Register VFIO CDX device init and release callbacks so device lifecycle setup and cleanup are performed correctly."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add the linux/mutex.h header so mutex-related declarations are available when this VFIO CDX private header is compiled."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add and use a device-level mutex to serialize vfio_cdx IRQ/MSI state changes and prevent concurrent access races.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure VFIO CDX device lifecycle and IRQ cleanup are handled correctly by registering init/release callbacks and making IRQ teardown reliably execute.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is missing synchronization around shared MSI/IRQ state in vfio_cdx_set_msi_trigger(), leading to races and use-after-free of cdx_irqs. This group directly adds a device-level mutex and uses it to serialize IRQ/MSI state changes, which addresses that exact race."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly relate to the shared MSI/IRQ state involved in the race: they add lifecycle initialization/destruction for cdx_irqs_lock and make IRQ teardown always run, which supports proper synchronization and cleanup of cdx_irqs/config_msi state implicated in the use-after-free."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "Adding linux/mutex.h enables use of mutex declarations in the VFIO CDX header, which is directly tied to introducing synchronization for the interrupt/MSI state race described in the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/vfio/cdx/intr.c",
+            "lineno": 156,
+            "content": "vfio_cdx_msi_disable(vdev);",
+            "rationale": "This mutates shared MSI/IRQ state inside vfio_cdx_set_msi_trigger() on the unsynchronized path; without a device-level lock, concurrent VFIO_DEVICE_SET_IRQS operations can race while disabling and freeing MSI-related state."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/vfio/cdx/intr.c",
+            "lineno": 217,
+            "content": "if (!vdev->cdx_irqs)",
+            "rationale": "This checks shared IRQ state without synchronization. Concurrent modification of vdev->cdx_irqs by another IRQ setup/teardown path can make this stale and contribute to use-after-free or inconsistent cleanup decisions."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/vfio/cdx/intr.c",
+            "lineno": 220,
+            "content": "vfio_cdx_set_msi_trigger(vdev, 0, 0, 0, VFIO_IRQ_SET_DATA_NONE, NULL);",
+            "rationale": "This invokes the MSI trigger teardown path that lacked serialization. Concurrent callers can race on config_msi, cdx_irqs, and msi_count, leading to teardown/setup overlap and use of a freed cdx_irqs array."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "drivers/vfio/cdx/private.h",
+            "lineno": 34,
+            "content": "struct vfio_cdx_irq\t*cdx_irqs;",
+            "rationale": "This shared per-device IRQ array pointer is the raced object described in the root cause. Access to it was not protected by any mutex prior to the fix, enabling concurrent use-after-free."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/vfio/cdx/intr.c",
+            "stmt_text": "vfio_cdx_msi_disable(vdev);",
+            "location": "hunk",
+            "explanation": "This statement performs MSI teardown within vfio_cdx_set_msi_trigger() and mutates shared per-device interrupt state without synchronization. Concurrent VFIO_DEVICE_SET_IRQS operations could race here on config_msi, cdx_irqs, and msi_count, causing teardown/setup overlap and use of a freed cdx_irqs array."
+          },
+          {
+            "vuln_file": "drivers/vfio/cdx/intr.c",
+            "stmt_text": "vfio_cdx_set_msi_trigger(vdev, 0, 0, 0, VFIO_IRQ_SET_DATA_NONE, NULL);",
+            "location": "hunk",
+            "explanation": "This cleanup call enters the unsynchronized MSI trigger teardown path. Because vfio_cdx_set_msi_trigger() lacked locking, concurrent callers could race while modifying shared MSI state, leading to use-after-free of the cdx_irqs array."
+          },
+          {
+            "vuln_file": "drivers/vfio/cdx/intr.c",
+            "stmt_text": "if (!vdev->cdx_irqs)",
+            "location": "hunk",
+            "explanation": "This conditional reads shared IRQ state without synchronization during cleanup. Another concurrent IRQ setup/teardown operation could change or free vdev->cdx_irqs, making this decision stale and contributing to inconsistent cleanup or use-after-free conditions."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5ea5880764cb",
+          "anchor_file": "drivers/vfio/cdx/intr.c",
+          "anchor_lineno": 156
+        },
+        "commit": "848e447e000c41894ff931dc7c004fd42c8840f8",
+        "commit_short": "848e447e000c",
+        "commit_msg": "vfio/cdx: add interrupt support\n\nSupport the following ioctls for CDX devices:\n- VFIO_DEVICE_GET_IRQ_INFO\n- VFIO_DEVICE_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/vfio/cdx/intr.c",
+        "display_lineno": 156,
+        "code_snippet": "commit 848e447e000c41894ff931dc7c004fd42c8840f8\nAuthor: Nipun Gupta <nipun.gupta@amd.com>\nDate:   Tue Apr 23 16:40:21 2024 +0530\n\n    vfio/cdx: add interrupt support\n    \n    Support the following ioctls for CDX devices:\n    - VFIO_DEVICE_GET_IRQ_INFO\n    - VFIO_DEVICE_SET_IRQS\n    \n    This allows user to set an eventfd for cdx device interrupts and\n    trigger this interrupt eventfd from userspace.\n    All CDX device interrupts are MSIs. The MSIs are allocated from the\n    CDX-MSI domain.\n    ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full interrupt configuration path, especially `vfio_cdx_set_msi_trigger()`, `vfio_cdx_msi_enable()`, and `vfio_cdx_msi_disable()`, which manipulate the shared MSI state. The vulnerable construct is present: `vfio_cdx_set_msi_trigger()` accesses and mutates shared fields `vdev->config_msi`, `vdev->cdx_irqs`, and `vdev->msi_count` with no locking or synchronization at all. For example, it checks `if (vdev->config_msi) return vfio_cdx_msi_set_block(...)`, otherwise it calls `vfio_cdx_msi_enable(vdev, cdx_dev->num_msi)`, and on failure path may call `vfio_cdx_msi_disable(vdev)`. Meanwhile `vfio_cdx_msi_disable()` frees shared state via `kfree(vdev->cdx_irqs);` and then sets `vdev->cdx_irqs = NULL; vdev->msi_count = 0; vdev->config_msi = 0;`. `vfio_cdx_msi_set_block()` and `vfio_cdx_msi_set_vector_signal()` dereference `vdev->cdx_irqs[...]` and use `vdev->msi_count` without protection. Therefore concurrent `VFIO_DEVICE_SET_IRQS` ioctls can race, including one thread freeing `cdx_irqs` while another thread is using it. No fix is present in this version: there is no mutex, spinlock, or other serialization around `vfio_cdx_set_msi_trigger()` or the MSI state updates."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "848e447e000c41894ff931dc7c004fd42c8840f8",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5ea5880764cb",
+          "anchor_file": "drivers/vfio/cdx/intr.c",
+          "anchor_lineno": 220
+        },
+        "commit": "848e447e000c41894ff931dc7c004fd42c8840f8",
+        "commit_short": "848e447e000c",
+        "commit_msg": "vfio/cdx: add interrupt support\n\nSupport the following ioctls for CDX devices:\n- VFIO_DEVICE_GET_IRQ_INFO\n- VFIO_DEVICE_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/vfio/cdx/intr.c",
+        "display_lineno": 216,
+        "code_snippet": "commit 848e447e000c41894ff931dc7c004fd42c8840f8\nAuthor: Nipun Gupta <nipun.gupta@amd.com>\nDate:   Tue Apr 23 16:40:21 2024 +0530\n\n    vfio/cdx: add interrupt support\n    \n    Support the following ioctls for CDX devices:\n    - VFIO_DEVICE_GET_IRQ_INFO\n    - VFIO_DEVICE_SET_IRQS\n    \n    This allows user to set an eventfd for cdx device interrupts and\n    trigger this interrupt eventfd from userspace.\n    All CDX device interrupts are MSIs. The MSIs are allocated from the\n    CDX-MSI domain.\n    ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains the full interrupt configuration path, including `vfio_cdx_set_msi_trigger()`, `vfio_cdx_msi_enable()`, and `vfio_cdx_msi_disable()`, which are the objects named in the root cause. The vulnerable construct is present: `vfio_cdx_set_msi_trigger()` reads and modifies shared per-device MSI state (`vdev->config_msi`, `vdev->cdx_irqs`, `vdev->msi_count`) with no locking or synchronization. For example, it checks `if (vdev->config_msi)` and then either calls `vfio_cdx_msi_set_block(vdev, start, count, fds);` or `vfio_cdx_msi_enable(vdev, cdx_dev->num_msi);`, and on disable path calls `vfio_cdx_msi_disable(vdev);`, all without any mutex/spinlock/serialization around these operations. The shared state is updated in `vfio_cdx_msi_enable()` (`vdev->cdx_irqs = ...;`, `vdev->msi_count = nvec;`, `vdev->config_msi = 1;`) and torn down in `vfio_cdx_msi_disable()` (`kfree(vdev->cdx_irqs);`, then `vdev->cdx_irqs = NULL;`, `vdev->msi_count = 0;`, `vdev->config_msi = 0;`). Concurrent `VFIO_DEVICE_SET_IRQS` calls could therefore race between checking `config_msi`, accessing `cdx_irqs`, and freeing/resetting it, matching the stated root cause of use-after-free on `cdx_irqs`. There is no fix present in this version: no lock is acquired in `vfio_cdx_set_msi_trigger()`, no serialization is visible in `vfio_cdx_set_irqs_ioctl()`, and no other protection surrounds accesses to the MSI state."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "848e447e000c41894ff931dc7c004fd42c8840f8",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5ea5880764cb",
+          "anchor_file": "drivers/vfio/cdx/intr.c",
+          "anchor_lineno": 217
+        },
+        "commit": "848e447e000c41894ff931dc7c004fd42c8840f8",
+        "commit_short": "848e447e000c",
+        "commit_msg": "vfio/cdx: add interrupt support\n\nSupport the following ioctls for CDX devices:\n- VFIO_DEVICE_GET_IRQ_INFO\n- VFIO_DEVICE_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/vfio/cdx/intr.c",
+        "display_lineno": 213,
+        "code_snippet": "commit 848e447e000c41894ff931dc7c004fd42c8840f8\nAuthor: Nipun Gupta <nipun.gupta@amd.com>\nDate:   Tue Apr 23 16:40:21 2024 +0530\n\n    vfio/cdx: add interrupt support\n    \n    Support the following ioctls for CDX devices:\n    - VFIO_DEVICE_GET_IRQ_INFO\n    - VFIO_DEVICE_SET_IRQS\n    \n    This allows user to set an eventfd for cdx device interrupts and\n    trigger this interrupt eventfd from userspace.\n    All CDX device interrupts are MSIs. The MSIs are allocated from the\n    CDX-MSI domain.\n    ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full interrupt setup/teardown path and the specific function named in the root cause, `vfio_cdx_set_msi_trigger()`, along with helpers that mutate shared MSI state. The vulnerable construct is present: `vfio_cdx_set_msi_trigger()` reads and modifies shared per-device state (`vdev->config_msi`, `vdev->cdx_irqs`, `vdev->msi_count`) without any visible locking or synchronization. For example, it checks `if (vdev->config_msi)` and either calls `vfio_cdx_msi_set_block()` or `vfio_cdx_msi_enable()`, while the disable path `if (!count && (flags & VFIO_IRQ_SET_DATA_NONE)) { vfio_cdx_msi_disable(vdev); return 0; }` can concurrently free the same state. In `vfio_cdx_msi_disable()`, the code does `kfree(vdev->cdx_irqs); vdev->cdx_irqs = NULL; vdev->msi_count = 0; vdev->config_msi = 0;`, which matches the root cause of a possible use-after-free of the `cdx_irqs` array if another `VFIO_DEVICE_SET_IRQS` operation is simultaneously in `vfio_cdx_msi_set_block()` / `vfio_cdx_msi_set_vector_signal()` using `vdev->cdx_irqs[vector]`. There is no mutex/spinlock/serialization around these accesses anywhere in the shown code. Therefore this commit introduces the bug, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "848e447e000c41894ff931dc7c004fd42c8840f8",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "848e447e000c41894ff931dc7c004fd42c8840f8": 3
+      },
+      "bic_candidates": [
+        "848e447e000c41894ff931dc7c004fd42c8840f8"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

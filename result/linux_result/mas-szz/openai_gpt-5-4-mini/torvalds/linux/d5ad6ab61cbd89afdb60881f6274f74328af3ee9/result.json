@@ -1,0 +1,287 @@
+{
+  "cveid": "CVE-2026-23444",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "d5ad6ab61cbd89afdb60881f6274f74328af3ee9"
+  ],
+  "ground_truth_bic": "06be6b149f7e406bcf16098567f5a6c9f042bced",
+  "predicted_bic": [
+    "06be6b149f7e406bcf16098567f5a6c9f042bced"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 25,
+  "llm_tokens": 16847,
+  "root_cause": {
+    "text": "mac80211’s `ieee80211_tx_prepare_skb()` had inconsistent skb ownership on its failure path—when `ieee80211_tx_prepare()` returned `TX_DROP`, the helper returned `false` without freeing the skb, unlike its other error paths, which led callers to assume they must free it and caused double-free/use-after-free bugs when that assumption was wrong.",
+    "evidence": "The patch adds `kfree_skb(skb);` to the `TX_DROP` branch in `net/mac80211/tx.c`, and simultaneously removes caller-side frees in `ath9k`, `mt76`, and `mac80211_hwsim`; the updated kdoc explicitly states “On failure, the skb is freed by this function; callers must not free it again,” confirming the ownership mismatch was the bug.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mac80211/tx.c",
+      "lineno": 1903,
+      "content": "return false;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "mac80211’s `ieee80211_tx_prepare_skb()` had inconsistent skb ownership on its failure path—when `ieee80211_tx_prepare()` returned `TX_DROP`, the helper returned `false` without freeing the skb, unlike its other error paths, which led callers to assume they must free it and caused double-free/use-after-free bugs when that assumption was wrong.",
+      "evidence_points": "The patch adds `kfree_skb(skb);` to the `TX_DROP` branch in `net/mac80211/tx.c`, and simultaneously removes caller-side frees in `ath9k`, `mt76`, and `mac80211_hwsim`; the updated kdoc explicitly states “On failure, the skb is freed by this function; callers must not free it again,” confirming the ownership mismatch was the bug."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/wireless/ath/ath9k/channel.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/wireless/ath/ath9k/channel.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/wireless/mediatek/mt76/scan.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/net/wireless/virtual/mac80211_hwsim.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "include/net/mac80211.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "net/mac80211/tx.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Return immediately when skb preparation fails during probe transmission setup.",
+        "what": "In ath_scan_send_probe(), the failure path after ieee80211_tx_prepare_skb() was changed from jumping to the local error label to immediately returning from the function.",
+        "how": "If skb preparation fails, the function now exits right away instead of continuing through the probe transmission path or relying on the error label cleanup path; this changes the control flow to a direct early return on prepare failure."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Stop manually freeing the skb on transmit preparation failure and return immediately to correct skb ownership handling.",
+        "what": "In the `ath_chanctx_send_vif_ps_frame()` function, the `if` block around `ieee80211_tx_prepare_skb(sc->hw, vif, skb, band, &sta)` was simplified by removing the explicit `dev_kfree_skb_any(skb);` call and the surrounding braces, so that a failed preparation now immediately returns `false` without freeing the skb in this function.",
+        "how": "Runtime behavior changes so that when `ieee80211_tx_prepare_skb()` fails, this function no longer frees the skb itself and instead exits immediately. This avoids double-freeing or improper ownership handling if the skb is expected to be released elsewhere on failure, while preserving the early-failure path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle transmit-skb preparation failure via the common exit path instead of freeing it inline before returning.",
+        "what": "The conditional around `ieee80211_tx_prepare_skb()` was changed so that, when the call returns false, the code now jumps directly to `out` instead of explicitly calling `ieee80211_free_txskb(phy->hw, skb)` before the jump. The surrounding braces were also removed.",
+        "how": "On failure to prepare the transmit skb, cleanup is now deferred to the `out` path rather than being performed immediately in this block. This avoids performing a separate free operation here and relies on the existing exit path for handling the failed probe frame."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Remove the explicit free of the probe skb from the failed channel-lookup path in hw_scan_work.",
+        "what": "In `hw_scan_work()`, the call to `kfree_skb(probe);` was removed from the error path that executes when the channel lookup condition fails; the code now only unlocks RCU and continues.",
+        "how": "When that failure path is taken, the `probe` skb is no longer explicitly freed before skipping to the next iteration. This changes runtime memory handling on that branch and removes a packet free that previously occurred there."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "style",
+        "intent_summary": "Clarify skb ownership in the function documentation to prevent misuse and double-free errors.",
+        "what": "The kernel-doc comment for a function was updated: the Return documentation now ends with a period, and two new lines were added stating that on failure the skb is freed by the function and callers must not free it again.",
+        "how": "This does not change runtime behavior; it clarifies ownership and lifetime semantics for callers, reducing the risk of double-free bugs by documenting that the function consumes the skb on failure."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Free dropped skb buffers in `ieee80211_tx_prepare_skb()` before returning failure.",
+        "what": "The return-on-drop branch in `ieee80211_tx_prepare_skb()` was expanded from a single `return false;` into a block that first calls `kfree_skb(skb);` and then returns `false` when `ieee80211_tx_prepare()` returns `TX_DROP`.",
+        "how": "Previously, a dropped transmit skb was left allocated when preparation failed; now the packet buffer is explicitly freed before aborting, preventing a memory leak on the TX-drop path."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Free dropped skb buffers in `ieee80211_tx_prepare_skb()` before returning failure."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Remove the explicit free of the probe skb from the failed channel-lookup path in hw_scan_work."
+        },
+        {
+          "group_id": 2,
+          "category": "style",
+          "hunk_count": 1,
+          "intent": "Clarify skb ownership in the function documentation to prevent misuse and double-free errors."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure failed transmit-skb preparation returns through the proper failure path while preserving correct skb ownership and freeing dropped buffers.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address skb ownership and failure-path handling in `ieee80211_tx_prepare_skb()`, specifically fixing how dropped/failed transmission buffers are freed or returned. That matches the root cause of inconsistent ownership on the TX_DROP path leading to double-free/use-after-free issues."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change only adjusts skb freeing in hw_scan_work after a failed channel lookup. It does not address ieee80211_tx_prepare_skb() or the inconsistent ownership on the TX_DROP failure path described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause is inconsistent skb ownership on the TX_DROP failure path, which led to double-free/use-after-free issues. This change explicitly clarifies skb ownership in the function documentation to prevent that misuse, so it directly relates to the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 5,
+            "file_path": "net/mac80211/tx.c",
+            "lineno": 1903,
+            "content": "return false;",
+            "rationale": "This is the vulnerable failure-path statement in ieee80211_tx_prepare_skb(): when ieee80211_tx_prepare() returned TX_DROP, the function exited with false without freeing the skb, leaving ownership ambiguous and enabling double-free/use-after-free bugs in callers."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mac80211/tx.c",
+            "stmt_text": "return false;",
+            "location": "hunk",
+            "explanation": "This is the failure-path exit in ieee80211_tx_prepare_skb() after ieee80211_tx_prepare() returned TX_DROP. In the pre-fix code it returned false without freeing the skb, creating inconsistent ownership handling and enabling double-free/use-after-free bugs in callers."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "deb353d9bb00",
+          "anchor_file": "net/mac80211/tx.c",
+          "anchor_lineno": 1903
+        },
+        "commit": "06be6b149f7e406bcf16098567f5a6c9f042bced",
+        "commit_short": "06be6b149f7e",
+        "commit_msg": "mac80211: add ieee80211_tx_prepare_skb() helper function\n\nThis can be used by a driver to prepare skbs for transmission,",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mac80211/tx.c",
+        "display_lineno": 1378,
+        "code_snippet": "commit 06be6b149f7e406bcf16098567f5a6c9f042bced\nAuthor: Felix Fietkau <nbd@openwrt.org>\nDate:   Mon Oct 14 18:01:00 2013 +0200\n\n    mac80211: add ieee80211_tx_prepare_skb() helper function\n    \n    This can be used by a driver to prepare skbs for transmission, which were\n    obtained via functions such as ieee80211_probereq_get or\n    ieee80211_nullfunc_get.\n    \n    This is useful for drivers that want to send those frames directly, but\n    need rate control information to be prepared first.\n  ",
+        "exists": true,
+        "reason": "The function body shows the vulnerable failure path directly: `if (ieee80211_tx_prepare(sdata, &tx, skb) == TX_DROP) return false;`. In this helper, that `TX_DROP` case returns `false` without freeing `skb`, while other callers may interpret the boolean as meaning they still own the skb and must free it. The snippet contains no compensating free or ownership transfer on this path, so the inconsistent skb ownership bug is present. There is also no fix here, because the code does not do any `dev_kfree_skb*()`/`kfree_skb()` or equivalent cleanup before returning `false` on `TX_DROP`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "034c6d6e675f",
+          "anchor_file": "net/mac80211/tx.c",
+          "anchor_lineno": 1378
+        },
+        "commit": "97b045d62bffae5a91a286b56ac51db0c4385687",
+        "commit_short": "97b045d62bff",
+        "commit_msg": "mac80211: add single function calling tx handlers\n\nThis modifies mac80211 to only have a single function calling the\nTX ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mac80211/tx.c",
+        "display_lineno": 1125,
+        "code_snippet": "commit 97b045d62bffae5a91a286b56ac51db0c4385687\nAuthor: Johannes Berg <johannes@sipsolutions.net>\nDate:   Fri Jun 20 01:22:30 2008 +0200\n\n    mac80211: add single function calling tx handlers\n    \n    This modifies mac80211 to only have a single function calling the\n    TX handlers rather than them being invoked in multiple places.\n    \n    Signed-off-by: Johannes Berg <johannes@sipsolutions.net>\n    Signed-off-by: John W. Linville <linville@tuxdriver.com>\n\ndiff --git a/net/mac80211/tx.c b/net/m",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present in this snippet. The commit introduces a shared helper `invoke_tx_handlers(struct ieee80211_tx_data *tx)` that explicitly handles `TX_DROP` by freeing the skb: `if (unlikely(res == TX_DROP)) { ... dev_kfree_skb(skb); ... return -1; }`. In both call sites, failure from the helper is handled consistently (`if (invoke_tx_handlers(&tx)) goto out;` and `if (invoke_tx_handlers(&tx)) skb = NULL;`), so there is no path here where `TX_DROP` returns without freeing the skb. The old inconsistent ownership behavior from `ieee80211_tx_prepare_skb()` is not shown in this diff, so this function body does not contain the bug and already reflects the fix pattern."
+      }
+    },
+    {
+      "bic_found": "06be6b149f7e406bcf16098567f5a6c9f042bced",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "06be6b149f7e406bcf16098567f5a6c9f042bced": 1
+      },
+      "bic_candidates": [
+        "06be6b149f7e406bcf16098567f5a6c9f042bced"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

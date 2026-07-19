@@ -1,0 +1,288 @@
+{
+  "cveid": "CVE-2026-46181",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "c9341307ea16b9395c2e4c9c94d8499d91fe31d0"
+  ],
+  "ground_truth_bic": "30353bfc43a1602c020f31d95cf27182ffd23824",
+  "predicted_bic": [
+    "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+    "17ac99b2b8d08ed40f4525491d6eff330329a6d2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 16528,
+  "root_cause": {
+    "text": "In the mlx4 SRQ event path, mlx4_srq_event() used an RCU-protected radix tree lookup to obtain a struct mlx4_srq even though the mlx4_srq object itself was neither RCU-freed nor fully protected by the RCU critical section, allowing races with object destruction or incomplete initialization.",
+    "evidence": "The commit message states “the radix_tree itself is RCU safe, but nothing ever frees the mlx4_srq struct with RCU, and it isn't even accessed within the RCU critical section” and “it also will crash if an event is delivered before the srq object is finished initializing”; the patch replaces rcu_read_lock()/lookup with srq_table->lock, uses refcount_inc_not_zero(), and moves refcount initialization to refcount_set_release() after full initialization.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+      "lineno": 49,
+      "content": "srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+      "lineno": 52,
+      "content": "refcount_inc(&srq->refcount);",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+      "lineno": 206,
+      "content": "refcount_set(&srq->refcount, 1);",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the mlx4 SRQ event path, mlx4_srq_event() used an RCU-protected radix tree lookup to obtain a struct mlx4_srq even though the mlx4_srq object itself was neither RCU-freed nor fully protected by the RCU critical section, allowing races with object destruction or incomplete initialization.",
+      "evidence_points": "The commit message states “the radix_tree itself is RCU safe, but nothing ever frees the mlx4_srq struct with RCU, and it isn't even accessed within the RCU critical section” and “it also will crash if an event is delivered before the srq object is finished initializing”; the patch replaces rcu_read_lock()/lookup with srq_table->lock, uses refcount_inc_not_zero(), and moves refcount initialization to refcount_set_release() after full initialization."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect SRQ event lookup with the table lock and only acquire a reference on live SRQs to avoid races with SRQ teardown.",
+        "what": "The function replaces the RCU read-side critical section around radix_tree_lookup() with a spin_lock_irqsave()/spin_unlock_irqrestore() on srq_table->lock, adds a local flags variable for the lock API, and changes the post-lookup reference handling from an unconditional refcount_inc() when srq is non-NULL to a combined check that sets srq to NULL unless the lookup succeeded and refcount_inc_not_zero(&srq->refcount) succeeds.",
+        "how": "At runtime, the lookup and reference acquisition are now performed atomically under the SRQ table lock, and the code only takes a reference if the object has not already reached zero refcount. This prevents racing with concurrent removal or destruction of the SRQ and avoids reviving or using an SRQ that is already being freed; such cases are now treated as bogus events and safely rejected."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Use release-ordered refcount initialization so the SRQ is fully initialized before becoming visible to concurrent users.",
+        "what": "The initialization of `srq->refcount` in `mlx4_srq_alloc()` was changed from `refcount_set(&srq->refcount, 1);` to `refcount_set_release(&srq->refcount, 1);`, and the call now occurs after `init_completion(&srq->free)` instead of before it.",
+        "how": "This changes the refcount initialization to use release memory-ordering semantics, ensuring prior object initialization such as `srq->free` is visible before other threads can observe the refcount as live. It helps prevent races where another context sees a valid reference count before the SRQ structure is fully initialized."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Use release-ordered refcount initialization so the SRQ is fully initialized before becoming visible to concurrent users."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix SRQ lifetime and visibility races by making lookup and publication/refcounting synchronization safe during concurrent use and teardown.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by replacing unsafe RCU-based SRQ lookup/lifetime assumptions with lock-protected lookup, live-object refcount acquisition during teardown races, and release-ordered publication so SRQs are fully initialized before concurrent visibility."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "lineno": 49,
+            "content": "srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));",
+            "rationale": "This performs the SRQ lookup under only an RCU read-side critical section even though the looked-up mlx4_srq object is not RCU-freed/protected, directly enabling races with teardown or publication."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "lineno": 52,
+            "content": "refcount_inc(&srq->refcount);",
+            "rationale": "This increments the refcount after the unsafe RCU-based lookup without ensuring the object is still live, allowing a reference to be taken on an SRQ concurrently being destroyed."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "lineno": 206,
+            "content": "refcount_set(&srq->refcount, 1);",
+            "rationale": "Plain refcount initialization lacks the release-ordering needed before publishing the SRQ, so concurrent event lookup can observe a partially initialized object."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "stmt_text": "srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));",
+            "location": "hunk 0",
+            "explanation": "This is the core unsafe lookup in the SRQ event path. It retrieves a struct mlx4_srq under only RCU lookup conditions even though the object is not RCU-freed or otherwise guaranteed to remain valid for the duration of use, enabling races with teardown or publication."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "stmt_text": "refcount_inc(&srq->refcount);",
+            "location": "hunk 0",
+            "explanation": "After the unsafe radix-tree lookup, this statement takes a reference without first ensuring the SRQ is still live under proper synchronization, so it can race with concurrent destruction and operate on an invalid or dying object."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "stmt_text": "refcount_set(&srq->refcount, 1);",
+            "location": "hunk 1",
+            "explanation": "This plain refcount initialization lacks the release-ordering needed before the SRQ becomes visible to concurrent event lookups, allowing another CPU to observe the object through the lookup path before initialization is fully published."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c54c7e4cb679",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+          "anchor_lineno": 49
+        },
+        "commit": "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+        "commit_short": "225c7b1feef1",
+        "commit_msg": "IB/mlx4: Add a driver Mellanox ConnectX InfiniBand adapters\n\nAdd an InfiniBand driver for Mellanox ConnectX adapters.  B",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "display_lineno": 67,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The provided function body is sufficient because it shows the full lookup and lifetime-handling logic for the SRQ event path. The root cause describes a vulnerable pattern where `mlx4_srq_event()` performs an RCU-protected radix tree lookup of `struct mlx4_srq` without the object itself being safely RCU-protected. That construct is not present here. Instead, the code uses `spin_lock(&srq_table->lock);` before the lookup, performs `srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));`, and if found immediately does `atomic_inc(&srq->refcount);` while still holding the lock. It then releases the lock with `spin_unlock(&srq_table->lock);` and later drops the reference with `if (atomic_dec_and_test(&srq->refcount)) complete(&srq->free);`. This is lock-based reference acquisition, not an RCU lookup on an unprotected object. Since the vulnerable RCU construct is absent, `has_bug` is false. The code already contains the protective handling of taking a refcount under the table lock before dereferencing `srq`, so `is_fixed` is true relative to the stated root cause."
+      }
+    },
+    {
+      "bic_found": "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c54c7e4cb679",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+          "anchor_lineno": 52
+        },
+        "commit": "17ac99b2b8d08ed40f4525491d6eff330329a6d2",
+        "commit_short": "17ac99b2b8d0",
+        "commit_msg": "drivers, net, mlx4: convert mlx4_srq.refcount from atomic_t to refcount_t\n\natomic_t variables are currently used to impl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "display_lineno": 52,
+        "code_snippet": "commit 17ac99b2b8d08ed40f4525491d6eff330329a6d2\nAuthor: Elena Reshetova <elena.reshetova@intel.com>\nDate:   Fri Oct 20 10:23:39 2017 +0300\n\n    drivers, net, mlx4: convert mlx4_srq.refcount from atomic_t to refcount_t\n    \n    atomic_t variables are currently used to implement reference\n    counters with the following properties:\n     - counter is initialized to 1 using atomic_set()\n     - a resource is freed upon counter reaching zero\n     - once counter reaches zero, its further\n       increme",
+        "exists": true,
+        "reason": "The shown function body is sufficient because it directly contains the SRQ event-path lookup and refcounting logic relevant to the root cause. In mlx4_srq_event(), the code does `rcu_read_lock(); srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1)); rcu_read_unlock(); if (srq) refcount_inc(&srq->refcount);`. This means the object pointer is obtained under RCU, but the RCU read-side critical section is exited before the reference is acquired. The root cause states that `struct mlx4_srq` is not RCU-freed nor fully protected by the RCU critical section, so this lookup pattern allows a race with destruction or incomplete initialization. The commit only changes `atomic_inc/atomic_dec_and_test/atomic_set` to `refcount_inc/refcount_dec_and_test/refcount_set`, which addresses counter semantics but does not change the unsafe lookup/lifetime pattern. Therefore the vulnerable construct is still present, and the fix for this vulnerability is not present in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0068895ff845",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+          "anchor_lineno": 52
+        },
+        "commit": "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+        "commit_short": "225c7b1feef1",
+        "commit_msg": "IB/mlx4: Add a driver Mellanox ConnectX InfiniBand adapters\n\nAdd an InfiniBand driver for Mellanox ConnectX adapters.  B",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "display_lineno": 69,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The shown function body is sufficient because it contains the full lookup, reference acquisition, callback, and release sequence for the SRQ event path. The root cause describes a vulnerable pattern where `mlx4_srq_event()` performed an RCU-protected radix-tree lookup without proper lifetime protection for `struct mlx4_srq`. That vulnerable construct is not present here. Instead, the code uses `spin_lock(&srq_table->lock);` before the lookup, performs `srq = radix_tree_lookup(&srq_table->tree, ...)` while holding that lock, and if found immediately takes a reference with `atomic_inc(&srq->refcount);` before releasing the lock with `spin_unlock(&srq_table->lock);`. After the callback, it drops the reference with `if (atomic_dec_and_test(&srq->refcount)) complete(&srq->free);`. This is explicit refcount-based lifetime management under a lock, not the unsafe RCU-only lookup described in the root cause. Therefore the vulnerable construct is absent (`has_bug: false`), and the function already contains the correct handling that prevents the described race (`is_fixed: true`)."
+      }
+    },
+    {
+      "bic_found": "17ac99b2b8d08ed40f4525491d6eff330329a6d2",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c54c7e4cb679",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+          "anchor_lineno": 206
+        },
+        "commit": "17ac99b2b8d08ed40f4525491d6eff330329a6d2",
+        "commit_short": "17ac99b2b8d0",
+        "commit_msg": "drivers, net, mlx4: convert mlx4_srq.refcount from atomic_t to refcount_t\n\natomic_t variables are currently used to impl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "display_lineno": 206,
+        "code_snippet": "commit 17ac99b2b8d08ed40f4525491d6eff330329a6d2\nAuthor: Elena Reshetova <elena.reshetova@intel.com>\nDate:   Fri Oct 20 10:23:39 2017 +0300\n\n    drivers, net, mlx4: convert mlx4_srq.refcount from atomic_t to refcount_t\n    \n    atomic_t variables are currently used to implement reference\n    counters with the following properties:\n     - counter is initialized to 1 using atomic_set()\n     - a resource is freed upon counter reaching zero\n     - once counter reaches zero, its further\n       increme",
+        "exists": true,
+        "reason": "The function body shown for mlx4_srq_event() is sufficient to assess the stated root cause. The vulnerable pattern is still present: the code does an RCU lookup, then drops the RCU read-side lock before taking a reference. Specifically, it does `rcu_read_lock();`, then `srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));`, then `rcu_read_unlock();`, and only afterward `if (srq) refcount_inc(&srq->refcount);`. This matches the root cause exactly: obtaining `struct mlx4_srq *` via an RCU-protected radix tree lookup even though the object is not protected for lifetime by the RCU critical section, since the reference increment happens after `rcu_read_unlock()`. Converting `atomic_inc/atomic_dec_and_test/atomic_set` to `refcount_inc/refcount_dec_and_test/refcount_set` only changes the counter type and overflow semantics; it does not fix the lifetime race between lookup and object destruction or incomplete initialization. Therefore the vulnerable construct is present, and the fix is not present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0068895ff845",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+          "anchor_lineno": 206
+        },
+        "commit": "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+        "commit_short": "225c7b1feef1",
+        "commit_msg": "IB/mlx4: Add a driver Mellanox ConnectX InfiniBand adapters\n\nAdd an InfiniBand driver for Mellanox ConnectX adapters.  B",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "display_lineno": 157,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function body is sufficient because it shows the lifetime/initialization ordering of the SRQ object relative to its insertion into the lookup structure. At lines 126-128, the object is published via `radix_tree_insert(&srq_table->tree, srq->srqn, srq);` while holding only `srq_table->lock`. However, the object's lifetime bookkeeping is initialized only later at lines 157-158: `atomic_set(&srq->refcount, 1);` and `init_completion(&srq->free);`. This matches the root cause: an event path can perform a radix-tree lookup and obtain `srq` after publication but before the object is fully initialized/protected. There is no RCU-safe lifetime handling shown here, no delayed publication until after initialization, and no prior refcount/completion initialization before insertion. Therefore the vulnerable construct is present, and the fix is not present in this version."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "225c7b1feef1b41170f7037a5b10a65cd8a42c54": 2,
+        "17ac99b2b8d08ed40f4525491d6eff330329a6d2": 1
+      },
+      "bic_candidates": [
+        "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+        "17ac99b2b8d08ed40f4525491d6eff330329a6d2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

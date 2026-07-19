@@ -1,0 +1,160 @@
+{
+  "cveid": "CVE-2026-52910",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "18fc650ccd7fe3376eca89203668cfb8268f60df"
+  ],
+  "ground_truth_bic": "538950a1b7527a0a52ccd9337e3fcd304f027f13",
+  "predicted_bic": [
+    "8217ca653ec601246832d562207bc24bdf652d2f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 10,
+  "llm_tokens": 26554,
+  "root_cause": {
+    "text": "The `sk_reuseport_prog_free()` function was freeing classic BPF (cBPF) programs immediately via `bpf_prog_destroy()` without waiting for RCU readers to complete, causing use-after-free when the reuseport selection fast path (`reuseport_select_sock()`) accessed the freed program structure during concurrent packet processing.",
+    "evidence": "The patch shows that the original code called `bpf_prog_destroy(prog)` directly for cBPF programs (identified by `prog->type == BPF_PROG_TYPE_SK_REUSEPORT`), while the fix defers the freeing by wrapping the destruction in `sk_reuseport_prog_free_rcu()` and scheduling it via `call_rcu()`. The KASAN splat shows a vmalloc-out-of-bounds read at `reuseport_select_sock+0xedc` occurring in the RCU read-side critical section during UDP packet processing, confirming that the program was freed while still being accessed by RCU-protected code paths. The commit message explicitly states: \"sk_reuseport_prog_free() is called without waiting for RCU readers to complete, resulting in various bugs.\"",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/core/filter.c",
+      "lineno": 1665,
+      "content": "bpf_prog_destroy(prog);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `sk_reuseport_prog_free()` function was freeing classic BPF (cBPF) programs immediately via `bpf_prog_destroy()` without waiting for RCU readers to complete, causing use-after-free when the reuseport selection fast path (`reuseport_select_sock()`) accessed the freed program structure during concurrent packet processing.",
+      "evidence_points": "The patch shows that the original code called `bpf_prog_destroy(prog)` directly for cBPF programs (identified by `prog->type == BPF_PROG_TYPE_SK_REUSEPORT`), while the fix defers the freeing by wrapping the destruction in `sk_reuseport_prog_free_rcu()` and scheduling it via `call_rcu()`. The KASAN splat shows a vmalloc-out-of-bounds read at `reuseport_select_sock+0xedc` occurring in the RCU read-side critical section during UDP packet processing, confirming that the program was freed while still being accessed by RCU-protected code paths. The commit message explicitly states: \"sk_reuseport_prog_free() is called without waiting for RCU readers to complete, resulting in various bugs.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/core/filter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential use-after-free in classic BPF program cleanup by deferring destruction through RCU grace period instead of immediate synchronous freeing.",
+        "what": "Added a new RCU callback function `sk_reuseport_prog_free_rcu()` that performs deferred cleanup of BPF programs. Modified `sk_reuseport_prog_free()` to swap the conditional logic: now calls `call_rcu()` with the new callback for classic BPF programs, and calls `bpf_prog_put()` for non-classic programs (reversing the previous type check and cleanup method).",
+        "how": "The change introduces RCU-safe deferred cleanup for classic BPF programs instead of immediate destruction. When a classic BPF program needs to be freed, it schedules the cleanup via RCU grace period rather than destroying it synchronously. Non-classic programs continue using `bpf_prog_put()`. This prevents use-after-free issues by ensuring all RCU readers complete before the program's auxiliary structure and program object are actually freed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix potential use-after-free in classic BPF program cleanup by deferring destruction through RCU grace period instead of immediate synchronous freeing."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by implementing RCU-deferred destruction for classic BPF programs in sk_reuseport_prog_free(), replacing immediate synchronous freeing with deferred cleanup. This prevents use-after-free when reuseport_select_sock() accesses the program structure during concurrent packet processing by ensuring RCU readers complete before the program is destroyed."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/core/filter.c",
+            "lineno": 1665,
+            "content": "bpf_prog_destroy(prog);",
+            "rationale": "This line directly calls bpf_prog_destroy() synchronously on classic BPF programs without waiting for RCU readers to complete. The reuseport_select_sock() fast path accesses the program structure under RCU protection, so immediate destruction causes use-after-free when concurrent packet processing is ongoing."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/core/filter.c",
+            "stmt_text": "bpf_prog_destroy(prog);",
+            "location": "hunk",
+            "explanation": "This statement directly calls bpf_prog_destroy() synchronously on classic BPF programs without waiting for RCU readers to complete. The reuseport_select_sock() fast path accesses the program structure under RCU protection, so immediate destruction causes use-after-free when concurrent packet processing is ongoing. The fix defers destruction through RCU grace period instead of immediate synchronous freeing."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f3b8c28135c3",
+          "anchor_file": "net/core/filter.c",
+          "anchor_lineno": 1665
+        },
+        "commit": "8217ca653ec601246832d562207bc24bdf652d2f",
+        "commit_short": "8217ca653ec6",
+        "commit_msg": "bpf: Enable BPF_PROG_TYPE_SK_REUSEPORT bpf prog in reuseport selection\n\nThis patch allows a BPF_PROG_TYPE_SK_REUSEPORT b",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/filter.c",
+        "display_lineno": 1618,
+        "code_snippet": "commit 8217ca653ec601246832d562207bc24bdf652d2f\nAuthor: Martin KaFai Lau <kafai@fb.com>\nDate:   Wed Aug 8 01:01:26 2018 -0700\n\n    bpf: Enable BPF_PROG_TYPE_SK_REUSEPORT bpf prog in reuseport selection\n    \n    This patch allows a BPF_PROG_TYPE_SK_REUSEPORT bpf prog to select a\n    SO_REUSEPORT sk from a BPF_MAP_TYPE_REUSEPORT_ARRAY introduced in\n    the earlier patch.  \"bpf_run_sk_reuseport()\" will return -ECONNREFUSED\n    when the BPF_PROG_TYPE_SK_REUSEPORT prog returns SK_DROP.\n    The caller",
+        "exists": true,
+        "reason": "The commit introduces the `sk_reuseport_prog_free()` function (lines 45-55 in the diff) which contains the vulnerable construct. The function calls `bpf_prog_destroy(prog)` for non-SK_REUSEPORT programs without RCU synchronization. The vulnerability root cause states that `bpf_prog_destroy()` frees cBPF programs immediately without waiting for RCU readers, causing use-after-free when `reuseport_select_sock()` accesses the freed program during concurrent packet processing. In this commit, line 54 shows `bpf_prog_destroy(prog)` being called directly for SOCKET_FILTER type programs, which is the vulnerable pattern. The fix would require using `bpf_prog_put()` instead (which performs RCU-safe freeing) or wrapping the destroy call with RCU synchronization, but neither is present in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2dbb9b9e6df6",
+          "anchor_file": "net/core/filter.c",
+          "anchor_lineno": 1618
+        },
+        "commit": "5293efe62df81908f2e90c9820c7edcc8e61f5e9",
+        "commit_short": "5293efe62df8",
+        "commit_msg": "bpf: add bpf_skb_change_tail helper\n\nThis work adds a bpf_skb_change_tail() helper for tc BPF programs. The\nbasic idea i",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/filter.c",
+        "display_lineno": 1358,
+        "code_snippet": "commit 5293efe62df81908f2e90c9820c7edcc8e61f5e9\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Thu Aug 18 01:00:39 2016 +0200\n\n    bpf: add bpf_skb_change_tail helper\n    \n    This work adds a bpf_skb_change_tail() helper for tc BPF programs. The\n    basic idea is to expand or shrink the skb in a controlled manner. The\n    eBPF program can then rewrite the rest via helpers like bpf_skb_store_bytes(),\n    bpf_lX_csum_replace() and others rather than passing a raw buffer for\n    writing he",
+        "exists": false,
+        "reason": "The provided code snippet shows only the beginning of the `bpf_try_make_writable()` function definition (lines 1359-1360), which is incomplete and unrelated to the vulnerability root cause. The vulnerability involves `sk_reuseport_prog_free()` function freeing cBPF programs without RCU synchronization, but that function is not present in this snippet. The commit message mentions `bpf_skb_change_tail()` helper, not the reuseport program freeing logic. Critical context is missing - we need to see the actual `sk_reuseport_prog_free()` function implementation to determine if it contains the vulnerable `bpf_prog_destroy()` call without RCU protection."
+      }
+    },
+    {
+      "bic_found": "8217ca653ec601246832d562207bc24bdf652d2f",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "8217ca653ec601246832d562207bc24bdf652d2f": 1
+      },
+      "bic_candidates": [
+        "8217ca653ec601246832d562207bc24bdf652d2f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

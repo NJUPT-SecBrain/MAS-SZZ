@@ -1,0 +1,491 @@
+{
+  "cveid": "CVE-2026-45910",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "87bf646921430e303176edc4eb07c30160361b73"
+  ],
+  "ground_truth_bic": "d94671632572813e90bcf475bb4c7d51fbf20173",
+  "predicted_bic": [
+    "8700e3e7c4857d28ebaa824509934556da0b3e76",
+    "f605f26ea196a3b49bea249330cbd18dba61a33e"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 71456,
+  "root_cause": {
+    "text": "Race condition between QP timer callbacks (retransmit_timer, rnr_nak_timer) and QP destruction (`rxe_destroy_qp`), where the timer handler accesses the QP without taking a reference count, leading to use-after-free and refcount underflow when the QP's reference count reaches zero during handler execution.",
+    "evidence": "The CVE description explicitly states: \"The issue is caused by a race condition between retransmit_timer() and rxe_destroy_qp, leading to the Queue Pair's (QP) reference count dropping to zero during timer handler execution.\" The patch adds `rxe_get(qp)` at the start of each timer function and checks for a non-NULL return before proceeding, ensuring a reference is held. The example flow shows CPU0 in `retransmit_timer` checking `qp->valid` and calling `rxe_sched_task` (which does `rxe_read` = refcount_inc) after CPU1 has already dropped the refcount to zero and cleared `qp->valid`, causing the warning.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+      "lineno": 120,
+      "content": "rxe_dbg_qp(qp, \"retransmit timer fired\\n\");",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+      "lineno": 122,
+      "content": "spin_lock_irqsave(&qp->state_lock, flags);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/infiniband/sw/rxe/rxe_req.c",
+      "lineno": 103,
+      "content": "rxe_dbg_qp(qp, \"nak timer fired\\n\");",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/infiniband/sw/rxe/rxe_req.c",
+      "lineno": 122,
+      "content": "spin_lock_irqsave(&qp->state_lock, flags);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/infiniband/sw/rxe/rxe_req.c",
+      "lineno": 106,
+      "content": "if (qp->valid) {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Race condition between QP timer callbacks (retransmit_timer, rnr_nak_timer) and QP destruction (`rxe_destroy_qp`), where the timer handler accesses the QP without taking a reference count, leading to use-after-free and refcount underflow when the QP's reference count reaches zero during handler execution.",
+      "evidence_points": "The CVE description explicitly states: \"The issue is caused by a race condition between retransmit_timer() and rxe_destroy_qp, leading to the Queue Pair's (QP) reference count dropping to zero during timer handler execution.\" The patch adds `rxe_get(qp)` at the start of each timer function and checks for a non-NULL return before proceeding, ensuring a reference is held. The example flow shows CPU0 in `retransmit_timer` checking `qp->valid` and calling `rxe_sched_task` (which does `rxe_read` = refcount_inc) after CPU1 has already dropped the refcount to zero and cleared `qp->valid`, causing the warning."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/infiniband/sw/rxe/rxe_comp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add reference count protection to retransmit_timer to prevent use-after-free when the QP is destroyed concurrently.",
+        "what": "Added rxe_get/qp reference count check before accessing qp in retransmit_timer, with early return on failure, and corresponding rxe_put after the spinlock section.",
+        "how": "Prevents use-after-free by ensuring the QP object remains valid while the timer callback executes; if the object cannot be referenced, the timer exits early."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a reference count check before accessing QP in timer callback to prevent use-after-free.",
+        "what": "Added a check for rxe_get(qp) returning NULL before proceeding with the timer callback; if NULL, return early.",
+        "how": "Before locking and accessing QP state, the code now attempts to acquire a reference to the QP. If the reference acquisition fails (indicating the QP may be freed or destroyed), the function returns immediately, preventing access to stale memory."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add missing rxe_put(qp) in rnr_nak_timer to fix a reference leak.",
+        "what": "Added a call to rxe_put(qp) after spin_unlock_irqrestore(&qp->state_lock, flags) in the rnr_nak_timer function.",
+        "how": "The function now decrements the reference count of the QP, preventing a reference leak that would otherwise prevent the QP from being freed after timer expiration."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add a reference count check before accessing QP in timer callback to prevent use-after-free."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add missing rxe_put(qp) in rnr_nak_timer to fix a reference leak."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add a reference count check before accessing QP in timer callback to prevent use-after-free.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": ""
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group addresses a reference leak by adding a missing rxe_put, not the race condition where timer handlers lack a reference count increment (rxe_get) before accessing QP, which is the core of the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/infiniband/sw/rxe/rxe_comp.c",
+            "lineno": 120,
+            "content": "rxe_dbg_qp(qp, \"retransmit timer fired\\n\");",
+            "rationale": "This is the first line of the retransmit_timer callback that dereferences the QP pointer without a reference count. If the QP is destroyed concurrently, this access can cause a use-after-free."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/infiniband/sw/rxe/rxe_comp.c",
+            "lineno": 122,
+            "content": "spin_lock_irqsave(&qp->state_lock, flags);",
+            "rationale": "This line accesses qp->state_lock without a reference count, making the lock dereference vulnerable to use-after-free when the QP is freed."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/infiniband/sw/rxe/rxe_req.c",
+            "lineno": 103,
+            "content": "rxe_dbg_qp(qp, \"nak timer fired\\n\");",
+            "rationale": "First dereference of qp in the rnr_nak_timer callback. Without a reference count, the QP may be freed before this debug access, leading to use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/infiniband/sw/rxe/rxe_req.c",
+            "lineno": 105,
+            "content": "spin_lock_irqsave(&qp->state_lock, flags);",
+            "rationale": "Accesses qp->state_lock without a reference. Concurrent QP destruction would free the memory holding the lock, causing use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/infiniband/sw/rxe/rxe_req.c",
+            "lineno": 106,
+            "content": "if (qp->valid) {",
+            "rationale": "Reads qp->valid without a reference count. If the QP is freed concurrently, this conditional dereferences freed memory."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+            "stmt_text": "rxe_dbg_qp(qp, \"retransmit timer fired\\n\");",
+            "location": "hunk",
+            "explanation": "This statement is the first dereference of the QP pointer in the retransmit_timer callback. Without a reference count, the QP may be freed concurrently by rxe_destroy_qp, leading to a use-after-free."
+          },
+          {
+            "vuln_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+            "stmt_text": "spin_lock_irqsave(&qp->state_lock, flags);",
+            "location": "hunk",
+            "explanation": "Accesses the qp->state_lock without a reference count. If the QP is destroyed concurrently, the spinlock memory may be freed, causing a use-after-free when the lock is acquired."
+          },
+          {
+            "vuln_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+            "stmt_text": "rxe_dbg_qp(qp, \"nak timer fired\\n\");",
+            "location": "hunk",
+            "explanation": "First dereference of qp in the rnr_nak_timer callback. Without a reference count, accessing qp for the debug message can cause a use-after-free if the QP is freed concurrently."
+          },
+          {
+            "vuln_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+            "stmt_text": "spin_lock_irqsave(&qp->state_lock, flags);",
+            "location": "hunk",
+            "explanation": "Accesses qp->state_lock without a reference count in the rnr_nak_timer callback. Concurrent QP destruction would free the memory holding the lock, leading to use-after-free."
+          },
+          {
+            "vuln_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+            "stmt_text": "if (qp->valid) {",
+            "location": "hunk",
+            "explanation": "Reads the qp->valid field without a reference count. If the QP is freed concurrently, this conditional dereferences freed memory, causing a use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a01745ccf7c4",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+          "anchor_lineno": 120
+        },
+        "commit": "27c4c520bd3908c095401e93c71e7d3696ae8bdd",
+        "commit_short": "27c4c520bd39",
+        "commit_msg": "RDMA/rxe: Replace pr_xxx by rxe_dbg_xxx in rxe_comp.c\n\nReplace calls to pr_xxx() in rxe_comp.c with rxe_dbg_xxx().\n\nLink",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+        "display_lineno": 117,
+        "code_snippet": "commit 27c4c520bd3908c095401e93c71e7d3696ae8bdd\nAuthor: Bob Pearson <rpearsonhpe@gmail.com>\nDate:   Thu Nov 3 12:10:00 2022 -0500\n\n    RDMA/rxe: Replace pr_xxx by rxe_dbg_xxx in rxe_comp.c\n    \n    Replace calls to pr_xxx() in rxe_comp.c with rxe_dbg_xxx().\n    \n    Link: https://lore.kernel.org/r/20221103171013.20659-3-rpearsonhpe@gmail.com\n    Signed-off-by: Bob Pearson <rpearsonhpe@gmail.com>\n    Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>\n\ndiff --git a/drivers/infiniband/sw/rxe/rxe_comp.",
+        "exists": true,
+        "reason": "The commit only replaces pr_xxx() calls with rxe_dbg_xxx() logging; it does not modify any logic related to reference counting or timer handling. The retransmit_timer handler still accesses the QP without proper reference count protection, leaving the race condition with QP destruction unchanged."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "4554bac48a8c",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+          "anchor_lineno": 117
+        },
+        "commit": "445fd4f4fb76d513de6b05b08b3a4d0bb980fc80",
+        "commit_short": "445fd4f4fb76",
+        "commit_msg": "RDMA/rxe: Fix rnr retry behavior\n\nCurrently the completer tasklet when retransmit timer or the rnr timer\nfires the same ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+        "display_lineno": 117,
+        "code_snippet": "commit 445fd4f4fb76d513de6b05b08b3a4d0bb980fc80\nAuthor: Bob Pearson <rpearsonhpe@gmail.com>\nDate:   Thu Jun 30 14:04:22 2022 -0500\n\n    RDMA/rxe: Fix rnr retry behavior\n    \n    Currently the completer tasklet when retransmit timer or the rnr timer\n    fires the same flag (qp->req.need_retry) is set so that if either timer\n    fires it will attempt to perform a retry flow on the send queue.  This has\n    the effect of responding to an RNR NAK at the first retransmit timer event\n    which might n",
+        "exists": true,
+        "reason": "The commit modifies `retransmit_timer` by adding a debug print and changes `rxe_completer` to use a new flag `wait_for_rnr_timer`, but it does not add reference counting or other synchronization to prevent the use-after-free race condition described in the root cause. The timer handler still accesses the QP without taking a reference, relying on a `qp->valid` check that is not a complete fix. Thus the vulnerable construct remains present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "930119a17200",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+          "anchor_lineno": 117
+        },
+        "commit": "8700e3e7c4857d28ebaa824509934556da0b3e76",
+        "commit_short": "8700e3e7c485",
+        "commit_msg": "Soft RoCE driver\n\nSoft RoCE (RXE) - The software RoCE driver\n\nib_rxe implements the RDMA transport and registers to the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+        "display_lineno": 143,
+        "code_snippet": "commit 8700e3e7c4857d28ebaa824509934556da0b3e76\nAuthor: Moni Shoua <monis@mellanox.com>\nDate:   Thu Jun 16 16:45:23 2016 +0300\n\n    Soft RoCE driver\n    \n    Soft RoCE (RXE) - The software RoCE driver\n    \n    ib_rxe implements the RDMA transport and registers to the RDMA core\n    device as a kernel verbs provider. It also implements the packet IO\n    layer. On the other hand ib_rxe registers to the Linux netdev stack\n    as a udp encapsulating protocol, in that case RDMA, for sending and\n    re",
+        "exists": true,
+        "reason": "The 'retransmit_timer' function directly accesses 'qp' (cast from data) without taking a reference count. It checks only 'qp->valid' but does not increment the QP's reference count, allowing a use-after-free if the QP is destroyed concurrently. The timer callback is registered and scheduled via mod_timer in the completer, but no fix (e.g., refcount or proper teardown) is present in this initial commit. Therefore, the vulnerable construct exists and is not fixed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 3"
+    },
+    {
+      "bic_found": "8700e3e7c4857d28ebaa824509934556da0b3e76",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a01745ccf7c4",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+          "anchor_lineno": 122
+        },
+        "commit": "b5f3fe27c54b1fe77d4dd834ccd48a6d694f872e",
+        "commit_short": "b5f3fe27c54b",
+        "commit_msg": "RDMA/rxe: Convert spin_{lock_bh,unlock_bh} to spin_{lock_irqsave,unlock_irqrestore}\n\nWe need to call spin_lock_irqsave()",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+        "display_lineno": 122,
+        "code_snippet": "commit b5f3fe27c54b1fe77d4dd834ccd48a6d694f872e\nAuthor: Guoqing Jiang <guoqing.jiang@linux.dev>\nDate:   Wed May 10 11:50:56 2023 +0800\n\n    RDMA/rxe: Convert spin_{lock_bh,unlock_bh} to spin_{lock_irqsave,unlock_irqrestore}\n    \n    We need to call spin_lock_irqsave()/spin_unlock_irqrestore() for\n    state_lock in rxe, otherwsie the callchain:\n    \n      ib_post_send_mad\n            -> spin_lock_irqsave\n            -> ib_post_send -> rxe_post_send\n                                    -> spin_lock",
+        "exists": true,
+        "reason": "The `retransmit_timer` function shown in the diff still accesses `qp` (e.g., `qp->valid`) without taking a reference count. The commit only changes spin_lock_bh to spin_lock_irqsave/spin_unlock_irqrestore, which does not address the race condition between timer callbacks and QP destruction. Therefore, the vulnerable construct (lack of reference count protection) remains present and unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "17eabd6a044b",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+          "anchor_lineno": 122
+        },
+        "commit": "8700e3e7c4857d28ebaa824509934556da0b3e76",
+        "commit_short": "8700e3e7c485",
+        "commit_msg": "Soft RoCE driver\n\nSoft RoCE (RXE) - The software RoCE driver\n\nib_rxe implements the RDMA transport and registers to the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_comp.c",
+        "display_lineno": 143,
+        "code_snippet": "commit 8700e3e7c4857d28ebaa824509934556da0b3e76\nAuthor: Moni Shoua <monis@mellanox.com>\nDate:   Thu Jun 16 16:45:23 2016 +0300\n\n    Soft RoCE driver\n    \n    Soft RoCE (RXE) - The software RoCE driver\n    \n    ib_rxe implements the RDMA transport and registers to the RDMA core\n    device as a kernel verbs provider. It also implements the packet IO\n    layer. On the other hand ib_rxe registers to the Linux netdev stack\n    as a udp encapsulating protocol, in that case RDMA, for sending and\n    re",
+        "exists": true,
+        "reason": "The `retransmit_timer` function (line ~217) directly accesses `qp->valid` and modifies `qp->comp.timeout` and calls `rxe_run_task` without any reference count protection. This lack of refcounting allows a race condition where QP destruction can free the QP while the timer handler is still executing, leading to use-after-free and refcount underflow. The fix is absent in this initial commit."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "8700e3e7c4857d28ebaa824509934556da0b3e76",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a01745ccf7c4",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+          "anchor_lineno": 103
+        },
+        "commit": "0edfb15e30a53e8bd039c35a17f61e49cba9f4dd",
+        "commit_short": "0edfb15e30a5",
+        "commit_msg": "RDMA/rxe: Replace pr_xxx by rxe_dbg_xxx in rxe_req.c\n\nReplace calls to pr_xxx() in rxe_req.c with rxe_dbg_xxx().\n\nLink: ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "display_lineno": 103,
+        "code_snippet": "commit 0edfb15e30a53e8bd039c35a17f61e49cba9f4dd\nAuthor: Bob Pearson <rpearsonhpe@gmail.com>\nDate:   Thu Nov 3 12:10:06 2022 -0500\n\n    RDMA/rxe: Replace pr_xxx by rxe_dbg_xxx in rxe_req.c\n    \n    Replace calls to pr_xxx() in rxe_req.c with rxe_dbg_xxx().\n    \n    Link: https://lore.kernel.org/r/20221103171013.20659-9-rpearsonhpe@gmail.com\n    Signed-off-by: Bob Pearson <rpearsonhpe@gmail.com>\n    Signed-off-by: Jason Gunthorpe <jgg@nvidia.com>\n\ndiff --git a/drivers/infiniband/sw/rxe/rxe_req.c b",
+        "exists": true,
+        "reason": "The code snippet includes the rnr_nak_timer function (line 100-106) which accesses the QP 'qp' without taking a reference count, leading to a race condition with QP destruction (use-after-free and refcount underflow). The commit only changes a pr_debug to rxe_dbg_qp, leaving the vulnerable logic unchanged. No fix (reference counting or other protection) is present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "6af70060d2e5",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+          "anchor_lineno": 103
+        },
+        "commit": "445fd4f4fb76d513de6b05b08b3a4d0bb980fc80",
+        "commit_short": "445fd4f4fb76",
+        "commit_msg": "RDMA/rxe: Fix rnr retry behavior\n\nCurrently the completer tasklet when retransmit timer or the rnr timer\nfires the same ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "display_lineno": 103,
+        "code_snippet": "commit 445fd4f4fb76d513de6b05b08b3a4d0bb980fc80\nAuthor: Bob Pearson <rpearsonhpe@gmail.com>\nDate:   Thu Jun 30 14:04:22 2022 -0500\n\n    RDMA/rxe: Fix rnr retry behavior\n    \n    Currently the completer tasklet when retransmit timer or the rnr timer\n    fires the same flag (qp->req.need_retry) is set so that if either timer\n    fires it will attempt to perform a retry flow on the send queue.  This has\n    the effect of responding to an RNR NAK at the first retransmit timer event\n    which might n",
+        "exists": true,
+        "reason": "The code in rnr_nak_timer (line 100-108) accesses qp->req fields and calls rxe_run_task without taking a reference count on the QP, leaving it vulnerable to use-after-free if the QP is destroyed concurrently. No reference counting or protection is added. The requester function (line 645-655) also does not address the race. Therefore the vulnerable construct is present and not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "930119a17200",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+          "anchor_lineno": 103
+        },
+        "commit": "e404f945a6101a6f0f2a29aade6dc32015471daa",
+        "commit_short": "e404f945a610",
+        "commit_msg": "IB/rxe: improved debug prints & code cleanup\n\n1. Debugging qp state transitions and qp errors in loopback and\nmultiple Q",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "display_lineno": 124,
+        "code_snippet": "commit e404f945a6101a6f0f2a29aade6dc32015471daa\nAuthor: Parav Pandit <pandit.parav@gmail.com>\nDate:   Wed Sep 28 20:26:26 2016 +0000\n\n    IB/rxe: improved debug prints & code cleanup\n    \n    1. Debugging qp state transitions and qp errors in loopback and\n    multiple QP tests is difficult without qp numbers in debug logs.\n    This patch adds qp number to important debug logs.\n    \n    2. Instead of having rxe: prefix in few logs and not having in\n    few logs, using uniform module name prefix u",
+        "exists": true,
+        "reason": "The rnr_nak_timer function (lines 121-126) still accesses qp without taking a reference count, as seen in the diff. The commit only adds debug prints and type changes; it does not fix the race condition."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "b9fe856e5454",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+          "anchor_lineno": 124
+        },
+        "commit": "8700e3e7c4857d28ebaa824509934556da0b3e76",
+        "commit_short": "8700e3e7c485",
+        "commit_msg": "Soft RoCE driver\n\nSoft RoCE (RXE) - The software RoCE driver\n\nib_rxe implements the RDMA transport and registers to the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "display_lineno": 124,
+        "code_snippet": "commit 8700e3e7c4857d28ebaa824509934556da0b3e76\nAuthor: Moni Shoua <monis@mellanox.com>\nDate:   Thu Jun 16 16:45:23 2016 +0300\n\n    Soft RoCE driver\n    \n    Soft RoCE (RXE) - The software RoCE driver\n    \n    ib_rxe implements the RDMA transport and registers to the RDMA core\n    device as a kernel verbs provider. It also implements the packet IO\n    layer. On the other hand ib_rxe registers to the Linux netdev stack\n    as a udp encapsulating protocol, in that case RDMA, for sending and\n    re",
+        "exists": true,
+        "reason": "The function `rnr_nak_timer` (line 139-143) directly accesses `qp->req.task` using the raw `struct rxe_qp *qp` pointer passed as timer data, without any reference count or validity check. This allows a use-after-free if the QP is destroyed while the timer is active. No synchronization or refcounting (e.g., rxe_get_qp/rxe_put_qp) is present in this code, confirming the vulnerable construct is introduced and not fixed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "8700e3e7c4857d28ebaa824509934556da0b3e76",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a01745ccf7c4",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+          "anchor_lineno": 122
+        },
+        "commit": "f605f26ea196a3b49bea249330cbd18dba61a33e",
+        "commit_short": "f605f26ea196",
+        "commit_msg": "RDMA/rxe: Protect QP state with qp->state_lock\n\nCurrently the rxe driver makes little effort to make the changes to qp\ns",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "display_lineno": 121,
+        "code_snippet": "commit f605f26ea196a3b49bea249330cbd18dba61a33e\nAuthor: Bob Pearson <rpearsonhpe@gmail.com>\nDate:   Tue Apr 4 23:26:11 2023 -0500\n\n    RDMA/rxe: Protect QP state with qp->state_lock\n    \n    Currently the rxe driver makes little effort to make the changes to qp\n    state (which includes qp->attr.qp_state, qp->attr.sq_draining and\n    qp->valid) atomic between different client threads and IO threads. In\n    particular a common template is for an RDMA application to call\n    ib_modify_qp() to move",
+        "exists": false,
+        "reason": "The commit adds spin_lock_bh(&qp->state_lock) and checks qp->valid before accessing qp in rnr_nak_timer (line annotated: 'if (qp->valid) { ... }'). This prevents the timer from operating on a QP that is being destroyed, eliminating the use-after-free race. Other functions in the diff (req_next_wqe, rxe_requester) also acquire state_lock to protect state changes, thus the vulnerable construct from the root cause is not present and the fix is applied."
+      }
+    },
+    {
+      "bic_found": "f605f26ea196a3b49bea249330cbd18dba61a33e",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a01745ccf7c4",
+          "anchor_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+          "anchor_lineno": 106
+        },
+        "commit": "f605f26ea196a3b49bea249330cbd18dba61a33e",
+        "commit_short": "f605f26ea196",
+        "commit_msg": "RDMA/rxe: Protect QP state with qp->state_lock\n\nCurrently the rxe driver makes little effort to make the changes to qp\ns",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/infiniband/sw/rxe/rxe_req.c",
+        "display_lineno": 106,
+        "code_snippet": "commit f605f26ea196a3b49bea249330cbd18dba61a33e\nAuthor: Bob Pearson <rpearsonhpe@gmail.com>\nDate:   Tue Apr 4 23:26:11 2023 -0500\n\n    RDMA/rxe: Protect QP state with qp->state_lock\n    \n    Currently the rxe driver makes little effort to make the changes to qp\n    state (which includes qp->attr.qp_state, qp->attr.sq_draining and\n    qp->valid) atomic between different client threads and IO threads. In\n    particular a common template is for an RDMA application to call\n    ib_modify_qp() to move",
+        "exists": false,
+        "reason": "The commit adds a state_lock and a qp->valid check in rnr_nak_timer (lines: 'spin_lock_bh(&qp->state_lock); if (qp->valid) { ... } spin_unlock_bh(&qp->state_lock);'), eliminating the race condition by preventing timer handler execution when the QP is being destroyed. Similar protections are added in other functions. The vulnerable construct (unprotected timer access) is no longer present."
+      }
+    },
+    {
+      "bic_found": "f605f26ea196a3b49bea249330cbd18dba61a33e",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "8700e3e7c4857d28ebaa824509934556da0b3e76": 3,
+        "f605f26ea196a3b49bea249330cbd18dba61a33e": 2
+      },
+      "bic_candidates": [
+        "8700e3e7c4857d28ebaa824509934556da0b3e76",
+        "f605f26ea196a3b49bea249330cbd18dba61a33e"
+      ]
+    }
+  ],
+  "used_fallback": true,
+  "error": ""
+}

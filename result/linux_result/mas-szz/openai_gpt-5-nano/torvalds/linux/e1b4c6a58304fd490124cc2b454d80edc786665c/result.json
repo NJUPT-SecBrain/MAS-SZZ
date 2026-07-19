@@ -1,0 +1,502 @@
+{
+  "cveid": "CVE-2025-71072",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e1b4c6a58304fd490124cc2b454d80edc786665c"
+  ],
+  "ground_truth_bic": "a2e459555c5f9da3e619b7e47a63f98574dc75f1",
+  "predicted_bic": [
+    "6faddda69f623d38bb097640689901a4b5ff881a",
+    "7a80e5b8c6fa7d0ae6624bd6aedc4a6a1cfc62fa"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 35,
+  "llm_tokens": 39915,
+  "root_cause": {
+    "text": "The shmem/libfs stable-directory-offset rename path assumed maple_tree updates in simple_offset_rename() and simple_offset_rename_exchange() were non-failing, so ENOMEM-capable mtree_store()/insertion failures could occur after offset removal or after shmem_whiteout(), leaving rename recovery inconsistent.",
+    "evidence": "The commit message explicitly says “maple_tree insertions can fail if we are seriously short on memory; simple_offset_rename() does not recover well if it runs into that” and that “shmem_whiteout() expects that if it succeeds, the caller will progress to d_move()”; the patch fixes this by preinserting the new_dir slot in shmem_rename2(), changing simple_offset_rename() to void with the requirement that the caller already grabbed the slot, and reordering simple_offset_rename_exchange() to use non-failing singleton mtree_store() replacements instead of rollback-prone insert/remove sequences.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/libfs.c",
+      "lineno": 364,
+      "content": "return simple_offset_add(new_ctx, old_dentry);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/libfs.c",
+      "lineno": 358,
+      "content": "simple_offset_remove(old_ctx, old_dentry);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/libfs.c",
+      "lineno": 392,
+      "content": "simple_offset_remove(new_ctx, new_dentry);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/shmem.c",
+      "lineno": 4054,
+      "content": "error = shmem_whiteout(idmap, old_dir, old_dentry);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The shmem/libfs stable-directory-offset rename path assumed maple_tree updates in simple_offset_rename() and simple_offset_rename_exchange() were non-failing, so ENOMEM-capable mtree_store()/insertion failures could occur after offset removal or after shmem_whiteout(), leaving rename recovery inconsistent.",
+      "evidence_points": "The commit message explicitly says “maple_tree insertions can fail if we are seriously short on memory; simple_offset_rename() does not recover well if it runs into that” and that “shmem_whiteout() expects that if it succeeds, the caller will progress to d_move()”; the patch fixes this by preinserting the new_dir slot in shmem_rename2(), changing simple_offset_rename() to void with the requirement that the caller already grabbed the slot, and reordering simple_offset_rename_exchange() to use non-failing singleton mtree_store() replacements instead of rollback-prone insert/remove sequences."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/libfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/libfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "include/linux/fs.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Make simple_offset_rename require a preallocated destination offset slot and always perform offset replacement, warning on unexpected missing offsets or replacement failures.",
+        "what": "The function simple_offset_rename was changed from returning int to returning void, its comment was updated to state that the caller must already have reserved a slot for new_dentry in new_dir's maple_tree, the previous conditional handling for whether new_dentry already had an offset was removed, a new early WARN_ON(!new_offset) check was added, and the body was simplified to always remove old_dentry from the old context, clear new_dentry's offset with offset_set(new_dentry, 0), and invoke simple_offset_replace on the new context with a WARN_ON around its return value instead of returning status codes.",
+        "how": "At runtime, the rename path now assumes the destination dentry always has a preallocated offset slot and treats the absence of a destination offset as an unexpected condition, warning and exiting instead of falling back to simple_offset_add. It also no longer propagates success or failure to callers, instead warning if replacement fails. This enforces the expected rename precondition and preserves the replaced entry's offset only through the replace path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix offset-based rename exchange by validating existing offsets, directly swapping maple-tree entries, and updating dentry offsets consistently without the old remove/restore flow.",
+        "what": "The function simple_offset_rename_exchange() was changed to stop removing both dentries from their offset maps and stop using simple_offset_replace() plus the out_restore rollback path. Instead, it now first checks old_index and new_index with WARN_ON and returns -EINVAL if either is zero, then directly updates the maple trees with mtree_store() to place old_dentry at new_index and new_dentry at old_index, restores new_dentry into new_ctx on failure of the second store, updates both dentries' stored offsets with offset_set(), calls simple_rename_exchange() without checking its return value, and returns 0 unconditionally on success of the map updates.",
+        "how": "At runtime, the exchange now assumes the underlying rename operation cannot fail and performs an in-place swap of dentry-to-offset mappings before invoking the rename, rather than removing entries and later restoring them on failure. It adds validation that both dentries already have valid nonzero offsets, updates each dentry's cached offset value to match the swapped mapping, and uses WARN_ON to flag unexpected map insertion failures. This prevents exchanging dentries with invalid offsets and keeps the offset metadata synchronized with the swapped directory entries while simplifying error recovery to only the maple-tree update stage."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Change simple_offset_rename to return void to match its non-error-reporting behavior and correct its interface.",
+        "what": "The function declaration of simple_offset_rename was changed in the header from returning int to returning void, while its parameters remained the same.",
+        "how": "This changes the function's interface so callers no longer expect or use a return value from simple_offset_rename, reflecting that the operation does not report success or failure through an integer result."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Add a false-initialized had_offset flag in shmem_rename2() to support upcoming rename offset-tracking logic.",
+        "what": "A new local boolean variable named had_offset is declared in shmem_rename2() and initialized to false immediately after the existing they_are_dirs variable declaration.",
+        "how": "At runtime this introduces state storage for tracking whether an offset condition has occurred during the rename operation; in this hunk alone it does not change behavior yet, but it prepares the function for subsequent logic that will read or update this flag."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Pre-add and roll back directory offset state around whiteout rename so shmem rename maintains consistent offsets and avoids failures from the old rename path.",
+        "what": "The change inserts a call to simple_offset_add(shmem_get_offset_ctx(new_dir), new_dentry) before whiteout handling, records had_offset = true when it returns -EBUSY, returns immediately on any other error, adds cleanup with simple_offset_remove(...) if shmem_whiteout(...) fails and no prior offset existed, and changes simple_offset_rename(...) from checked assignment-and-return logic to an unconditional call with no error handling.",
+        "how": "At runtime, the target dentry's offset is now registered in the new directory before performing a whiteout rename, while tolerating the case where the offset already exists. If whiteout creation fails after adding a new offset entry, that temporary offset state is rolled back. The rename path no longer aborts on a simple_offset_rename return value, implying the operation is expected to proceed once the offset entry has been pre-established and kept consistent."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix offset-based rename exchange by validating existing offsets, directly swapping maple-tree entries, and updating dentry offsets consistently without the old remove/restore flow."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Change simple_offset_rename to return void to match its non-error-reporting behavior and correct its interface."
+        },
+        {
+          "group_id": 2,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a false-initialized had_offset flag in shmem_rename2() to support upcoming rename offset-tracking logic."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Pre-add and roll back directory offset state around whiteout rename so shmem rename maintains consistent offsets and avoids failures from the old rename path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix offset-based rename exchange handling by validating required offset state and swapping/replacing maple-tree offset entries consistently during rename.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target the failing rename/rename-exchange offset handling in simple_offset_rename() and simple_offset_rename_exchange(), adding validation and consistent maple-tree replacement/swap logic to avoid inconsistent state when offset updates can fail."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The vulnerability stems from simple_offset_rename() assuming maple_tree updates cannot fail and not reporting errors. Changing the function to return void explicitly aligns the interface with that non-error-reporting behavior, directly touching the flawed assumption at the core of the bug."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The added `had_offset` flag is explicitly for rename offset-tracking in `shmem_rename2()`, which is part of the logic needed to handle and recover from failures in stable-directory-offset rename updates. Since the root cause is inconsistent rename recovery around offset removal/insertion failures, this preparatory tracking change directly relates to that fix path."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The changes directly address the failing rename recovery/consistency issue in shmem/libfs stable-directory-offset handling by pre-adding and rolling back offset state around whiteout rename, which mitigates ENOMEM-capable maple_tree update failures in the old rename path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/libfs.c",
+            "lineno": 358,
+            "content": "simple_offset_remove(old_ctx, old_dentry);",
+            "rationale": "This removes the old offset entry before the subsequent maple-tree insertion/replacement is known to succeed. If the later add/replace fails with ENOMEM, rename state recovery becomes inconsistent because the original offset mapping has already been destroyed."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/libfs.c",
+            "lineno": 364,
+            "content": "return simple_offset_add(new_ctx, old_dentry);",
+            "rationale": "This path performs a potentially failing maple-tree insertion after the source offset was already removed. ENOMEM here directly triggers the root cause: failure after destructive state change, leaving rename offset tracking inconsistent."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/libfs.c",
+            "lineno": 358,
+            "content": "simple_offset_remove(old_ctx, old_dentry);",
+            "rationale": "In rename_exchange, this eagerly deletes one side's offset before replacement operations that can fail. That ordering is central to the inconsistent recovery problem described in the root cause."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/libfs.c",
+            "lineno": 392,
+            "content": "simple_offset_remove(new_ctx, new_dentry);",
+            "rationale": "This deletes the other side's offset before the swap has been safely committed. If a later simple_offset_replace fails, both offsets may already have been disturbed, making rollback unreliable."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "mm/shmem.c",
+            "lineno": 4054,
+            "content": "error = shmem_whiteout(idmap, old_dir, old_dentry);",
+            "rationale": "For whiteout rename, this performs a visible filesystem state change before calling simple_offset_rename(), whose maple-tree updates can fail. That sequencing matches the root cause: an ENOMEM-capable offset update can occur after shmem_whiteout(), leaving inconsistent rename recovery."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/libfs.c",
+            "stmt_text": "return simple_offset_add(new_ctx, old_dentry);",
+            "location": "hunk",
+            "explanation": "This performs an ENOMEM-capable maple_tree insertion during rename after prior destructive offset-state changes. If it fails, the rename path cannot reliably recover the original directory offset mapping, matching the root cause."
+          },
+          {
+            "vuln_file": "fs/libfs.c",
+            "stmt_text": "simple_offset_remove(old_ctx, old_dentry);",
+            "location": "hunk",
+            "explanation": "This removes the source offset mapping before the subsequent maple_tree update is known to succeed. That ordering creates the inconsistent recovery condition when a later insertion or replacement fails."
+          },
+          {
+            "vuln_file": "fs/libfs.c",
+            "stmt_text": "simple_offset_remove(new_ctx, new_dentry);",
+            "location": "hunk",
+            "explanation": "In the exchange path, this eagerly deletes the destination-side offset before the swap/replacement is safely committed. If a later maple_tree operation fails, both sides' offset state may already be disrupted, making rollback inconsistent."
+          },
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "error = shmem_whiteout(idmap, old_dir, old_dentry);",
+            "location": "hunk",
+            "explanation": "This whiteout operation changes visible filesystem state before the offset rename path runs. Because the subsequent offset update could fail with ENOMEM, the sequence can leave rename recovery inconsistent after whiteout has already occurred."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3010f06c52aa",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 364
+        },
+        "commit": "5a1a25be995e1014abd01600479915683e356f5c",
+        "commit_short": "5a1a25be995e",
+        "commit_msg": "libfs: Add simple_offset_rename() API\n\nI'm about to fix a tmpfs rename bug that requires the use of\ninternal simple_offs",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 378,
+        "code_snippet": "commit 5a1a25be995e1014abd01600479915683e356f5c\nAuthor: Chuck Lever <chuck.lever@oracle.com>\nDate:   Mon Apr 15 11:20:55 2024 -0400\n\n    libfs: Add simple_offset_rename() API\n    \n    I'm about to fix a tmpfs rename bug that requires the use of\n    internal simple_offset helpers that are not available in mm/shmem.c\n    \n    Signed-off-by: Chuck Lever <chuck.lever@oracle.com>\n    Link: https://lore.kernel.org/r/20240415152057.4605-3-cel@kernel.org\n    Signed-off-by: Christian Brauner <brauner@ker",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full body of the newly added `simple_offset_rename()` function and the relevant error-handling behavior. The function does: `simple_offset_remove(old_ctx, old_dentry);` and then immediately `return simple_offset_add(new_ctx, old_dentry);`. This matches the root cause: the old offset entry is removed first, and then an add/store into the destination context is attempted, but that add can fail (the root cause mentions ENOMEM-capable maple_tree insertion/store failures). There is no rollback or recovery path if `simple_offset_add()` fails after the removal. Thus the vulnerable construct is present: non-atomic rename offset update with failure possible after removal. The fix is not present because the function contains no compensating reinsert into `old_ctx`, no preallocation, and no logic to make the operation failure-safe."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "23cdd0eed3f1",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 378
+        },
+        "commit": "6faddda69f623d38bb097640689901a4b5ff881a",
+        "commit_short": "6faddda69f62",
+        "commit_msg": "libfs: Add directory operations for stable offsets\n\nCreate a vector of directory operations in fs/libfs.c that handles\nd",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 324,
+        "code_snippet": "commit 6faddda69f623d38bb097640689901a4b5ff881a\nAuthor: Chuck Lever <chuck.lever@oracle.com>\nDate:   Fri Jun 30 13:48:49 2023 -0400\n\n    libfs: Add directory operations for stable offsets\n    \n    Create a vector of directory operations in fs/libfs.c that handles\n    directory seeks and readdir via stable offsets instead of the\n    current cursor-based mechanism.\n    \n    For the moment these are unused.\n    \n    Signed-off-by: Chuck Lever <chuck.lever@oracle.com>\n    Message-Id: <168814732984.5",
+        "exists": true,
+        "reason": "The snippet contains the full vulnerable rename-exchange logic, so it is sufficient. In `simple_offset_rename_exchange()`, the code removes existing offsets first via `simple_offset_remove(old_ctx, old_dentry);` and `simple_offset_remove(new_ctx, new_dentry);`, then performs re-additions with `simple_offset_add(...)`, which can fail because `simple_offset_add()` calls `xa_alloc_cyclic(..., GFP_KERNEL)` and explicitly returns an error on allocation failure (`if (ret < 0) return ret;`). On rollback, the function attempts to restore state with `xa_store(&old_ctx->xa, old_index, old_dentry, GFP_KERNEL);` and `xa_store(&new_ctx->xa, new_index, new_dentry, GFP_KERNEL);` but does not check their return values at all. That matches the root cause: the rename path assumes offset-tree updates are non-failing, even though the underlying xarray/maple-style store/allocation operations may fail with ENOMEM. Thus recovery after prior removals is not reliable. There is no fix present here such as preallocation, checked restoration, or a rollback path that handles `xa_store` failure; therefore the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "509f006932de",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 324
+        },
+        "commit": "8d9e46d80777b484f8f0945c317ad618224d7811",
+        "commit_short": "8d9e46d80777",
+        "commit_msg": "fold mount_pseudo_xattr() into pseudo_fs_get_tree()\n\n... now that all other callers are gone\n\nSigned-off-by: Al Viro <vi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 255,
+        "code_snippet": "commit 8d9e46d80777b484f8f0945c317ad618224d7811\nAuthor: Al Viro <viro@zeniv.linux.org.uk>\nDate:   Sat May 11 11:43:59 2019 -0400\n\n    fold mount_pseudo_xattr() into pseudo_fs_get_tree()\n    \n    ... now that all other callers are gone\n    \n    Signed-off-by: Al Viro <viro@zeniv.linux.org.uk>\n\ndiff --git a/fs/libfs.c b/fs/libfs.c\nindex edef70d35438..7df3c9a85f6b 100644\n--- a/fs/libfs.c\n+++ b/fs/libfs.c\n@@ -240,16 +240,43 @@ static const struct super_operations simple_super_operations = {\n static ",
+        "exists": false,
+        "reason": "The provided function body is pseudo_fs_get_tree() logic for setting up a pseudo filesystem superblock and root inode. It contains operations such as `sget_userns(...)`, `new_inode(s)`, `d_make_root(root)`, and assignment of superblock fields, but it does not include the vulnerable rename-path logic described in the root cause. In particular, there is no `simple_offset_rename()`, `simple_offset_rename_exchange()`, `mtree_store()`, offset removal/insertion, or `shmem_whiteout()` handling shown here. Because the vulnerable construct is completely absent from this function, `has_bug` is false. The fix related to handling ENOMEM-capable maple_tree update failures in the stable-directory-offset rename path is also not present in this snippet. Critical context is missing because this function is unrelated to the described vulnerability, so this code alone is not sufficient to assess the vulnerable logic."
+      }
+    },
+    {
+      "bic_found": "6faddda69f623d38bb097640689901a4b5ff881a",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3010f06c52aa",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 358
+        },
+        "commit": "5a1a25be995e1014abd01600479915683e356f5c",
+        "commit_short": "5a1a25be995e",
+        "commit_msg": "libfs: Add simple_offset_rename() API\n\nI'm about to fix a tmpfs rename bug that requires the use of\ninternal simple_offs",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 377,
+        "code_snippet": "commit 5a1a25be995e1014abd01600479915683e356f5c\nAuthor: Chuck Lever <chuck.lever@oracle.com>\nDate:   Mon Apr 15 11:20:55 2024 -0400\n\n    libfs: Add simple_offset_rename() API\n    \n    I'm about to fix a tmpfs rename bug that requires the use of\n    internal simple_offset helpers that are not available in mm/shmem.c\n    \n    Signed-off-by: Chuck Lever <chuck.lever@oracle.com>\n    Link: https://lore.kernel.org/r/20240415152057.4605-3-cel@kernel.org\n    Signed-off-by: Christian Brauner <brauner@ker",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the complete new function body of `simple_offset_rename()`, which is the logic implicated by the root cause. The function does `simple_offset_remove(old_ctx, old_dentry);` and then immediately `return simple_offset_add(new_ctx, old_dentry);`. This exactly matches the vulnerable pattern described: it removes the old directory offset first, then performs an add/store operation that can fail (the API explicitly documents `Returns zero on success, a negative errno value on failure`). There is no rollback or recovery if `simple_offset_add()` fails, so an ENOMEM-capable insertion failure after removal would leave rename state inconsistent. Therefore the vulnerable construct is present, and the fix is not present in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "23cdd0eed3f1",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 377
+        },
+        "commit": "6faddda69f623d38bb097640689901a4b5ff881a",
+        "commit_short": "6faddda69f62",
+        "commit_msg": "libfs: Add directory operations for stable offsets\n\nCreate a vector of directory operations in fs/libfs.c that handles\nd",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 323,
+        "code_snippet": "commit 6faddda69f623d38bb097640689901a4b5ff881a\nAuthor: Chuck Lever <chuck.lever@oracle.com>\nDate:   Fri Jun 30 13:48:49 2023 -0400\n\n    libfs: Add directory operations for stable offsets\n    \n    Create a vector of directory operations in fs/libfs.c that handles\n    directory seeks and readdir via stable offsets instead of the\n    current cursor-based mechanism.\n    \n    For the moment these are unused.\n    \n    Signed-off-by: Chuck Lever <chuck.lever@oracle.com>\n    Message-Id: <168814732984.5",
+        "exists": true,
+        "reason": "The snippet includes the full vulnerable rename-exchange logic, so it is sufficient. In `simple_offset_rename_exchange()`, the code removes both existing offsets first via `simple_offset_remove(old_ctx, old_dentry);` and `simple_offset_remove(new_ctx, new_dentry);`, then performs re-additions with `simple_offset_add(...)`, which can fail because `simple_offset_add()` calls `xa_alloc_cyclic(..., GFP_KERNEL)` and returns an error if allocation fails (`if (ret < 0) return ret;`). On rollback, the function tries to restore state with `xa_store(&old_ctx->xa, old_index, old_dentry, GFP_KERNEL);` and `xa_store(&new_ctx->xa, new_index, new_dentry, GFP_KERNEL);` after `offset_set(...)`, but it does not check whether those `xa_store()` operations succeed. This matches the root cause: the rename path assumes map updates/restoration are non-failing even though the underlying tree insertion/store can fail with ENOMEM, leaving recovery inconsistent after offsets were already removed. Therefore the vulnerable construct is present, and the fix is not present because there is no checked/non-failing restore mechanism or preallocation strategy here."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "509f006932de",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 323
+        },
+        "commit": "8d9e46d80777b484f8f0945c317ad618224d7811",
+        "commit_short": "8d9e46d80777",
+        "commit_msg": "fold mount_pseudo_xattr() into pseudo_fs_get_tree()\n\n... now that all other callers are gone\n\nSigned-off-by: Al Viro <vi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 254,
+        "code_snippet": "commit 8d9e46d80777b484f8f0945c317ad618224d7811\nAuthor: Al Viro <viro@zeniv.linux.org.uk>\nDate:   Sat May 11 11:43:59 2019 -0400\n\n    fold mount_pseudo_xattr() into pseudo_fs_get_tree()\n    \n    ... now that all other callers are gone\n    \n    Signed-off-by: Al Viro <viro@zeniv.linux.org.uk>\n\ndiff --git a/fs/libfs.c b/fs/libfs.c\nindex edef70d35438..7df3c9a85f6b 100644\n--- a/fs/libfs.c\n+++ b/fs/libfs.c\n@@ -240,16 +240,43 @@ static const struct super_operations simple_super_operations = {\n static ",
+        "exists": false,
+        "reason": "The provided function is pseudo_fs_get_tree()-style superblock setup code. It initializes a pseudo filesystem superblock and root inode: e.g. `s = sget_userns(...)`, sets `s->s_magic`, `s->s_op`, `s->s_xattr`, allocates `root = new_inode(s)`, and creates `s->s_root = d_make_root(root)`. The vulnerability root cause concerns the stable-directory-offset rename path in shmem/libfs, specifically failing `maple_tree` updates inside `simple_offset_rename()` / `simple_offset_rename_exchange()` after offset removal or `shmem_whiteout()`. Those rename helpers, maple tree operations, and any ENOMEM recovery logic are completely absent from this snippet. Therefore this function does not contain the vulnerable construct. It also does not show the relevant fix, since none of the affected rename logic is present here."
+      }
+    },
+    {
+      "bic_found": "6faddda69f623d38bb097640689901a4b5ff881a",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3010f06c52aa",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 392
+        },
+        "commit": "6faddda69f623d38bb097640689901a4b5ff881a",
+        "commit_short": "6faddda69f62",
+        "commit_msg": "libfs: Add directory operations for stable offsets\n\nCreate a vector of directory operations in fs/libfs.c that handles\nd",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 331,
+        "code_snippet": "commit 6faddda69f623d38bb097640689901a4b5ff881a\nAuthor: Chuck Lever <chuck.lever@oracle.com>\nDate:   Fri Jun 30 13:48:49 2023 -0400\n\n    libfs: Add directory operations for stable offsets\n    \n    Create a vector of directory operations in fs/libfs.c that handles\n    directory seeks and readdir via stable offsets instead of the\n    current cursor-based mechanism.\n    \n    For the moment these are unused.\n    \n    Signed-off-by: Chuck Lever <chuck.lever@oracle.com>\n    Message-Id: <168814732984.5",
+        "exists": true,
+        "reason": "The snippet directly contains the vulnerable rename-offset logic, so it is sufficient. In `simple_offset_rename_exchange()`, the code removes both existing offsets first: `simple_offset_remove(old_ctx, old_dentry);` and `simple_offset_remove(new_ctx, new_dentry);`, then performs re-insertion with `simple_offset_add(new_ctx, old_dentry);` and `simple_offset_add(old_ctx, new_dentry);`, both of which can fail because `simple_offset_add()` calls `xa_alloc_cyclic(..., GFP_KERNEL)` and explicitly returns errors on allocation failure (`if (ret < 0) return ret;`). The rollback path `out_restore:` then does `offset_set(old_dentry, old_index); xa_store(&old_ctx->xa, old_index, old_dentry, GFP_KERNEL);` and similarly for `new_dentry`, but it does not check whether `xa_store()` succeeds. This matches the root cause: the code assumes offset-map restore operations are non-failing even though the underlying maple/xarray store can fail with ENOMEM-capable allocations. Thus the vulnerable construct is present, and the fix is not present because there is no checked/non-failing restore handling before or after the destructive removals."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "509f006932de",
+          "anchor_file": "fs/libfs.c",
+          "anchor_lineno": 331
+        },
+        "commit": "1a1c9bb433af252767ee90d6394d287afa30cf8b",
+        "commit_short": "1a1c9bb433af",
+        "commit_msg": "inode numbering: change libfs sb creation routines to avoid collisions with their root inodes\n\nThis patch makes it so th",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/libfs.c",
+        "display_lineno": 223,
+        "code_snippet": "commit 1a1c9bb433af252767ee90d6394d287afa30cf8b\nAuthor: Jeff Layton <jlayton@kernel.org>\nDate:   Tue May 8 00:32:31 2007 -0700\n\n    inode numbering: change libfs sb creation routines to avoid collisions with their root inodes\n    \n    This patch makes it so that simple_fill_super and get_sb_pseudo assign their\n    root inodes to be number 1.  It also fixes up a couple of callers of\n    simple_fill_super that were passing in files arrays that had an index at\n    number 1, and adds a warning for a",
+        "exists": false,
+        "reason": "The provided function bodies in fs/libfs.c only modify inode numbering in `get_sb_pseudo()` and `simple_fill_super()`, e.g. `root->i_ino = 1;`, `inode->i_ino = 1;`, and a warning for `i == 1` in the `files` array. The vulnerability root cause is specifically about the stable-directory-offset rename path assuming maple_tree updates in `simple_offset_rename()` / `simple_offset_rename_exchange()` cannot fail, leading to inconsistent recovery on ENOMEM-capable `mtree_store()` failures. Those rename-related functions and any maple_tree update/recovery logic are completely absent from this snippet. Therefore this commit version's shown code does not contain the vulnerable construct, and it also does not show the later fix for that vulnerability."
+      }
+    },
+    {
+      "bic_found": "6faddda69f623d38bb097640689901a4b5ff881a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3010f06c52aa",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 4054
+        },
+        "commit": "7a80e5b8c6fa7d0ae6624bd6aedc4a6a1cfc62fa",
+        "commit_short": "7a80e5b8c6fa",
+        "commit_msg": "shmem: support idmapped mounts for tmpfs\n\nThis patch enables idmapped mounts for tmpfs when CONFIG_SHMEM is defined.\nSin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 3102,
+        "code_snippet": "commit 7a80e5b8c6fa7d0ae6624bd6aedc4a6a1cfc62fa\nAuthor: Giuseppe Scrivano <gscrivan@redhat.com>\nDate:   Fri Jan 20 10:43:46 2023 +0100\n\n    shmem: support idmapped mounts for tmpfs\n    \n    This patch enables idmapped mounts for tmpfs when CONFIG_SHMEM is defined.\n    Since all dedicated helpers for this functionality exist, in this\n    patch we just pass down the idmap argument from the VFS methods to the\n    relevant helpers.\n    \n    Signed-off-by: Giuseppe Scrivano <gscrivan@redhat.com>\n    ",
+        "exists": false,
+        "reason": "The snippet only shows the top-level shmem rename path and the call to `shmem_whiteout(idmap, old_dir, old_dentry)` at line 3102, plus subsequent unlink/link accounting. The stated root cause is specifically about the stable-directory-offset rename path assuming maple_tree updates in `simple_offset_rename()` / `simple_offset_rename_exchange()` cannot fail, leading to inconsistency when `mtree_store()` fails after offset removal or after `shmem_whiteout()`. Those offset-handling helpers are not shown here. This function body does not reveal whether the rename path performs `simple_offset_rename()`, whether failures are checked, or whether recovery logic exists after `shmem_whiteout()`. Therefore the provided code is not sufficient to determine presence or absence of the vulnerable construct or the fix."
+      }
+    },
+    {
+      "bic_found": "7a80e5b8c6fa7d0ae6624bd6aedc4a6a1cfc62fa",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "6faddda69f623d38bb097640689901a4b5ff881a": 3,
+        "7a80e5b8c6fa7d0ae6624bd6aedc4a6a1cfc62fa": 1
+      },
+      "bic_candidates": [
+        "6faddda69f623d38bb097640689901a4b5ff881a",
+        "7a80e5b8c6fa7d0ae6624bd6aedc4a6a1cfc62fa"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

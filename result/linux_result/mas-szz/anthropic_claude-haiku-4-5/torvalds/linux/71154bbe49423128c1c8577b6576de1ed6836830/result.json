@@ -1,0 +1,359 @@
+{
+  "cveid": "CVE-2025-71088",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "71154bbe49423128c1c8577b6576de1ed6836830"
+  ],
+  "ground_truth_bic": "23e89e8ee7be73e21200947885a6d3a109a2c58d",
+  "predicted_bic": [
+    "8fd738049ac3d67a937d36577763b47180aae1ad",
+    "337cebbd850f94147cee05252778f8f78b8c337f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 25,
+  "llm_tokens": 53739,
+  "root_cause": {
+    "text": "The MPTCP fallback check for simultaneous connect was performed too late in the connection lifecycle (in the state change callback), allowing a TCP subflow to process SYN-ACK packets after transitioning to TCP_FIN_WAIT1 state where the sk_state_change() callback is not invoked, leaving the MPTCP socket in an inconsistent state.",
+    "evidence": "The patch moves the `subflow_simultaneous_connect()` check from `subflow_state_change()` in subflow.c (which is not called for `* -> FIN_WAIT1` transitions) to `mptcp_syn_options()` in options.c at SYN-ACK generation time. The simplified condition in protocol.h changes from checking multiple states `(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING)` to only `TCP_SYN_RECV`, ensuring the fallback is triggered before the socket can transition to FIN_WAIT1 and bypass the check. The commit message explicitly states: \"The TCP subflow can process the simult-connect syn-ack packet after transitioning to TCP_FIN1 state, bypassing the MPTCP fallback check, as the sk_state_change() callback is not invoked for * -> FIN_WAIT1 transitions.\"",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mptcp/protocol.h",
+      "lineno": 1341,
+      "content": "(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING) &&",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/subflow.c",
+      "lineno": 1881,
+      "content": "if (subflow_simultaneous_connect(sk)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/subflow.c",
+      "lineno": 1882,
+      "content": "WARN_ON_ONCE(!mptcp_try_fallback(sk, MPTCP_MIB_SIMULTCONNFALLBACK));",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The MPTCP fallback check for simultaneous connect was performed too late in the connection lifecycle (in the state change callback), allowing a TCP subflow to process SYN-ACK packets after transitioning to TCP_FIN_WAIT1 state where the sk_state_change() callback is not invoked, leaving the MPTCP socket in an inconsistent state.",
+      "evidence_points": "The patch moves the `subflow_simultaneous_connect()` check from `subflow_state_change()` in subflow.c (which is not called for `* -> FIN_WAIT1` transitions) to `mptcp_syn_options()` in options.c at SYN-ACK generation time. The simplified condition in protocol.h changes from checking multiple states `(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING)` to only `TCP_SYN_RECV`, ensuring the fallback is triggered before the socket can transition to FIN_WAIT1 and bypass the check. The commit message explicitly states: \"The TCP subflow can process the simult-connect syn-ack packet after transitioning to TCP_FIN1 state, bypassing the MPTCP fallback check, as the sk_state_change() callback is not invoked for * -> FIN_WAIT1 transitions.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/mptcp/options.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/mptcp/protocol.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/mptcp/subflow.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle simultaneous MPTCP connection attempts by detecting them early and falling back to non-MPTCP mode to prevent handshake conflicts.",
+        "what": "Added a new conditional block that checks for simultaneous connection using `subflow_simultaneous_connect(sk)`. If true, it calls `mptcp_try_fallback()` with `MPTCP_MIB_SIMULTCONNFALLBACK`, sets `subflow->request_mptcp = 0`, and returns false, preventing further MPC handshake processing.",
+        "how": "This change intercepts the MPTCP SYN options handling to detect simultaneous connection attempts. When detected, it triggers a fallback mechanism to disable MPTCP mode for this subflow and exits early, preventing the normal MPTCP MPC (Multipath Capable) SYN options from being set. This avoids processing incompatible simultaneous connection scenarios in the MPTCP handshake."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Correct simultaneous connect detection to only match TCP_SYN_RECV state, removing incorrect state checks and relying on implicit conn_finished guarantee.",
+        "what": "Replaced a multi-line bitwise state check (testing if sk_state is one of ESTABLISHED, FIN_WAIT1, FIN_WAIT2, or CLOSING) combined with two additional conditions, with a single equality check for TCP_SYN_RECV state and is_active_ssk() call. Removed the explicit !subflow->conn_finished check and added an explanatory comment.",
+        "how": "This changes the logic to only return true when the socket is in TCP_SYN_RECV state (instead of four possible states) and is an active subflow. The comment indicates that TCP_SYN_RECV state implicitly guarantees !subflow->conn_finished, making that explicit check redundant. This narrows the condition significantly, affecting which sockets are considered to have simultaneous connect behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Remove simultaneous connect fallback handling from subflow_state_change callback, likely moving this logic elsewhere or eliminating redundant processing.",
+        "what": "Removed a conditional block (6 lines) that checked for simultaneous connect condition and executed fallback logic with state propagation when true.",
+        "how": "This change eliminates the handling of simultaneous connection scenarios in the subflow state change callback. Previously, when a simultaneous connect was detected, the code would attempt an MPTCP fallback, mark the connection as finished, and propagate state to the parent. Now this entire flow is skipped, meaning simultaneous connects will no longer trigger these fallback and state propagation operations."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Handle simultaneous MPTCP connection attempts by detecting them early and falling back to non-MPTCP mode to prevent handshake conflicts."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Correct simultaneous connect detection to only match TCP_SYN_RECV state, removing incorrect state checks and relying on implicit conn_finished guarantee."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove simultaneous connect fallback handling from subflow_state_change callback, likely moving this logic elsewhere or eliminating redundant processing."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by implementing early detection of simultaneous MPTCP connection attempts and falling back to non-MPTCP mode. This prevents the scenario where the MPTCP fallback check occurs too late in the connection lifecycle (in the state change callback), which was the core issue allowing TCP subflows to process SYN-ACK packets in inconsistent states like TCP_FIN_WAIT1."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "This group directly addresses the vulnerability root cause by correcting the simultaneous connect detection logic. The fix ensures MPTCP fallback checks occur at the correct state (TCP_SYN_RECV) rather than relying on late state change callbacks, preventing the socket from entering an inconsistent state when processing SYN-ACK packets in inappropriate states like TCP_FIN_WAIT1."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by removing the simultaneous connect fallback check from the subflow_state_change callback. The vulnerability occurred because this check was performed too late in the connection lifecycle within the state change callback, allowing inconsistent states. Removing this logic from the callback is a direct fix to the timing and placement issue identified in the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/mptcp/protocol.h",
+            "lineno": 1341,
+            "content": "(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING) &&",
+            "rationale": "This line includes TCPF_FIN_WAIT1 in the simultaneous connect check, allowing the fallback logic to be triggered in states where sk_state_change() callback is not invoked. This is the core vulnerability - the check was too permissive and included states where the callback wouldn't fire, leaving the MPTCP socket in an inconsistent state."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/subflow.c",
+            "lineno": 1881,
+            "content": "if (subflow_simultaneous_connect(sk)) {",
+            "rationale": "This check in the state change callback was performed too late in the connection lifecycle. By the time a TCP subflow transitions to TCP_FIN_WAIT1, the sk_state_change() callback is not invoked, so this fallback detection never fires for that critical state, leaving the socket in an inconsistent state."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/subflow.c",
+            "lineno": 1882,
+            "content": "WARN_ON_ONCE(!mptcp_try_fallback(sk, MPTCP_MIB_SIMULTCONNFALLBACK));",
+            "rationale": "The fallback attempt was placed in the state change callback, which is not invoked when transitioning to TCP_FIN_WAIT1. This means the fallback never occurs for simultaneous connects that reach this state, causing the vulnerability."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mptcp/protocol.h",
+            "stmt_text": "(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING) &&",
+            "location": "hunk",
+            "explanation": "This condition in the simultaneous connect check includes TCPF_FIN_WAIT1 state, which is the core vulnerability. The check was too permissive by including states where the sk_state_change() callback is not invoked. When a TCP subflow transitions to TCP_FIN_WAIT1, the callback doesn't fire, so the fallback detection logic in the state change callback never executes, leaving the MPTCP socket in an inconsistent state."
+          },
+          {
+            "vuln_file": "net/mptcp/subflow.c",
+            "stmt_text": "if (subflow_simultaneous_connect(sk)) {",
+            "location": "hunk",
+            "explanation": "This simultaneous connect check was placed in the subflow_state_change callback, which is invoked too late in the connection lifecycle. By the time a TCP subflow reaches TCP_FIN_WAIT1 state, this callback is no longer invoked, so the fallback detection never fires for that critical state, leaving the socket in an inconsistent state."
+          },
+          {
+            "vuln_file": "net/mptcp/subflow.c",
+            "stmt_text": "WARN_ON_ONCE(!mptcp_try_fallback(sk, MPTCP_MIB_SIMULTCONNFALLBACK));",
+            "location": "hunk",
+            "explanation": "The fallback attempt was placed in the state change callback, which is not invoked when transitioning to TCP_FIN_WAIT1. This means the fallback never occurs for simultaneous connects that reach this state, causing the vulnerability where the MPTCP socket remains in an inconsistent state."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/protocol.h",
+          "anchor_lineno": 1341
+        },
+        "commit": "337cebbd850f94147cee05252778f8f78b8c337f",
+        "commit_short": "337cebbd850f",
+        "commit_msg": "mptcp: really cope with fastopen race\n\nFastopen and PM-trigger subflow shutdown can race, as reported by\nsyzkaller.\n\nIn ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/protocol.h",
+        "display_lineno": 1133,
+        "code_snippet": "commit 337cebbd850f94147cee05252778f8f78b8c337f\nAuthor: Paolo Abeni <pabeni@redhat.com>\nDate:   Thu Feb 8 19:03:54 2024 +0100\n\n    mptcp: really cope with fastopen race\n    \n    Fastopen and PM-trigger subflow shutdown can race, as reported by\n    syzkaller.\n    \n    In my first attempt to close such race, I missed the fact that\n    the subflow status can change again before the subflow_state_change\n    callback is invoked.\n    \n    Address the issue additionally copying with all the states dire",
+        "exists": false,
+        "reason": "The vulnerability root cause describes that the MPTCP fallback check was performed too late, allowing TCP subflows to process SYN-ACK packets after transitioning to TCP_FIN_WAIT1 state where sk_state_change() callback is not invoked. This commit fixes the issue by expanding the `subflow_simultaneous_connect()` check to include additional states beyond TCP_FIN_WAIT1: TCP_FIN_WAIT2 and TCP_CLOSING. The original code only checked `(TCPF_ESTABLISHED | TCPF_FIN_WAIT1)`, but the fix adds `TCPF_FIN_WAIT2 | TCPF_CLOSING` to the bitmask. This ensures the fallback check covers all states 'directly reachable from TCP_FIN_WAIT1' (as mentioned in the commit message), preventing the race condition where the subflow status could change before the state_change callback is invoked. The function now properly handles the case where a socket transitions through multiple states during the fastopen/PM-trigger shutdown race, ensuring the MPTCP socket remains in a consistent state."
+      }
+    },
+    {
+      "bic_found": "337cebbd850f94147cee05252778f8f78b8c337f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1881
+        },
+        "commit": "8fd738049ac3d67a937d36577763b47180aae1ad",
+        "commit_short": "8fd738049ac3",
+        "commit_msg": "mptcp: fallback in case of simultaneous connect\n\nwhen a MPTCP client tries to connect to itself, tcp_finish_connect() is",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1131,
+        "code_snippet": "commit 8fd738049ac3d67a937d36577763b47180aae1ad\nAuthor: Davide Caratti <dcaratti@redhat.com>\nDate:   Mon Jun 29 22:26:21 2020 +0200\n\n    mptcp: fallback in case of simultaneous connect\n    \n    when a MPTCP client tries to connect to itself, tcp_finish_connect() is\n    never reached. Because of this, depending on the socket current state,\n    multiple faulty behaviours can be observed:\n    \n    1) a WARN_ON() in subflow_data_ready() is hit\n     WARNING: CPU: 2 PID: 882 at net/mptcp/subflow.c:911",
+        "exists": true,
+        "reason": "The vulnerable construct is present in this function. The simultaneous connect fallback check (line 1131: `if (subflow_simultaneous_connect(sk))`) is performed AFTER the `__subflow_state_change(sk)` call on line 1129. According to the vulnerability root cause, this check is performed too late in the connection lifecycle - specifically, it's in the state change callback itself. The problem is that when a TCP subflow transitions to TCP_FIN_WAIT1 state, the sk_state_change() callback is not invoked for subsequent SYN-ACK packets, meaning this fallback check will never execute for those packets. The check should be performed earlier, before the state change callback is invoked, to catch the simultaneous connect condition before the socket enters states where the callback won't be triggered again. The current placement in the state change callback (subflow_state_change function) is the root cause of the vulnerability - it's too late to catch all cases of simultaneous connect."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e1ff9e82e2ea",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1131
+        },
+        "commit": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+        "commit_short": "648ef4b88673",
+        "commit_msg": "mptcp: Implement MPTCP receive path\n\nParses incoming DSS options and populates outgoing MPTCP ACK\nfields. MPTCP fields a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 645,
+        "code_snippet": "commit 648ef4b88673dadb8463bf0d4b10fbf33d55def8\nAuthor: Mat Martineau <martineau@kernel.org>\nDate:   Tue Jan 21 16:56:24 2020 -0800\n\n    mptcp: Implement MPTCP receive path\n    \n    Parses incoming DSS options and populates outgoing MPTCP ACK\n    fields. MPTCP fields are parsed from the TCP option header and placed in\n    an skb extension, allowing the upper MPTCP layer to access MPTCP\n    options after the skb has gone through the TCP stack.\n    \n    The subflow implements its own data_ready() ",
+        "exists": false,
+        "reason": "The provided code snippet shows a state change callback function (likely subflow_state_change) that handles MPTCP subflow state transitions. However, the vulnerability root cause describes a timing issue where the fallback check for simultaneous connect happens too late - specifically in the state change callback when the subflow has already transitioned to TCP_FIN_WAIT1 state. The shown code does not contain any fallback check logic or simultaneous connect handling at all. To determine if this commit introduces the bug, we would need to see: (1) where the fallback check should occur, (2) what the fallback check logic looks like, (3) whether there's a missing check for TCP_FIN_WAIT1 state before processing SYN-ACK packets, and (4) the broader context of how SYN-ACK packets are handled in relation to state transitions. The current snippet only shows data availability handling and EOF detection, not the vulnerable fallback check mechanism described in the root cause."
+      }
+    },
+    {
+      "bic_found": "8fd738049ac3d67a937d36577763b47180aae1ad",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1882
+        },
+        "commit": "c65c2e3bae6912b6baf8ea12eeace220e8e99b47",
+        "commit_short": "c65c2e3bae69",
+        "commit_msg": "mptcp: track fallbacks accurately via mibs\n\nAdd the mibs required to cover the few possible fallback causes still\nlackin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1864,
+        "code_snippet": "commit c65c2e3bae6912b6baf8ea12eeace220e8e99b47\nAuthor: Paolo Abeni <pabeni@redhat.com>\nDate:   Wed Jul 23 16:32:23 2025 +0200\n\n    mptcp: track fallbacks accurately via mibs\n    \n    Add the mibs required to cover the few possible fallback causes still\n    lacking suck info.\n    \n    Move the relevant mib increment into the fallback helper, so that no\n    eventual future fallback operation will miss a paired mib increment.\n    \n    Additionally track failed fallback via its own mib, such mib is",
+        "exists": true,
+        "reason": "The function performs the fallback check via subflow_simultaneous_connect(sk) at line 1863, but this check is placed inside the sk_state_change() callback (subflow_state_change). According to the vulnerability root cause, this is too late in the connection lifecycle because the callback is not invoked when the TCP subflow transitions to TCP_FIN_WAIT1 state. This means SYN-ACK packets can be processed after the state change without triggering this callback, leaving the MPTCP socket in an inconsistent state. The vulnerable construct is present: the fallback check happens in the state change callback rather than earlier in the connection lifecycle where it should occur to catch all simultaneous connect scenarios. The code lacks the fix that would move this check to an earlier point where it would be invoked regardless of the final TCP state."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5ec9b15d8dfa",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1864
+        },
+        "commit": "8fd738049ac3d67a937d36577763b47180aae1ad",
+        "commit_short": "8fd738049ac3",
+        "commit_msg": "mptcp: fallback in case of simultaneous connect\n\nwhen a MPTCP client tries to connect to itself, tcp_finish_connect() is",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1134,
+        "code_snippet": "commit 8fd738049ac3d67a937d36577763b47180aae1ad\nAuthor: Davide Caratti <dcaratti@redhat.com>\nDate:   Mon Jun 29 22:26:21 2020 +0200\n\n    mptcp: fallback in case of simultaneous connect\n    \n    when a MPTCP client tries to connect to itself, tcp_finish_connect() is\n    never reached. Because of this, depending on the socket current state,\n    multiple faulty behaviours can be observed:\n    \n    1) a WARN_ON() in subflow_data_ready() is hit\n     WARNING: CPU: 2 PID: 882 at net/mptcp/subflow.c:911",
+        "exists": true,
+        "reason": "The function shows the vulnerable construct: the simultaneous connect fallback check (lines 1131-1139) is performed in the state change callback (subflow_state_change). According to the vulnerability root cause, this check happens too late in the connection lifecycle. The problem is that when a TCP subflow transitions to TCP_FIN_WAIT1 state, the sk_state_change() callback is not invoked, so the fallback check at line 1131 never executes for that state transition. This leaves the MPTCP socket in an inconsistent state because SYN-ACK packets can still be processed after the subflow enters TCP_FIN_WAIT1. The code lacks an earlier fallback check that would catch the simultaneous connect condition before the subflow reaches states where the callback is not triggered. The fix would require moving the simultaneous connect detection to an earlier point in the connection lifecycle, not relying solely on the state change callback."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "e1ff9e82e2ea",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1134
+        },
+        "commit": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+        "commit_short": "648ef4b88673",
+        "commit_msg": "mptcp: Implement MPTCP receive path\n\nParses incoming DSS options and populates outgoing MPTCP ACK\nfields. MPTCP fields a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 648,
+        "code_snippet": "commit 648ef4b88673dadb8463bf0d4b10fbf33d55def8\nAuthor: Mat Martineau <martineau@kernel.org>\nDate:   Tue Jan 21 16:56:24 2020 -0800\n\n    mptcp: Implement MPTCP receive path\n    \n    Parses incoming DSS options and populates outgoing MPTCP ACK\n    fields. MPTCP fields are parsed from the TCP option header and placed in\n    an skb extension, allowing the upper MPTCP layer to access MPTCP\n    options after the skb has gone through the TCP stack.\n    \n    The subflow implements its own data_ready() ",
+        "exists": false,
+        "reason": "The provided code snippet shows a state change callback function (likely subflow_state_change), but it does not contain the vulnerable construct described in the root cause. The vulnerability involves a MPTCP fallback check for simultaneous connect being performed too late (in the state change callback), allowing TCP subflows to process SYN-ACK packets after transitioning to TCP_FIN_WAIT1 state. The shown code (lines 639-661) handles data availability and EOF conditions but does not show any fallback check logic or simultaneous connect handling. To determine if this commit introduces the vulnerability, we would need to see: (1) where the fallback check should occur, (2) the actual fallback check logic that is missing or misplaced, and (3) how SYN-ACK packet processing is handled in relation to TCP state transitions. The current snippet is insufficient to assess whether the vulnerable construct exists or whether the fix is present."
+      }
+    },
+    {
+      "bic_found": "8fd738049ac3d67a937d36577763b47180aae1ad",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "337cebbd850f94147cee05252778f8f78b8c337f": 1,
+        "8fd738049ac3d67a937d36577763b47180aae1ad": 2
+      },
+      "bic_candidates": [
+        "8fd738049ac3d67a937d36577763b47180aae1ad",
+        "337cebbd850f94147cee05252778f8f78b8c337f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

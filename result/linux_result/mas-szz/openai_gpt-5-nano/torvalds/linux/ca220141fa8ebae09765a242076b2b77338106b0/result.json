@@ -1,0 +1,300 @@
+{
+  "cveid": "CVE-2026-43244",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ca220141fa8ebae09765a242076b2b77338106b0"
+  ],
+  "ground_truth_bic": "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3",
+  "predicted_bic": [
+    "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 47110,
+  "root_cause": {
+    "text": "The KCM send path in kcm_sendmsg() links a newly allocated skb into the frag_list before filling it with data, but on partial copy failure it lacks cleanup of that newly linked empty tail skb, leaving a zero-fragment skb in the message chain later processed by kcm_write_msgs().",
+    "evidence": "The CVE/commit states that after MAX_SKB_FRAGS is reached, kcm_sendmsg() “allocates a new skb (tskb) and links it into the frag_list before copying data,” and if that copy fails “tskb remains in the frag_list with zero fragments”; the patch adds frag_prev tracking and an out_error cleanup block that unlinks and frees the zero-frag skb before later kcm_write_msgs() hits WARN_ON(!skb_shinfo(skb)->nr_frags).",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/kcm/kcmsock.c",
+      "lineno": 825,
+      "content": "skb->next = tskb;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/kcm/kcmsock.c",
+      "lineno": 827,
+      "content": "skb = tskb;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The KCM send path in kcm_sendmsg() links a newly allocated skb into the frag_list before filling it with data, but on partial copy failure it lacks cleanup of that newly linked empty tail skb, leaving a zero-fragment skb in the message chain later processed by kcm_write_msgs().",
+      "evidence_points": "The CVE/commit states that after MAX_SKB_FRAGS is reached, kcm_sendmsg() “allocates a new skb (tskb) and links it into the frag_list before copying data,” and if that copy fails “tskb remains in the frag_list with zero fragments”; the patch adds frag_prev tracking and an out_error cleanup block that unlinks and frees the zero-frag skb before later kcm_write_msgs() hits WARN_ON(!skb_shinfo(skb)->nr_frags)."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/kcm/kcmsock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/kcm/kcmsock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/kcm/kcmsock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/kcm/kcmsock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Limit repeated kernel warnings for zero-fragment skbs in kcm_write_msgs() while keeping the existing error handling intact.",
+        "what": "The code changes the first warning macro in kcm_write_msgs() from WARN_ON(!skb_shinfo(skb)->nr_frags) to WARN_ON_ONCE(!skb_shinfo(skb)->nr_frags), leaving the surrounding condition and error handling unchanged.",
+        "how": "At runtime, the check for an skb with zero fragments still triggers the same error path by setting ret to -EINVAL and jumping to out, but the kernel warning for that condition will now be emitted only once instead of on every occurrence, reducing repeated warning noise while preserving behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "other",
+        "intent_summary": "Add a NULL-initialized frag_prev local pointer in kcm_sendmsg() to support upcoming fragment-tracking logic.",
+        "what": "In kcm_sendmsg(), the declaration of local struct sk_buff pointers was changed from declaring only skb and head initialized to NULL to additionally declaring frag_prev initialized to NULL in the same statement.",
+        "how": "At runtime this introduces a new local sk_buff pointer variable available to track a previous fragment, with an explicit NULL initialization to ensure a defined starting state; by itself, this hunk does not show any direct behavioral change beyond preparing the function for later fragment-handling logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Update the previous fragment pointer when advancing to the next skb so KCM sendmsg chains fragments correctly.",
+        "what": "A single assignment statement, `frag_prev = skb;`, was inserted in `kcm_sendmsg()` immediately after linking the current `skb` to `tskb` and before reassigning `skb = tskb`.",
+        "how": "This updates the previous-fragment tracker before advancing to the next socket buffer, so subsequent fragment/link operations use the correct prior `skb` instead of a stale one, preventing incorrect fragment chaining during message send processing."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Clean up and unlink an empty skb created on the MAX_SKB_FRAGS error path to avoid later warnings and preserve correct partial message state.",
+        "what": "The change adds an error-path cleanup block in kcm_sendmsg() after kcm_push(kcm). It checks whether frag_prev is set and the current skb has zero fragments, and if so removes that skb from the frag_list either by clearing head's frag_list or setting frag_prev->next to NULL, frees the skb with kfree_skb(), and reassigns skb = frag_prev.",
+        "how": "At runtime, if a new skb was allocated and linked into the frag_list after reaching MAX_SKB_FRAGS but a later data copy failed before any fragments were added, the code now removes and frees that empty skb instead of leaving it in the list. This prevents later processing in kcm_write_msgs from encountering an empty frag_list entry and triggering WARN_ON(!skb_shinfo(skb)->nr_frags), while also keeping partial_message state consistent by updating skb."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Limit repeated kernel warnings for zero-fragment skbs in kcm_write_msgs() while keeping the existing error handling intact."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a NULL-initialized frag_prev local pointer in kcm_sendmsg() to support upcoming fragment-tracking logic."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Update the previous fragment pointer when advancing to the next skb so KCM sendmsg chains fragments correctly."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clean up and unlink an empty skb created on the MAX_SKB_FRAGS error path to avoid later warnings and preserve correct partial message state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only suppresses or limits repeated warnings in kcm_write_msgs() and explicitly keeps existing error handling unchanged. The root cause is the missing cleanup of a newly linked empty tail skb on partial copy failure in kcm_sendmsg(), so this does not directly fix or address that cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "This change introduces fragment-tracking state in kcm_sendmsg(), which is directly tied to fixing the bug where a newly linked tail skb must be identified and cleaned up on partial copy failure."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause involves incorrect skb frag_list chain handling in kcm_sendmsg(). Updating the previous fragment pointer when advancing to the next skb directly affects how newly allocated tail skbs are linked in that chain, which is part of the faulty send-path logic behind the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The change directly targets the same failure mode: an empty skb linked into the frag_list during send-path error handling. Cleaning up and unlinking that skb on the MAX_SKB_FRAGS error path addresses the root cause of leaving a zero-fragment skb in the message chain."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "net/kcm/kcmsock.c",
+            "lineno": 825,
+            "content": "skb->next = tskb;",
+            "rationale": "This links the newly allocated skb into the message chain before it has been successfully filled with data. On partial copy failure, the linked empty tail skb remains in the chain, matching the root cause."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/kcm/kcmsock.c",
+            "lineno": 827,
+            "content": "skb = tskb;",
+            "rationale": "After advancing to the newly allocated skb, later error handling can leave this new skb as the current tail without any cleanup or unlinking if data copy fails, contributing directly to the stale zero-fragment skb remaining in the chain."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/kcm/kcmsock.c",
+            "stmt_text": "skb->next = tskb;",
+            "location": "hunk",
+            "explanation": "This statement links the newly allocated skb into the frag_list before its payload has been successfully copied. If a later partial copy failure occurs, the code does not unlink or free this just-linked skb, leaving an empty tail skb in the chain that is later processed by kcm_write_msgs()."
+          },
+          {
+            "vuln_file": "net/kcm/kcmsock.c",
+            "stmt_text": "skb = tskb;",
+            "location": "hunk",
+            "explanation": "After the new skb is linked, this advances the tail pointer to that skb. On subsequent copy failure, error handling operates with the new empty skb as the current tail and does not clean it up, helping preserve the zero-fragment skb left in the message chain."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fb868db5f4bc",
+          "anchor_file": "net/kcm/kcmsock.c",
+          "anchor_lineno": 825
+        },
+        "commit": "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3",
+        "commit_short": "ab7ac4eb9832",
+        "commit_msg": "kcm: Kernel Connection Multiplexor module\n\nThis module implements the Kernel Connection Multiplexor.\n\nKernel Connection ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/kcm/kcmsock.c",
+        "display_lineno": 1011,
+        "code_snippet": "commit ab7ac4eb9832e32a09f4e8042705484d2fb0aad3\nAuthor: Tom Herbert <tom@herbertland.com>\nDate:   Mon Mar 7 14:11:06 2016 -0800\n\n    kcm: Kernel Connection Multiplexor module\n    \n    This module implements the Kernel Connection Multiplexor.\n    \n    Kernel Connection Multiplexor (KCM) is a facility that provides a\n    message based interface over TCP for generic application protocols.\n    With KCM an application can efficiently send and receive application\n    protocol messages over TCP using d",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in `kcm_sendmsg()`. In the `start:` loop, when the current skb cannot coalesce and already has `MAX_SKB_FRAGS`, the code allocates a new tail skb and links it into the message chain immediately: `tskb = alloc_skb(0, sk->sk_allocation); ... if (head == skb) skb_shinfo(head)->frag_list = tskb; else skb->next = tskb; skb = tskb; skb->ip_summed = CHECKSUM_UNNECESSARY; continue;`. This matches the root cause: the new skb is inserted into `frag_list`/`next` before any payload is copied into it. Later, data copy is attempted with `err = skb_copy_to_page_nocache(...); if (err) goto out_error;`. On this error path, there is no cleanup that unlinks the newly added empty tail skb from the chain. The `out_error:` block only does `if (head != kcm->seq_skb) kfree_skb(head);` for non-partial cases, or for partial `SOCK_SEQPACKET` it goes to `partial_message:` and preserves the message state with `kcm->seq_skb = head; kcm_tx_msg(head)->last_skb = skb;`. There is no code removing an empty just-linked skb. This can leave a zero-fragment skb in the message chain, and `kcm_write_msgs()` later explicitly assumes every skb in the chain has fragments via `if (WARN_ON(!skb_shinfo(skb)->nr_frags)) { ret = -EINVAL; goto out; }`, showing the malformed empty skb is not handled. Therefore the vulnerable construct is present and the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fb868db5f4bc",
+          "anchor_file": "net/kcm/kcmsock.c",
+          "anchor_lineno": 827
+        },
+        "commit": "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3",
+        "commit_short": "ab7ac4eb9832",
+        "commit_msg": "kcm: Kernel Connection Multiplexor module\n\nThis module implements the Kernel Connection Multiplexor.\n\nKernel Connection ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/kcm/kcmsock.c",
+        "display_lineno": 1013,
+        "code_snippet": "commit ab7ac4eb9832e32a09f4e8042705484d2fb0aad3\nAuthor: Tom Herbert <tom@herbertland.com>\nDate:   Mon Mar 7 14:11:06 2016 -0800\n\n    kcm: Kernel Connection Multiplexor module\n    \n    This module implements the Kernel Connection Multiplexor.\n    \n    Kernel Connection Multiplexor (KCM) is a facility that provides a\n    message based interface over TCP for generic application protocols.\n    With KCM an application can efficiently send and receive application\n    protocol messages over TCP using d",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in kcm_sendmsg(), so the snippet is sufficient. The vulnerable construct is present when a new tail skb is linked into the message chain before any payload is copied into it. Specifically, in the MAX_SKB_FRAGS case the code allocates a new skb and immediately links it: `tskb = alloc_skb(0, sk->sk_allocation); ... if (head == skb) skb_shinfo(head)->frag_list = tskb; else skb->next = tskb; skb = tskb; skb->ip_summed = CHECKSUM_UNNECESSARY; continue;`. After this, on the next iteration, data copy may fail at `err = skb_copy_to_page_nocache(...); if (err) goto out_error;`. In the error path, there is no cleanup of a newly linked but still empty tail skb. The out_error handling only does `if (head != kcm->seq_skb) kfree_skb(head);` or saves partial state via `partial_message:` with `kcm->seq_skb = head; kcm_tx_msg(head)->last_skb = skb;`. There is no code that unlinks or frees an empty tail skb that was already attached via `frag_list`/`next` before the failed copy. Because kcm_write_msgs() later assumes every skb in the chain has fragments and explicitly checks `if (WARN_ON(!skb_shinfo(skb)->nr_frags)) { ret = -EINVAL; goto out; }`, an empty linked tail skb matches the root cause. Therefore this version contains the bug and does not yet include the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3": 2
+      },
+      "bic_candidates": [
+        "ab7ac4eb9832e32a09f4e8042705484d2fb0aad3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

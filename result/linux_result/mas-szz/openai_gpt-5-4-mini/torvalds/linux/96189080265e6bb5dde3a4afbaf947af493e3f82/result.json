@@ -1,0 +1,392 @@
+{
+  "cveid": "CVE-2026-23275",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "96189080265e6bb5dde3a4afbaf947af493e3f82"
+  ],
+  "ground_truth_bic": "79cfe9e59c2a12c3b3faeeefe38d23f3d8030972",
+  "predicted_bic": [
+    "7642e668606009fcd3fe1fc161a79ef90403d507"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 39,
+  "llm_tokens": 24396,
+  "root_cause": {
+    "text": "In io_uring’s DEFER_TASKRUN path, task-work code used the mutable `ctx->rings` pointer to set `IORING_SQ_TASKRUN`, so a concurrent ring resize could free/swap the rings page in the small window between pointer replacement and old-ring release, creating a use-after-free/race on `sq_flags`.",
+    "evidence": "The CVE says “task work is added while the ring is being resized” and the `IORING_SQ_TASKRUN` OR can happen “in the small window of swapping into the new rings and the old rings being freed”; the patch fixes this by adding `ctx->rings_rcu`, switching `io_ctx_mark_taskrun()` to `rcu_dereference(ctx->rings_rcu)` under RCU, and delaying old-ring freeing with `synchronize_rcu_expedited()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "io_uring/tw.c",
+      "lineno": 210,
+      "content": "atomic_or(IORING_SQ_TASKRUN, &ctx->rings->sq_flags);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In io_uring’s DEFER_TASKRUN path, task-work code used the mutable `ctx->rings` pointer to set `IORING_SQ_TASKRUN`, so a concurrent ring resize could free/swap the rings page in the small window between pointer replacement and old-ring release, creating a use-after-free/race on `sq_flags`.",
+      "evidence_points": "The CVE says “task work is added while the ring is being resized” and the `IORING_SQ_TASKRUN` OR can happen “in the small window of swapping into the new rings and the old rings being freed”; the patch fixes this by adding `ctx->rings_rcu`, switching `io_ctx_mark_taskrun()` to `rcu_dereference(ctx->rings_rcu)` under RCU, and delaying old-ring freeing with `synchronize_rcu_expedited()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/linux/io_uring_types.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "io_uring/io_uring.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "io_uring/io_uring.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "io_uring/register.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "io_uring/register.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "io_uring/tw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 6,
+        "file_path": "io_uring/tw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 7,
+        "file_path": "io_uring/tw.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add an RCU-protected `io_rings` pointer to `io_ring_ctx` for safe concurrent access.",
+        "what": "A new field, `struct io_rings __rcu *rings_rcu;`, was added to the anonymous struct inside `struct io_ring_ctx`, placed before the existing `work_llist`, `retry_llist`, and `check_cq` members.",
+        "how": "This adds an RCU-protected pointer slot to the io_uring context, enabling the code to publish or access `io_rings` through RCU-safe mechanisms without changing the existing list and flag members."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Clear the RCU-protected rings pointer during teardown to prevent stale RCU access after io_rings_free().",
+        "what": "In io_rings_free(), immediately after setting ctx->rings to NULL, the code now also initializes ctx->rings_rcu to NULL using RCU_INIT_POINTER().",
+        "how": "This ensures the RCU-protected rings pointer is cleared when the rings are freed, preventing readers from seeing a stale pointer and aligning the RCU state with the regular pointer teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Publish the allocated rings pointer via RCU immediately after initialization so concurrent readers can access it safely.",
+        "what": "A new call to rcu_assign_pointer(ctx->rings_rcu, rings) was inserted immediately after ctx->rings is assigned from io_region_get_ptr(&ctx->ring_region) in io_allocate_scq_urings().",
+        "how": "This publishes the rings pointer through the RCU-protected field as soon as the allocation succeeds, allowing readers using RCU access to observe a valid rings pointer and preventing them from seeing it unset or stale during setup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix io_uring ring resize to publish the new rings pointer safely and force user space to re-evaluate wakeup/task-run flags after resizing.",
+        "what": "The resize path now unconditionally sets the `IORING_SQ_TASKRUN` and `IORING_SQ_NEED_WAKEUP` bits in `n.rings->sq_flags` with `atomic_or()`, and it also updates `ctx->rings_rcu` via `rcu_assign_pointer(ctx->rings_rcu, n.rings)` immediately after assigning `ctx->rings = n.rings`.",
+        "how": "At runtime, this ensures the new ring state advertises wakeup/task-run conditions that user space should re-check after a resize, even if a flag transition was missed during the move. Publishing `ctx->rings_rcu` through RCU also makes the new rings pointer visible to RCU readers safely, preventing stale pointer access during concurrent lookups."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Wait for in-flight `io_ctx_mark_taskrun()` activity before freeing resized ring resources to prevent use-after-free races.",
+        "what": "The function `io_register_resize_rings()` now conditionally calls `synchronize_rcu_expedited()` after releasing `completion_lock` and `mmap_lock`, but before calling `io_register_free_rings()`, and only when `to_free == &o`. A comment was added indicating this waits for concurrent `io_ctx_mark_taskrun()`.",
+        "how": "This delays freeing the old ring resources until after an expedited RCU grace period has elapsed, allowing any concurrent `io_ctx_mark_taskrun()` readers or users to finish safely before the old object is released. It reduces the risk of use-after-free during ring resize teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Add an RCU-safe helper to mark SQ task-run state for userspace during concurrent ring resizing.",
+        "what": "A new static helper function `io_ctx_mark_taskrun(struct io_ring_ctx *ctx)` was added. It asserts that the caller is in an RCU read-side critical section, checks `ctx->flags & IORING_SETUP_TASKRUN_FLAG`, fetches `ctx->rings_rcu` via `rcu_dereference()`, and atomically ORs `IORING_SQ_TASKRUN` into `rings->sq_flags`.",
+        "how": "This provides a safe way to publish the task-run status to userspace while protecting access to the shared rings pointer during concurrent ring resizing. When task-run support is enabled, it updates the shared SQ flags without racing against ring replacement."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 6,
+        "change_category": "refactor",
+        "intent_summary": "Replace the inline taskrun flag update with the `io_ctx_mark_taskrun()` helper in local work enqueueing.",
+        "what": "In `io_req_local_work_add()`, the conditional that directly checked `ctx->flags & IORING_SETUP_TASKRUN_FLAG` and called `atomic_or(IORING_SQ_TASKRUN, &ctx->rings->sq_flags)` was removed, and replaced with a single call to `io_ctx_mark_taskrun(ctx)` before the existing `io_eventfd_signal(ctx, false)` call.",
+        "how": "When `head` is false, the code now marks the context as task-run through the helper function instead of performing the flag check and atomic update inline. This preserves the taskrun notification behavior but routes it through a centralized abstraction, which can encapsulate any required internal logic for marking taskrun."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 7,
+        "change_category": "style",
+        "intent_summary": "Document that `rings_rcu` is unnecessary for the `IORING_SETUP_TASKRUN_FLAG` path because ring resizing is unsupported without `DEFER_TASKRUN`.",
+        "what": "A block comment was added above the `if (ctx->flags & IORING_SETUP_TASKRUN_FLAG)` check in `io_req_normal_work_add()`, stating that `->rings_rcu` is not needed because resizing is not supported for `!DEFER_TASKRUN`.",
+        "how": "The code behavior is unchanged; the added comment documents why the `sq_flags` update can be done without `rings_rcu` protection in this case, clarifying the concurrency assumption for future readers."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add an RCU-protected `io_rings` pointer to `io_ring_ctx` for safe concurrent access."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Clear the RCU-protected rings pointer during teardown to prevent stale RCU access after io_rings_free()."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Publish the allocated rings pointer via RCU immediately after initialization so concurrent readers can access it safely."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add an RCU-safe helper to mark SQ task-run state for userspace during concurrent ring resizing."
+        },
+        {
+          "group_id": 4,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Wait for in-flight `io_ctx_mark_taskrun()` activity before freeing resized ring resources to prevent use-after-free races."
+        },
+        {
+          "group_id": 5,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Replace the inline taskrun flag update with the `io_ctx_mark_taskrun()` helper in local work enqueueing."
+        },
+        {
+          "group_id": 6,
+          "category": "style",
+          "hunk_count": 1,
+          "intent": "Document that `rings_rcu` is unnecessary for the `IORING_SETUP_TASKRUN_FLAG` path because ring resizing is unsupported without `DEFER_TASKRUN`."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "core_intent": "Make io_uring ring resizing safe by ensuring userspace re-evaluates wakeup/task-run state and by publishing the new rings pointer safely under RCU.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 5,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 6,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly targets the vulnerable race by introducing an RCU-protected rings pointer for concurrent access, which matches the root cause involving unsafe use of ctx->rings during resize and task-work updates."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change clears the RCU-protected rings pointer during teardown, which is a lifecycle cleanup issue. The root cause is a race in DEFER_TASKRUN where task-work used the mutable ctx->rings pointer to set IORING_SQ_TASKRUN during concurrent ring resize, leading to a use-after-free on sq_flags. This group does not address that DEFER_TASKRUN race or the mutable pointer misuse."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change addresses safe publication of the rings pointer to concurrent readers, which is directly related to the race/use-after-free window described in the root cause involving `ctx->rings` and concurrent ring resize."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The changes directly target the reported race in io_uring ring resize by making the rings pointer publication safe under RCU and by adding an RCU-safe way to set SQ task-run state, which matches the root cause involving concurrent resize and mutable ctx->rings use."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": true,
+        "reason": "The change explicitly waits for in-flight io_ctx_mark_taskrun() activity before freeing resized ring resources, which directly targets the same race/use-after-free window described in the root cause around DEFER_TASKRUN and ring resize."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 5,
+        "is_relevant": true,
+        "reason": "The change directly targets the task-work path that sets the taskrun flag, replacing the inline update on the mutable rings pointer with a helper. This matches the root cause involving unsafe `ctx->rings` use during `IORING_SQ_TASKRUN` marking and the associated race/UAF window."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 6,
+        "is_relevant": true,
+        "reason": "The change documents that ring resizing is unsupported in the TASKRUN path, which is directly tied to the race/UAF root cause involving concurrent ring resize and task-work using ctx->rings to set sq_flags."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 5,
+            "file_path": "io_uring/tw.c",
+            "lineno": 210,
+            "content": "atomic_or(IORING_SQ_TASKRUN, &ctx->rings->sq_flags);",
+            "rationale": "This directly updates sq_flags through the mutable ctx->rings pointer. During DEFER_TASKRUN, a concurrent resize can swap/free the rings page after the pointer is replaced but before old-ring release, making this access race with freed memory."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "io_uring/tw.c",
+            "lineno": 210,
+            "content": "atomic_or(IORING_SQ_TASKRUN, &ctx->rings->sq_flags);",
+            "rationale": "Same vulnerable task-run flag update: it dereferences ctx->rings without RCU protection, which is the root cause of the use-after-free/race on sq_flags during ring resize."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "io_uring/tw.c",
+            "stmt_text": "atomic_or(IORING_SQ_TASKRUN, &ctx->rings->sq_flags);",
+            "location": "hunk",
+            "explanation": "This statement updates sq_flags via the mutable ctx->rings pointer. In the DEFER_TASKRUN path, a concurrent ring resize can replace and free/swap the rings page between pointer replacement and old-ring release, making this direct dereference race with freed memory and causing the use-after-free/race described."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "785d4625d3e0",
+          "anchor_file": "io_uring/tw.c",
+          "anchor_lineno": 210
+        },
+        "commit": "7642e668606009fcd3fe1fc161a79ef90403d507",
+        "commit_short": "7642e6686060",
+        "commit_msg": "io_uring: split out task work code into tw.c\n\nMove the task work handling code out of io_uring.c into a new tw.c file.\nT",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "io_uring/tw.c",
+        "display_lineno": 209,
+        "code_snippet": "commit 7642e668606009fcd3fe1fc161a79ef90403d507\nAuthor: Jens Axboe <axboe@kernel.dk>\nDate:   Thu Jan 22 08:55:45 2026 -0700\n\n    io_uring: split out task work code into tw.c\n    \n    Move the task work handling code out of io_uring.c into a new tw.c file.\n    This includes the local work, normal work, and fallback work handling\n    infrastructure.\n    \n    The associated tw.h header contains io_should_terminate_tw() as a static\n    inline helper, along with the necessary function declarations.\n ",
+        "exists": true,
+        "reason": "The snippet shows the vulnerable construct directly: in the DEFER_TASKRUN/task-work path, when \"!head\" it does \"if (ctx->flags & IORING_SETUP_TASKRUN_FLAG) atomic_or(IORING_SQ_TASKRUN, &ctx->rings->sq_flags);\". This uses the mutable \"ctx->rings\" pointer to reach \"sq_flags\", matching the root cause description that a concurrent ring resize could swap/free the rings page between pointer replacement and old-ring release, causing a race/use-after-free on \"sq_flags\". There is no evidence here of the fix (such as using a stable old ring reference or holding the correct synchronization around the sq_flags access), so this function still contains the bug and is not fixed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "7642e668606009fcd3fe1fc161a79ef90403d507",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "7642e668606009fcd3fe1fc161a79ef90403d507": 1
+      },
+      "bic_candidates": [
+        "7642e668606009fcd3fe1fc161a79ef90403d507"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

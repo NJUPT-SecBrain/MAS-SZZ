@@ -1,0 +1,509 @@
+{
+  "cveid": "CVE-2026-23342",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "869c63d5975d55e97f6b168e885452b3da20ea47"
+  ],
+  "ground_truth_bic": "3253cb49cbad4772389d6ef55be75db1f97da910",
+  "predicted_bic": [
+    "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+    "d5df2830ca9922d03a33940ea424c9a5f39f1162"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 28,
+  "llm_tokens": 110859,
+  "root_cause": {
+    "text": "On PREEMPT_RT kernels, local_bh_disable() does not disable preemption, allowing a task to be preempted inside bq_flush_to_queue() after resetting bq->count, so another task on the same CPU can concurrently call bq_enqueue() and trigger a second bq_flush_to_queue(), leading to double list removal and data corruption.",
+    "evidence": "\"On PREEMPT_RT, local_bh_disable() only calls migrate_disable() ... and does not disable preemption, which allows CFS scheduling to preempt a task during bq_flush_to_queue(), enabling another task on the same CPU to enter bq_enqueue() and operate on the same per-CPU bq concurrently.\" Also the race scenario: Task A preempted after \"bq->count = 0\" and before \"__list_del_clearprev()\" gives Task B time to enqueue and flush, causing Task A to later dereference NULL prev pointer.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/bpf/cpumap.c",
+      "lineno": 758,
+      "content": "if (unlikely(bq->count == CPU_MAP_BULK_SIZE))",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/cpumap.c",
+      "lineno": 759,
+      "content": "bq_flush_to_queue(bq);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/cpumap.c",
+      "lineno": 756,
+      "content": "struct xdp_bulk_queue *bq = this_cpu_ptr(rcpu->bulkq);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/cpumap.c",
+      "lineno": 725,
+      "content": "if (unlikely(!bq->count))",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/cpumap.c",
+      "lineno": 755,
+      "content": "list_for_each_entry_safe(bq, tmp, flush_list, flush_node) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/cpumap.c",
+      "lineno": 759,
+      "content": "bq_flush_to_queue(bq);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/cpumap.c",
+      "lineno": 775,
+      "content": "list_add(&bq->flush_node, flush_list);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "On PREEMPT_RT kernels, local_bh_disable() does not disable preemption, allowing a task to be preempted inside bq_flush_to_queue() after resetting bq->count, so another task on the same CPU can concurrently call bq_enqueue() and trigger a second bq_flush_to_queue(), leading to double list removal and data corruption.",
+      "evidence_points": "\"On PREEMPT_RT, local_bh_disable() only calls migrate_disable() ... and does not disable preemption, which allows CFS scheduling to preempt a task during bq_flush_to_queue(), enabling another task on the same CPU to enter bq_enqueue() and operate on the same per-CPU bq concurrently.\" Also the race scenario: Task A preempted after \"bq->count = 0\" and before \"__list_del_clearprev()\" gives Task B time to enqueue and flush, causing Task A to later dereference NULL prev pointer."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 4,
+            "file_path": "kernel/bpf/cpumap.c",
+            "lineno": 758,
+            "content": "if (unlikely(bq->count == CPU_MAP_BULK_SIZE))",
+            "rationale": "This condition triggers bq_flush_to_queue when the bulk queue is full. The race occurs because after the flush resets bq->count, another enqueue on the same CPU can see count=0 and add to the queue, then trigger a second flush, leading to double list removal."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "kernel/bpf/cpumap.c",
+            "lineno": 759,
+            "content": "bq_flush_to_queue(bq);",
+            "rationale": "This is the call that enters bq_flush_to_queue, where the reset of bq->count happens. On PREEMPT_RT, preemption can occur after the count reset, allowing interleaved operations."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "kernel/bpf/cpumap.c",
+            "lineno": 756,
+            "content": "struct xdp_bulk_queue *bq = this_cpu_ptr(rcpu->bulkq);",
+            "rationale": "This obtains the per-CPU bulk queue pointer. The race depends on re-entering the same CPU's bq, so this pointer is critical."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/bpf/cpumap.c",
+            "lineno": 725,
+            "content": "if (unlikely(!bq->count))",
+            "rationale": "This early return in bq_flush_to_queue exists, but after the count is reset, a concurrent enqueue may add frames, then the second flush will process non-zero count, leading to double removal."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "kernel/bpf/cpumap.c",
+            "lineno": 755,
+            "content": "list_for_each_entry_safe(bq, tmp, flush_list, flush_node) {",
+            "rationale": "This loop iterates over the flush list and calls bq_flush_to_queue for each bq. If a bq is re-added to the list during a concurrent flush (due to the race), the list traversal could process it twice, causing double list removal."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "kernel/bpf/cpumap.c",
+            "lineno": 759,
+            "content": "bq_flush_to_queue(bq);",
+            "rationale": "This call within the flush list loop triggers bq_flush_to_queue. If the same bq is processed twice due to the race, the second call operates on already-emptied data, causing corruption."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "kernel/bpf/cpumap.c",
+            "lineno": 775,
+            "content": "list_add(&bq->flush_node, flush_list);",
+            "rationale": "This adds the bq to the flush list. Although not the direct race point, it enables the flush list to be processed later, and if a re-addition occurs during the race, the list can become corrupted."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 1
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/bpf/cpumap.c",
+            "stmt_text": "if (unlikely(bq->count == CPU_MAP_BULK_SIZE))",
+            "location": "hunk",
+            "explanation": "This condition triggers bq_flush_to_queue when the bulk queue is full. On PREEMPT_RT, the subsequent flush does not prevent preemption, so after resetting bq->count, another task on the same CPU can see an empty count and enqueue new frames, then trigger a second flush, leading to double list removal."
+          },
+          {
+            "vuln_file": "kernel/bpf/cpumap.c",
+            "stmt_text": "bq_flush_to_queue(bq);",
+            "location": "hunk",
+            "explanation": "This call to flush the bulk queue is the entry point into the critical code. On PREEMPT_RT, the task can be preempted inside bq_flush_to_queue after resetting bq->count, allowing a concurrent flush to process the same bq and cause data corruption."
+          },
+          {
+            "vuln_file": "kernel/bpf/cpumap.c",
+            "stmt_text": "struct xdp_bulk_queue *bq = this_cpu_ptr(rcpu->bulkq);",
+            "location": "hunk",
+            "explanation": "This per-CPU pointer is obtained without full preemption disabling on PREEMPT_RT. The race depends on re-entering the same CPU's bq, and this statement sets up the bq that will later be flushed and potentially processed concurrently."
+          },
+          {
+            "vuln_file": "kernel/bpf/cpumap.c",
+            "stmt_text": "if (unlikely(!bq->count))",
+            "location": "hunk",
+            "explanation": "This early return in bq_flush_to_queue is intended to skip processing if the queue is empty. However, due to the race window after bq->count is reset, another task may enqueue frames between the count check and the actual list removal, making this check insufficient to prevent double removal."
+          },
+          {
+            "vuln_file": "kernel/bpf/cpumap.c",
+            "stmt_text": "list_for_each_entry_safe(bq, tmp, flush_list, flush_node) {",
+            "location": "hunk",
+            "explanation": "This loop iterates over the flush list and calls bq_flush_to_queue for each bulk queue. During the race, a bq may be re-added to the flush list while its flush is still in progress, causing the loop to process it again and trigger double removal from the lists."
+          },
+          {
+            "vuln_file": "kernel/bpf/cpumap.c",
+            "stmt_text": "bq_flush_to_queue(bq);",
+            "location": "hunk",
+            "explanation": "This call within the flush list loop processes a bulk queue. If the same bq is flushed twice due to the race (once from the enqueue path and once from the list iteration), the second flush will operate on already-emptied data, leading to list corruption."
+          },
+          {
+            "vuln_file": "kernel/bpf/cpumap.c",
+            "stmt_text": "list_add(&bq->flush_node, flush_list);",
+            "location": "hunk",
+            "explanation": "This adds the bulk queue to the flush list during enqueue. Although not the direct race point, it is part of the mechanism that enables the list iteration to process the bq. If a concurrent flush re-adds the bq to the list after it has been removed, the list structure can become corrupted."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5263e30fffbc",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 758
+        },
+        "commit": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+        "commit_short": "6710e1126934",
+        "commit_msg": "bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n\nThe 'cpumap' is primarily used as a backend map for XDP BPF hel",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 507,
+        "code_snippet": "commit 6710e1126934d8b4372b4d2f9ae1646cd3f151bf\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:28 2017 +0200\n\n    bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n    \n    The 'cpumap' is primarily used as a backend map for XDP BPF helper\n    call bpf_redirect_map() and XDP_REDIRECT action, like 'devmap'.\n    \n    This patch implement the main part of the map.  It is not connected to\n    the XDP redirect system yet, and no SKB allocation are done yet.\n    \n    T",
+        "exists": true,
+        "reason": "The bq_flush_to_queue function (lines 510-540) resets bq->count = 0 after the loop but while holding spin_lock. On PREEMPT_RT, softirq context can be preempted, so a preemption between the loop and the reset allows another task on the same CPU to call bq_enqueue and then trigger a second bq_flush_to_queue, which sees the same bq->count and tries to flush the same entries again, causing double removal from the bulkq and corruption of the ptr_ring. The code does not contain any fix for this race (e.g., resetting count before the loop)."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5263e30fffbc",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 759
+        },
+        "commit": "4bc188c7f23a5a308d7f15dda1b6a286d74e8954",
+        "commit_short": "4bc188c7f23a",
+        "commit_msg": "xdp: Simplify cpumap cleanup\n\nAfter the RCU flavor consolidation [1], call_rcu() and\nsynchronize_rcu() waits for preempt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 625,
+        "code_snippet": "commit 4bc188c7f23a5a308d7f15dda1b6a286d74e8954\nAuthor: Björn Töpel <bjorn@kernel.org>\nDate:   Thu Dec 19 07:10:00 2019 +0100\n\n    xdp: Simplify cpumap cleanup\n    \n    After the RCU flavor consolidation [1], call_rcu() and\n    synchronize_rcu() waits for preempt-disable regions (NAPI) in addition\n    to the read-side critical sections. As a result of this, the cleanup\n    code in cpumap can be simplified\n    \n    * There is no longer a need to flush in __cpu_map_entry_free, since we\n      know ",
+        "exists": true,
+        "reason": "The function bq_flush_to_queue still resets bq->count = 0 without any preemption protection (line bq->count = 0;). On PREEMPT_RT, local_bh_disable() does not disable preemption, so after resetting count, a preemption can occur, allowing another task on the same CPU to call bq_enqueue, see bq->count == 0, add an entry, and trigger another flush, causing double list removal. The commit only removes the in_napi_ctx parameter and simplifies cleanup, it does not add locking or atomic operations to prevent the race. Hence the vulnerable construct is present and not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0536b85239b8",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 625
+        },
+        "commit": "ad0ab027fc6da08cbd34070d816ff3b7986c64ae",
+        "commit_short": "ad0ab027fc6d",
+        "commit_msg": "xdp: fix bug in cpumap teardown code path\n\nWhen removing a cpumap entry, a number of syncronization steps happen.\nEventu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 583,
+        "code_snippet": "commit ad0ab027fc6da08cbd34070d816ff3b7986c64ae\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Wed Aug 8 23:00:34 2018 +0200\n\n    xdp: fix bug in cpumap teardown code path\n    \n    When removing a cpumap entry, a number of syncronization steps happen.\n    Eventually the teardown code __cpu_map_entry_free is invoked from/via\n    call_rcu.\n    \n    The teardown code __cpu_map_entry_free() flushes remaining xdp_frames,\n    by invoking bq_flush_to_queue, which calls xdp_return_frame_rx_nap",
+        "exists": true,
+        "reason": "The function bq_flush_to_queue() at lines 562-594 resets bq->count to 0 at line 588 without any preemption disabling mechanism. On PREEMPT_RT, this allows a task to be preempted after resetting bq->count, enabling another task on the same CPU to call bq_enqueue() and trigger a second flush, causing double processing of the same bq->q entries. The code does not include local_bh_disable or preempt_disable to prevent this race condition."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "bf9bae0ea6ec",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 583
+        },
+        "commit": "f9419f7bd7a5318b636a941a0214c5cdfa6f6530",
+        "commit_short": "f9419f7bd7a5",
+        "commit_msg": "bpf: cpumap add tracepoints\n\nThis adds two tracepoint to the cpumap.  One for the enqueue side\ntrace_xdp_cpumap_enqueue(",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 616,
+        "code_snippet": "commit f9419f7bd7a5318b636a941a0214c5cdfa6f6530\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:44 2017 +0200\n\n    bpf: cpumap add tracepoints\n    \n    This adds two tracepoint to the cpumap.  One for the enqueue side\n    trace_xdp_cpumap_enqueue() and one for the kthread dequeue side\n    trace_xdp_cpumap_kthread().\n    \n    To mitigate the tracepoint overhead, these are invoked during the\n    enqueue/dequeue bulking phases, thus amortizing the cost.\n    \n    The obviou",
+        "exists": true,
+        "reason": "The function bq_flush_to_queue still resets bq->count to 0 while holding the spinlock, but on PREEMPT_RT, local_bh_disable() does not disable preemption, allowing preemption after the count reset and leading to potential double flush. The commit only adds tracepoints and does not address this race."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "1c601d829ab0",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 616
+        },
+        "commit": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+        "commit_short": "6710e1126934",
+        "commit_msg": "bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n\nThe 'cpumap' is primarily used as a backend map for XDP BPF hel",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 504,
+        "code_snippet": "commit 6710e1126934d8b4372b4d2f9ae1646cd3f151bf\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:28 2017 +0200\n\n    bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n    \n    The 'cpumap' is primarily used as a backend map for XDP BPF helper\n    call bpf_redirect_map() and XDP_REDIRECT action, like 'devmap'.\n    \n    This patch implement the main part of the map.  It is not connected to\n    the XDP redirect system yet, and no SKB allocation are done yet.\n    \n    T",
+        "exists": true,
+        "reason": "The commit introduces bq_flush_to_queue() and bq_enqueue() functions. In bq_flush_to_queue(), bq->count is reset to 0 under spin_lock (line: `bq->count = 0;`), but on PREEMPT_RT kernels, spin_lock does not disable preemption, so a task can be preempted after resetting bq->count, allowing another task on the same CPU to call bq_enqueue() (which checks bq->count) and potentially trigger a second bq_flush_to_queue(), leading to double list removal and data corruption. No fix for this race is present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5263e30fffbc",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 756
+        },
+        "commit": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+        "commit_short": "6710e1126934",
+        "commit_msg": "bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n\nThe 'cpumap' is primarily used as a backend map for XDP BPF hel",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 505,
+        "code_snippet": "commit 6710e1126934d8b4372b4d2f9ae1646cd3f151bf\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:28 2017 +0200\n\n    bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n    \n    The 'cpumap' is primarily used as a backend map for XDP BPF helper\n    call bpf_redirect_map() and XDP_REDIRECT action, like 'devmap'.\n    \n    This patch implement the main part of the map.  It is not connected to\n    the XDP redirect system yet, and no SKB allocation are done yet.\n    \n    T",
+        "exists": true,
+        "reason": "bq_flush_to_queue() resets bq->count = 0 while holding the spin_lock, but there is no protection (e.g., local_bh_disable) against preemption after this reset. On PREEMPT_RT kernels, this can be preempted, allowing another task on the same CPU to call bq_enqueue() and trigger a second bq_flush_to_queue(), leading to double list removal and data corruption. The code at this commit does not include any fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5263e30fffbc",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 725
+        },
+        "commit": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+        "commit_short": "6710e1126934",
+        "commit_msg": "bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n\nThe 'cpumap' is primarily used as a backend map for XDP BPF hel",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 471,
+        "code_snippet": "commit 6710e1126934d8b4372b4d2f9ae1646cd3f151bf\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:28 2017 +0200\n\n    bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n    \n    The 'cpumap' is primarily used as a backend map for XDP BPF helper\n    call bpf_redirect_map() and XDP_REDIRECT action, like 'devmap'.\n    \n    This patch implement the main part of the map.  It is not connected to\n    the XDP redirect system yet, and no SKB allocation are done yet.\n    \n    T",
+        "exists": true,
+        "reason": "The commit introduces bq_flush_to_queue() which resets bq->count = 0 (line 517) after processing entries without any preemption protection, and bq_enqueue() (line 532-548) can run on the same CPU, leading to a race condition where preemption (allowed on PREEMPT_RT) can cause double processing or data corruption. No fix is present in this initial implementation."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5263e30fffbc",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 755
+        },
+        "commit": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+        "commit_short": "6710e1126934",
+        "commit_msg": "bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n\nThe 'cpumap' is primarily used as a backend map for XDP BPF hel",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 504,
+        "code_snippet": "commit 6710e1126934d8b4372b4d2f9ae1646cd3f151bf\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:28 2017 +0200\n\n    bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n    \n    The 'cpumap' is primarily used as a backend map for XDP BPF helper\n    call bpf_redirect_map() and XDP_REDIRECT action, like 'devmap'.\n    \n    This patch implement the main part of the map.  It is not connected to\n    the XDP redirect system yet, and no SKB allocation are done yet.\n    \n    T",
+        "exists": true,
+        "reason": "The commit introduces bq_flush_to_queue() which resets bq->count = 0 inside a spin_lock, but on PREEMPT_RT kernels spin_lock does not disable preemption. The callers bq_enqueue() and __cpu_map_flush() use this_cpu_ptr and call bq_flush_to_queue without any local_bh_disable() or preempt_disable() protection, allowing a race condition where preemption after resetting bq->count can lead to a second concurrent bq_flush_to_queue(), resulting in double list removal and data corruption. The fix is not present as this is the initial implementation."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5263e30fffbc",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 759
+        },
+        "commit": "4bc188c7f23a5a308d7f15dda1b6a286d74e8954",
+        "commit_short": "4bc188c7f23a",
+        "commit_msg": "xdp: Simplify cpumap cleanup\n\nAfter the RCU flavor consolidation [1], call_rcu() and\nsynchronize_rcu() waits for preempt",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 625,
+        "code_snippet": "commit 4bc188c7f23a5a308d7f15dda1b6a286d74e8954\nAuthor: Björn Töpel <bjorn@kernel.org>\nDate:   Thu Dec 19 07:10:00 2019 +0100\n\n    xdp: Simplify cpumap cleanup\n    \n    After the RCU flavor consolidation [1], call_rcu() and\n    synchronize_rcu() waits for preempt-disable regions (NAPI) in addition\n    to the read-side critical sections. As a result of this, the cleanup\n    code in cpumap can be simplified\n    \n    * There is no longer a need to flush in __cpu_map_entry_free, since we\n      know ",
+        "exists": true,
+        "reason": "The function bq_flush_to_queue (now without the 'in_napi_ctx' parameter) still contains the vulnerable construct: it resets bq->count to 0 (line 604 in the diff: 'bq->count = 0') and then processes entries without disabling preemption. On PREEMPT_RT, local_bh_disable() does not disable preemption, so a preemption after setting bq->count=0 and before the loop can allow another task on the same CPU to call bq_enqueue, which may trigger a concurrent bq_flush_to_queue, leading to double list removal. The commit does not add any lock or preempt_disable to protect this sequence; it only removes the context parameter and always uses xdp_return_frame_rx_napi. Therefore, the bug remains unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0536b85239b8",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 625
+        },
+        "commit": "ad0ab027fc6da08cbd34070d816ff3b7986c64ae",
+        "commit_short": "ad0ab027fc6d",
+        "commit_msg": "xdp: fix bug in cpumap teardown code path\n\nWhen removing a cpumap entry, a number of syncronization steps happen.\nEventu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 583,
+        "code_snippet": "commit ad0ab027fc6da08cbd34070d816ff3b7986c64ae\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Wed Aug 8 23:00:34 2018 +0200\n\n    xdp: fix bug in cpumap teardown code path\n    \n    When removing a cpumap entry, a number of syncronization steps happen.\n    Eventually the teardown code __cpu_map_entry_free is invoked from/via\n    call_rcu.\n    \n    The teardown code __cpu_map_entry_free() flushes remaining xdp_frames,\n    by invoking bq_flush_to_queue, which calls xdp_return_frame_rx_nap",
+        "exists": true,
+        "reason": "The diff shows the function bq_flush_to_queue and its call sites. While the exact reset of bq->count is not visible in the diff, it is a standard part of the function and the commit does not alter it. The vulnerability described (preemption after resetting bq->count leading to double flush) is therefore still present in this commit. The added in_napi_ctx parameter only fixes the xdp_return_frame variant used, not the preemption issue."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "bf9bae0ea6ec",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 583
+        },
+        "commit": "f9419f7bd7a5318b636a941a0214c5cdfa6f6530",
+        "commit_short": "f9419f7bd7a5",
+        "commit_msg": "bpf: cpumap add tracepoints\n\nThis adds two tracepoint to the cpumap.  One for the enqueue side\ntrace_xdp_cpumap_enqueue(",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 616,
+        "code_snippet": "commit f9419f7bd7a5318b636a941a0214c5cdfa6f6530\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:44 2017 +0200\n\n    bpf: cpumap add tracepoints\n    \n    This adds two tracepoint to the cpumap.  One for the enqueue side\n    trace_xdp_cpumap_enqueue() and one for the kthread dequeue side\n    trace_xdp_cpumap_kthread().\n    \n    To mitigate the tracepoint overhead, these are invoked during the\n    enqueue/dequeue bulking phases, thus amortizing the cost.\n    \n    The obviou",
+        "exists": true,
+        "reason": "The bq_flush_to_queue function sets bq->count = 0 after emptying the queue, which is the vulnerable pattern. On PREEMPT_RT, a preemption after setting count=0 can cause double processing. No fix is present; the commit only adds tracepoints."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "1c601d829ab0",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 616
+        },
+        "commit": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+        "commit_short": "6710e1126934",
+        "commit_msg": "bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n\nThe 'cpumap' is primarily used as a backend map for XDP BPF hel",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 504,
+        "code_snippet": "commit 6710e1126934d8b4372b4d2f9ae1646cd3f151bf\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:28 2017 +0200\n\n    bpf: introduce new bpf cpu map type BPF_MAP_TYPE_CPUMAP\n    \n    The 'cpumap' is primarily used as a backend map for XDP BPF helper\n    call bpf_redirect_map() and XDP_REDIRECT action, like 'devmap'.\n    \n    This patch implement the main part of the map.  It is not connected to\n    the XDP redirect system yet, and no SKB allocation are done yet.\n    \n    T",
+        "exists": true,
+        "reason": "The function bq_flush_to_queue() sets bq->count = 0 after moving entries to the queue (lines 493-497 in the snippet) with no preemption protection. On PREEMPT_RT, where local_bh_disable() does not disable preemption, a task can be preempted after resetting bq->count, allowing another task on the same CPU to call bq_enqueue() and trigger a second bq_flush_to_queue(), causing double list removal and data corruption. The code lacks any explicit preemption disabling or locking for the bulkq structure, so the vulnerable construct is present and not yet fixed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "5263e30fffbc",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 775
+        },
+        "commit": "d5df2830ca9922d03a33940ea424c9a5f39f1162",
+        "commit_short": "d5df2830ca99",
+        "commit_msg": "devmap/cpumap: Use flush list instead of bitmap\n\nThe socket map uses a linked list instead of a bitmap to keep track of\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 663,
+        "code_snippet": "commit d5df2830ca9922d03a33940ea424c9a5f39f1162\nAuthor: Toke Høiland-Jørgensen <toke@redhat.com>\nDate:   Fri Jun 28 11:12:34 2019 +0200\n\n    devmap/cpumap: Use flush list instead of bitmap\n    \n    The socket map uses a linked list instead of a bitmap to keep track of\n    which entries to flush. Do the same for devmap and cpumap, as this means we\n    don't have to care about the map index when enqueueing things into the\n    map (and so we can cache the map lookup).\n    \n    Signed-off-by: Toke H",
+        "exists": true,
+        "reason": "The code in bq_flush_to_queue resets bq->count to 0 before removing the entry from the flush list (via __list_del_clearprev). On PREEMPT_RT, this allows a preemption after bq->count = 0 and before list removal, enabling another task on the same CPU to call bq_enqueue, see bq->count == 0, and potentially trigger a second bq_flush_to_queue via bq->count reaching CPU_MAP_BULK_SIZE. This results in double list removal and data corruption. The commit introduces a list-based approach but does not fix the ordering issue, so the vulnerable construct remains."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "c8af5cd75e24",
+          "anchor_file": "kernel/bpf/cpumap.c",
+          "anchor_lineno": 663
+        },
+        "commit": "9c270af37bb62e708e3e4415d653ce73e713df02",
+        "commit_short": "9c270af37bb6",
+        "commit_msg": "bpf: XDP_REDIRECT enable use of cpumap\n\nThis patch connects cpumap to the xdp_do_redirect_map infrastructure.\n\nStill no ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/cpumap.c",
+        "display_lineno": 538,
+        "code_snippet": "commit 9c270af37bb62e708e3e4415d653ce73e713df02\nAuthor: Jesper Dangaard Brouer <hawk@kernel.org>\nDate:   Mon Oct 16 12:19:34 2017 +0200\n\n    bpf: XDP_REDIRECT enable use of cpumap\n    \n    This patch connects cpumap to the xdp_do_redirect_map infrastructure.\n    \n    Still no SKB allocation are done yet.  The XDP frames are transferred\n    to the other CPU, but they are simply refcnt decremented on the remote\n    CPU.  This served as a good benchmark for measuring the overhead of\n    remote refc",
+        "exists": false,
+        "reason": "The function body only shows a wrapper that calls bq_enqueue (line 539). The vulnerable construct described in the root cause (race condition in bq_flush_to_queue after resetting bq->count) is not present in this snippet. Critical context such as the implementation of bq_enqueue, bq_flush_to_queue, and any preemption or local_bh_disable usage is missing, making it impossible to determine if the vulnerability exists or is fixed in this commit."
+      }
+    },
+    {
+      "bic_found": "d5df2830ca9922d03a33940ea424c9a5f39f1162",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "6710e1126934d8b4372b4d2f9ae1646cd3f151bf": 6,
+        "d5df2830ca9922d03a33940ea424c9a5f39f1162": 1
+      },
+      "bic_candidates": [
+        "6710e1126934d8b4372b4d2f9ae1646cd3f151bf",
+        "d5df2830ca9922d03a33940ea424c9a5f39f1162"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

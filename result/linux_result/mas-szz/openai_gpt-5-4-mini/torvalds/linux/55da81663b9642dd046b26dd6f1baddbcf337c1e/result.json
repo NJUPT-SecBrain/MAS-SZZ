@@ -1,0 +1,459 @@
+{
+  "cveid": "CVE-2026-46025",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "55da81663b9642dd046b26dd6f1baddbcf337c1e"
+  ],
+  "ground_truth_bic": "42b7491af14cbba2393329ce43d508a957bd94fa",
+  "predicted_bic": [
+    "42b7491af14cbba2393329ce43d508a957bd94fa",
+    "c3fa5b1bfd8380d935fa961f2ac166bdf000f418",
+    "004ded6bee11b8ed463cdc54b89a4390f4b64f6d"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 31,
+  "llm_tokens": 27976,
+  "root_cause": {
+    "text": "In `mm/damon/core`, `damon_call()` used a separate lock from `kdamond_fn()`’s termination path, so a request could be queued after the worker had already entered exit cleanup but before `damon_ctx->kdamond` was cleared, causing the caller to wait forever or leak `dealloc_on_cancel` memory when the request was never handled.",
+    "evidence": "The patch says “damon_call() requests registration and damon_ctx->kdamond unset are protected by different mutexes,” allowing a race where `damon_call()` “registers the new request, and shows the context is still running… Hence the damon_call() caller threads infinitely waits,” and it fixes this by adding `call_controls_obsolete` under `call_controls_lock` so new requests are rejected before queueing.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1632,
+      "content": "list_add_tail(&control->list, &ctx->call_controls);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1633,
+      "content": "mutex_unlock(&ctx->call_controls_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1634,
+      "content": "if (!damon_is_running(ctx))",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/core.c",
+      "lineno": 1638,
+      "content": "wait_for_completion(&control->completion);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In `mm/damon/core`, `damon_call()` used a separate lock from `kdamond_fn()`’s termination path, so a request could be queued after the worker had already entered exit cleanup but before `damon_ctx->kdamond` was cleared, causing the caller to wait forever or leak `dealloc_on_cancel` memory when the request was never handled.",
+      "evidence_points": "The patch says “damon_call() requests registration and damon_ctx->kdamond unset are protected by different mutexes,” allowing a race where `damon_call()` “registers the new request, and shows the context is still running… Hence the damon_call() caller threads infinitely waits,” and it fixes this by adding `call_controls_obsolete` under `call_controls_lock` so new requests are rejected before queueing."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/linux/damon.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "mm/damon/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "mm/damon/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "mm/damon/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "mm/damon/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "mm/damon/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add an obsolete-state flag to `damon_ctx` so call-control data can be invalidated and refreshed correctly.",
+        "what": "A new boolean field named `call_controls_obsolete` was added to `struct damon_ctx`, placed between the `call_controls` list head and `call_controls_lock` members.",
+        "how": "This adds per-context state that can be used to mark the `call_controls` list as outdated, enabling runtime code to detect when cached or existing call-control data should no longer be treated as current and may need rebuilding or refresh logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "other",
+        "intent_summary": "Remove the inactive-context call-control helper from DAMON's call handling implementation.",
+        "what": "A static helper function named `damon_call_handle_inactive_ctx()` was removed entirely, including its kernel-doc comment and implementation. The deleted function previously took a `damon_ctx` and `damon_call_control`, locked `ctx->call_controls_lock`, searched `ctx->call_controls` for the same control, deleted the control from the list if found, unlocked, and returned `-EINVAL`; otherwise it returned 0.",
+        "how": "This removes the code path that explicitly handled and cleaned up a call request added to an inactive DAMON context. At runtime, any logic that depended on this helper will no longer be able to detect and remove a pending control from the context's call-control list in this way, so the behavior for inactive contexts is changed or must now be handled elsewhere."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Document that damon_call() must be invoked only after a successful damon_start() to prevent indefinite waiting.",
+        "what": "The comment above damon_call() was extended with a note stating that the function should only be called after damon_start() succeeds for the given context, because calling it earlier could result in an indefinite wait.",
+        "how": "This change does not alter runtime code; it documents a required call-order precondition so callers avoid invoking damon_call() before the context is started, which could otherwise hang waiting forever."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Reject new DAMON calls once call controls are obsolete by returning -ECANCELED under the lock.",
+        "what": "In `damon_call()`, a new check was added while holding `ctx->call_controls_lock` to վերադարձ early with `-ECANCELED` if `ctx->call_controls_obsolete` is set. The previous post-unlock `if (!damon_is_running(ctx)) return damon_call_handle_inactive_ctx(ctx, control);` branch was removed.",
+        "how": "This makes the function reject new calls when existing call controls have been marked obsolete, instead of trying to handle an inactive context after inserting the control into the list. It prevents registering and waiting on a control that should no longer be used, avoiding stale or invalid call handling."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Reset the call-controls obsolete flag under lock when kdamond starts so the daemon begins with a valid control state.",
+        "what": "In kdamond_fn(), three lines were added before complete(&ctx->kdamond_started): it now locks ctx->call_controls_lock, sets ctx->call_controls_obsolete to false, and unlocks the mutex.",
+        "how": "At runtime, the kdamond thread now explicitly clears the 'obsolete' state for call controls at startup while holding the associated lock, ensuring the control state is reset before the thread signals that it has started and proceeds with initialization."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Mark call controls obsolete under lock during kdamond teardown to prevent use of stale state.",
+        "what": "In kdamond_fn(), after damon_destroy_targets(ctx) and before kdamond_call(ctx, true), the code now locks ctx->call_controls_lock, sets ctx->call_controls_obsolete to true, and then unlocks the mutex.",
+        "how": "This marks the call controls as obsolete while holding the associated lock, so any concurrent or subsequent users of those controls can detect that they are no longer valid after targets have been destroyed. It helps prevent stale control state from being used during the shutdown/cleanup path."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Mark call controls obsolete under lock during kdamond teardown to prevent use of stale state."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Remove the inactive-context call-control helper from DAMON's call handling implementation."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Document that damon_call() must be invoked only after a successful damon_start() to prevent indefinite waiting."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Reject new DAMON calls once call controls are obsolete by returning -ECANCELED under the lock."
+        },
+        {
+          "group_id": 4,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Reset the call-controls obsolete flag under lock when kdamond starts so the daemon begins with a valid control state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Invalidate and refresh DAMON call-control state safely by marking it obsolete under lock during teardown.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly targets the race in DAMON call-control teardown by invalidating call-control state under lock during kdamond shutdown, which matches the root cause of requests being queued after exit cleanup and never handled."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change removes an inactive-context call-control helper, which is unrelated to the race between damon_call() and kdamond_fn() termination cleanup described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change documents the exact call-order restriction tied to the race in damon_call(), which is caused by the same termination/queuing window described in the root cause. It is directly related to preventing the hang/leak scenario."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The change directly addresses the race in DAMON call handling during worker teardown by rejecting new calls under the same lock, preventing requests from being queued after exit cleanup has begun and avoiding the hang/leak described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": false,
+        "reason": "This change only resets the call-controls obsolete flag at kdamond startup. It does not address the race between damon_call() and kdamond_fn() termination cleanup, nor the issue of requests being queued after exit cleanup before kdamond is cleared."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1632,
+            "content": "list_add_tail(&control->list, &ctx->call_controls);",
+            "rationale": "This enqueues a new DAMON call control without synchronizing against the teardown path that may already be exiting. In the vulnerable window, the request can be added after the worker has begun cleanup but before state is cleared, leading to a wait that never completes or a leaked control."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1633,
+            "content": "mutex_unlock(&ctx->call_controls_lock);",
+            "rationale": "Releasing the separate call-controls lock here allows the teardown path to proceed independently, creating the race where a request can be queued after exit cleanup has started but before the kdamond pointer/state is invalidated."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1634,
+            "content": "if (!damon_is_running(ctx))",
+            "rationale": "This post-enqueue running check uses state that is not synchronized with the worker's termination cleanup. It can observe the context as running after teardown has effectively started, allowing the caller to wait on a request that will never be handled."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/damon/core.c",
+            "lineno": 1638,
+            "content": "wait_for_completion(&control->completion);",
+            "rationale": "This is where the bug manifests: if the request was queued after the worker entered exit cleanup, the completion may never be signaled, causing the caller to block forever."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "list_add_tail(&control->list, &ctx->call_controls);",
+            "location": "hunk",
+            "explanation": "This enqueues a new DAMON call control without synchronizing against the teardown path. It allows a request to be added after the worker has started exit cleanup but before the context is marked not running, which can leave the caller waiting forever or leak the control."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "mutex_unlock(&ctx->call_controls_lock);",
+            "location": "hunk",
+            "explanation": "Releasing the separate call-controls lock here opens the race with the worker termination path. The teardown can proceed independently, so a request may be queued after cleanup has begun but before the kdamond state is cleared."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "if (!damon_is_running(ctx))",
+            "location": "hunk",
+            "explanation": "This running check is performed after the request has already been enqueued and uses state not synchronized with the worker's exit cleanup. It can incorrectly conclude the context is still running, leading to a wait on a request that will never be processed."
+          },
+          {
+            "vuln_file": "mm/damon/core.c",
+            "stmt_text": "wait_for_completion(&control->completion);",
+            "location": "hunk",
+            "explanation": "This is the observable failure point: if the control was queued after the worker entered cleanup, completion may never be signaled, causing the caller to block indefinitely."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1632
+        },
+        "commit": "c3fa5b1bfd8380d935fa961f2ac166bdf000f418",
+        "commit_short": "c3fa5b1bfd83",
+        "commit_msg": "mm/damon/core: fix list_add_tail() call on damon_call()\n\nEach damon_ctx maintains callback requests using a linked list\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1453,
+        "code_snippet": "commit c3fa5b1bfd8380d935fa961f2ac166bdf000f418\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Tue Oct 14 13:59:36 2025 -0700\n\n    mm/damon/core: fix list_add_tail() call on damon_call()\n    \n    Each damon_ctx maintains callback requests using a linked list\n    (damon_ctx->call_controls).  When a new callback request is received via\n    damon_call(), the new request should be added to the list.  However, the\n    function is making a mistake at list_add_tail() invocation: putting the\n    new item",
+        "exists": true,
+        "reason": "The snippet clearly shows the buggy logic in `damon_call()`: `list_add_tail(&ctx->call_controls, &control->list);` uses the list head and new node in the wrong order. The commit message explains this drops earlier callback requests from `damon_ctx->call_controls`, causing callbacks not to be invoked and leaking dynamically allocated requests. This is the vulnerable construct, and the fix is not yet present in the shown code because the corrected call should be `list_add_tail(&control->list, &ctx->call_controls);`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0e59f47c15ce",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1453
+        },
+        "commit": "004ded6bee11b8ed463cdc54b89a4390f4b64f6d",
+        "commit_short": "004ded6bee11",
+        "commit_msg": "mm/damon: accept parallel damon_call() requests\n\nPatch series \"mm/damon: remove damon_callback\".\n\ndamon_callback was the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1400,
+        "code_snippet": "commit 004ded6bee11b8ed463cdc54b89a4390f4b64f6d\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Sat Jul 12 12:50:03 2025 -0700\n\n    mm/damon: accept parallel damon_call() requests\n    \n    Patch series \"mm/damon: remove damon_callback\".\n    \n    damon_callback was the only way for communicating with DAMON for contexts\n    running on its worker thread.  The interface is flexible and simple.  But\n    as DAMON evolves with more features, damon_callback has become somewhat\n    too old.  With runtime p",
+        "exists": false,
+        "reason": "The shown function body no longer uses the single-slot `call_control` state that caused the race. In `damon_call()` it now enqueues requests with `list_add_tail(&ctx->call_controls, &control->list);` under `ctx->call_controls_lock`, instead of setting `ctx->call_control` under `call_control_lock`. The worker-side `kdamond_call()` also processes queued requests in a loop: it fetches with `list_first_entry_or_null(&ctx->call_controls, ...)`, removes each request with `list_del(&control->list)`, and completes it. This means the vulnerable construct from the root cause—\"damon_call() used a separate lock from kdamond_fn()’s termination path\" with a single request slot that could be missed after exit cleanup— is absent here, and the queue/lock handling is the fix."
+      }
+    },
+    {
+      "bic_found": "c3fa5b1bfd8380d935fa961f2ac166bdf000f418",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1633
+        },
+        "commit": "004ded6bee11b8ed463cdc54b89a4390f4b64f6d",
+        "commit_short": "004ded6bee11",
+        "commit_msg": "mm/damon: accept parallel damon_call() requests\n\nPatch series \"mm/damon: remove damon_callback\".\n\ndamon_callback was the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1401,
+        "code_snippet": "commit 004ded6bee11b8ed463cdc54b89a4390f4b64f6d\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Sat Jul 12 12:50:03 2025 -0700\n\n    mm/damon: accept parallel damon_call() requests\n    \n    Patch series \"mm/damon: remove damon_callback\".\n    \n    damon_callback was the only way for communicating with DAMON for contexts\n    running on its worker thread.  The interface is flexible and simple.  But\n    as DAMON evolves with more features, damon_callback has become somewhat\n    too old.  With runtime p",
+        "exists": false,
+        "reason": "The shown code already contains the new parallel-request queueing logic and removes the single-slot control path that caused the race. In `damon_call()` the code now does `INIT_LIST_HEAD(&control->list);` and enqueues with `mutex_lock(&ctx->call_controls_lock); list_add_tail(&ctx->call_controls, &control->list); mutex_unlock(&ctx->call_controls_lock);` instead of using a single `ctx->call_control` pointer. In `kdamond_call()` it repeatedly pulls requests from the list with `list_first_entry_or_null(&ctx->call_controls, struct damon_call_control, list)`, processes each one, removes it with `list_del(&control->list);`, and calls `complete(&control->completion);`. This means the vulnerable construct described in the root cause—queuing against a separate lock while the worker is exiting and leaving a request unhandled—is not present in this snippet, because requests are now tracked in a list and each queued request is either handled or completed on cancel. Therefore has_bug=false and is_fixed=true."
+      }
+    },
+    {
+      "bic_found": "004ded6bee11b8ed463cdc54b89a4390f4b64f6d",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1634
+        },
+        "commit": "42b7491af14cbba2393329ce43d508a957bd94fa",
+        "commit_short": "42b7491af14c",
+        "commit_msg": "mm/damon/core: introduce damon_call()\n\nIntroduce a new DAMON core API function, damon_call().  It aims to replace\nsome d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1206,
+        "code_snippet": "commit 42b7491af14cbba2393329ce43d508a957bd94fa\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Jan 3 09:43:53 2025 -0800\n\n    mm/damon/core: introduce damon_call()\n    \n    Introduce a new DAMON core API function, damon_call().  It aims to replace\n    some damon_callback usages that access damon_ctx of ongoing kdamond with\n    additional synchronizations.  It receives a function pointer, let the\n    parallel kdamond invokes the function, and returns after the invocation is\n    finished, or ca",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the missing synchronization between request queuing in damon_call() and kdamond termination cleanup. In this snippet, damon_call() first initializes the request, then takes a dedicated lock before publishing it: `mutex_lock(&ctx->call_control_lock); ... ctx->call_control = control; ... mutex_unlock(&ctx->call_control_lock);`, and it also checks liveness with `if (!damon_is_running(ctx)) return -EINVAL;`. On the worker side, the termination path now explicitly cancels pending requests both while leaving the main loop (`kdamond_call(ctx, true);` in the watermark exit path) and after `ctx->kdamond = NULL` is set (`kdamond_call(ctx, true);` in the exit cleanup). The request handler also clears `ctx->call_control` under the same `call_control_lock` after completion. This means the race where a request could be queued after the worker had entered exit cleanup but before `ctx->kdamond` was cleared is already addressed here, so the vulnerable behavior is not present in this commit snippet."
+      }
+    },
+    {
+      "bic_found": "42b7491af14cbba2393329ce43d508a957bd94fa",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ef3c0f6cb798",
+          "anchor_file": "mm/damon/core.c",
+          "anchor_lineno": 1638
+        },
+        "commit": "42b7491af14cbba2393329ce43d508a957bd94fa",
+        "commit_short": "42b7491af14c",
+        "commit_msg": "mm/damon/core: introduce damon_call()\n\nIntroduce a new DAMON core API function, damon_call().  It aims to replace\nsome d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/core.c",
+        "display_lineno": 1208,
+        "code_snippet": "commit 42b7491af14cbba2393329ce43d508a957bd94fa\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Fri Jan 3 09:43:53 2025 -0800\n\n    mm/damon/core: introduce damon_call()\n    \n    Introduce a new DAMON core API function, damon_call().  It aims to replace\n    some damon_callback usages that access damon_ctx of ongoing kdamond with\n    additional synchronizations.  It receives a function pointer, let the\n    parallel kdamond invokes the function, and returns after the invocation is\n    finished, or ca",
+        "exists": false,
+        "reason": "The shown function already contains the added synchronization and cancellation handling for the new call path. In `damon_call()`, the request is registered under `ctx->call_control_lock` (`ctx->call_control = control;`), and then the code checks whether the worker is still running via `if (!damon_is_running(ctx)) return -EINVAL;`. Most importantly, the termination path explicitly calls `kdamond_call(ctx, true);` both when leaving the main loop (`kdamond_wait_activation()`) and after `ctx->kdamond = NULL;` in `kdamond_fn()`, so a pending request is canceled and completed instead of leaving the caller stuck. That means the vulnerable condition described in the root cause (request queued after exit cleanup began, before `ctx->kdamond` was cleared, causing an unhandled wait/leak) is not present here. The fix is already present in this commit snippet."
+      }
+    },
+    {
+      "bic_found": "42b7491af14cbba2393329ce43d508a957bd94fa",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "c3fa5b1bfd8380d935fa961f2ac166bdf000f418": 1,
+        "004ded6bee11b8ed463cdc54b89a4390f4b64f6d": 1,
+        "42b7491af14cbba2393329ce43d508a957bd94fa": 2
+      },
+      "bic_candidates": [
+        "42b7491af14cbba2393329ce43d508a957bd94fa",
+        "c3fa5b1bfd8380d935fa961f2ac166bdf000f418",
+        "004ded6bee11b8ed463cdc54b89a4390f4b64f6d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

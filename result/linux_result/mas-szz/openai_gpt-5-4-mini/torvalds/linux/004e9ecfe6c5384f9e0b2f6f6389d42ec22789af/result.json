@@ -1,0 +1,252 @@
+{
+  "cveid": "CVE-2026-53199",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "004e9ecfe6c5384f9e0b2f6f6389d42ec22789af"
+  ],
+  "ground_truth_bic": "c25aaf814a63f9d9c4e45416f13d70ef0aa0be2e",
+  "predicted_bic": [
+    "11d8620e0867cb21313aa66ff6ce0172e28f68ff",
+    "c25aaf814a63f9d9c4e45416f13d70ef0aa0be2e"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 20852,
+  "root_cause": {
+    "text": "`netvsc_copy_to_send_buf()` treated each `pb[i].pfn` as a native PFN and converted it with `phys_to_virt()`, which is wrong for Hyper-V page-buffer entries (4K-granularity PFNs) and can also yield unmapped addresses for highmem fragment pages, causing the transmit-path `memcpy()` to access invalid memory.",
+    "evidence": "The patch replaces `phys_to_virt(pb[i].pfn << HV_HYP_PAGE_SHIFT)` with `phys_to_page(paddr)` plus `kmap_local_page()`, and the commit message explicitly says `pb[i].pfn is a Hyper-V PFN at HV_HYP_PAGE_SIZE (4K) granularity, not a native PFN`, and that fragment pages on 32-bit x86 with `CONFIG_HIGHMEM=y` can make `phys_to_virt()` return an address outside the direct map and fault.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/hyperv/netvsc.c",
+      "lineno": 968,
+      "content": "char *src = phys_to_virt(pb[i].pfn << HV_HYP_PAGE_SHIFT);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/hyperv/netvsc.c",
+      "lineno": 972,
+      "content": "memcpy(dest, (src + offset), len);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`hv_netvsc`’s `netvsc_copy_to_send_buf()` treated `pb[i].pfn` as a directly mappable PFN and used `phys_to_virt()` on it, so skb fragment pages that can reside in highmem were copied via an invalid direct-map address and could fault in the transmit softirq path.",
+      "evidence_points": "The patch replaces `char *src = phys_to_virt(pb[i].pfn << HV_HYP_PAGE_SHIFT);` with `phys_addr_t paddr = (pb[i].pfn << HV_HYP_PAGE_SHIFT) + pb[i].offset;` and then uses `phys_to_page(paddr)`, `kmap_local_page(page)`, and page-by-page copying; the commit message explicitly says skb fragment pages may be above the LOWMEM boundary on 32-bit x86 with `CONFIG_HIGHMEM=y`, causing `phys_to_virt()` to return an address outside the direct map and `memcpy()` to fault."
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The evidence is mostly present, but the proposed root cause is too narrow and misses the key correctness issue emphasized by the patch/CVE. The bug is not just that `phys_to_virt()` can fault on highmem pages; the patch also fixes that `pb[i].pfn` is a Hyper-V PFN at 4K granularity, not a native PFN, so converting it directly as if it were a native PFN is incorrect on platforms like arm64 with 64K pages. The proposed root cause does not mention this mismatch or the need to split copies across native page boundaries, so it does not fully align with the commit message/CVE."
+      }
+    },
+    {
+      "root_cause_candidate": "`netvsc_copy_to_send_buf()` treated each `pb[i].pfn` as a native PFN and converted it with `phys_to_virt()`, which is wrong for Hyper-V page-buffer entries (4K-granularity PFNs) and can also yield unmapped addresses for highmem fragment pages, causing the transmit-path `memcpy()` to access invalid memory.",
+      "evidence_points": "The patch replaces `phys_to_virt(pb[i].pfn << HV_HYP_PAGE_SHIFT)` with `phys_to_page(paddr)` plus `kmap_local_page()`, and the commit message explicitly says `pb[i].pfn is a Hyper-V PFN at HV_HYP_PAGE_SIZE (4K) granularity, not a native PFN`, and that fragment pages on 32-bit x86 with `CONFIG_HIGHMEM=y` can make `phys_to_virt()` return an address outside the direct map and fault."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/hyperv/netvsc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/hyperv/netvsc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add the highmem header so the file can use high-memory kernel APIs without build errors.",
+        "what": "A new include directive, `#include <linux/highmem.h>`, was added to the source file alongside the existing Linux kernel headers.",
+        "how": "This makes the declarations and helper APIs from `highmem.h` available to the file at compile time, enabling use of high-memory-related functions or types that were previously unavailable and preventing missing-symbol or implicit-declaration build failures."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix netvsc send-buffer copying to handle physically addressed data safely across page boundaries using local page mappings.",
+        "what": "The code in the page-copy loop was changed from doing a single memcpy from a direct virtual address derived with phys_to_virt() plus an offset, to computing a physical address and then copying in a while-loop using phys_to_page(), offset_in_page(), kmap_local_page(), and kunmap_local() in page-sized chunks.",
+        "how": "At runtime, the copy path no longer assumes the source memory is directly and linearly mapped in a way that can be safely accessed with phys_to_virt(). Instead, it can copy data that spans one or more pages by mapping each page locally as needed, which makes the routine work correctly for sources that are not permanently or contiguously virtually mapped and avoids incorrect accesses across page boundaries."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add the highmem header so the file can use high-memory kernel APIs without build errors."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix netvsc send-buffer copying to handle physically addressed data safely across page boundaries using local page mappings."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only adds a highmem-related header to fix build access to high-memory APIs. It does not modify netvsc_copy_to_send_buf(), PFN handling, or the phys_to_virt()/page-buffer address conversion bug that caused invalid transmit-path accesses."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it fixes netvsc send-buffer copying by using safe local page mappings instead of treating page-buffer PFNs like native PFNs via phys_to_virt(), which addresses the invalid memory access in the transmit path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/hyperv/netvsc.c",
+            "lineno": 968,
+            "content": "char *src = phys_to_virt(pb[i].pfn << HV_HYP_PAGE_SHIFT);",
+            "rationale": "This line directly misinterprets each page-buffer PFN as a native physical page frame and converts it with phys_to_virt(), which is the root cause described. For Hyper-V page-buffer entries, this can produce the wrong address and lead to invalid memory access in the subsequent memcpy()."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/hyperv/netvsc.c",
+            "lineno": 972,
+            "content": "memcpy(dest, (src + offset), len);",
+            "rationale": "This is the faulting access that consumes the invalid pointer produced by the bad phys_to_virt() conversion. When src is wrong or unmapped, this memcpy() can read from invalid memory on the transmit path."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/hyperv/netvsc.c",
+            "stmt_text": "char *src = phys_to_virt(pb[i].pfn << HV_HYP_PAGE_SHIFT);",
+            "location": "hunk",
+            "explanation": "This statement incorrectly treats each Hyper-V page-buffer PFN as a native PFN and converts it with phys_to_virt(), which can produce an invalid or unmapped source address before the transmit-path copy."
+          },
+          {
+            "vuln_file": "drivers/net/hyperv/netvsc.c",
+            "stmt_text": "memcpy(dest, (src + offset), len);",
+            "location": "hunk",
+            "explanation": "This is the subsequent copy that dereferences the bad source pointer produced above, causing the transmit-path memcpy() to access invalid memory."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "09a5bf856aa7",
+          "anchor_file": "drivers/net/hyperv/netvsc.c",
+          "anchor_lineno": 968
+        },
+        "commit": "11d8620e0867cb21313aa66ff6ce0172e28f68ff",
+        "commit_short": "11d8620e0867",
+        "commit_msg": "hv_netvsc: Use HV_HYP_PAGE_SIZE for Hyper-V communication\n\nWhen communicating with Hyper-V, HV_HYP_PAGE_SIZE should be u",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/hyperv/netvsc.c",
+        "display_lineno": 797,
+        "code_snippet": "commit 11d8620e0867cb21313aa66ff6ce0172e28f68ff\nAuthor: Boqun Feng <boqun@kernel.org>\nDate:   Wed Sep 16 11:48:13 2020 +0800\n\n    hv_netvsc: Use HV_HYP_PAGE_SIZE for Hyper-V communication\n    \n    When communicating with Hyper-V, HV_HYP_PAGE_SIZE should be used since\n    that's the page size used by Hyper-V and Hyper-V expects all\n    page-related data using the unit of HY_HYP_PAGE_SIZE, for example, the\n    \"pfn\" in hv_page_buffer is actually the HV_HYP_PAGE (i.e. the Hyper-V\n    page) number.\n",
+        "exists": false,
+        "reason": "The shown function contains the exact page-buffer conversion logic at issue: `char *src = phys_to_virt(pb[i].pfn << PAGE_SHIFT);` in the preimage is changed to `phys_to_virt(pb[i].pfn << HV_HYP_PAGE_SHIFT);`. The root cause states that treating `pb[i].pfn` as a native PFN and using `phys_to_virt()` with the wrong shift can produce invalid addresses. This diff directly fixes that by using `HV_HYP_PAGE_SHIFT`, which matches Hyper-V page units. Therefore the vulnerable construct is present in the old code, and this commit already contains the fix in the shown body."
+      }
+    },
+    {
+      "bic_found": "11d8620e0867cb21313aa66ff6ce0172e28f68ff",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "09a5bf856aa7",
+          "anchor_file": "drivers/net/hyperv/netvsc.c",
+          "anchor_lineno": 972
+        },
+        "commit": "c25aaf814a63f9d9c4e45416f13d70ef0aa0be2e",
+        "commit_short": "c25aaf814a63",
+        "commit_msg": "hyperv: Enable sendbuf mechanism on the send path\n\nWe send packets using a copy-free mechanism (this is the Guest to Hos",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/hyperv/netvsc.c",
+        "display_lineno": 690,
+        "code_snippet": "commit c25aaf814a63f9d9c4e45416f13d70ef0aa0be2e\nAuthor: KY Srinivasan <kys@microsoft.com>\nDate:   Wed Apr 30 10:14:31 2014 -0700\n\n    hyperv: Enable sendbuf mechanism on the send path\n    \n    We send packets using a copy-free mechanism (this is the Guest to Host transport\n    via VMBUS). While this is obviously optimal for large packets,\n    it may not be optimal for small packets. Hyper-V host supports\n    a second mechanism for sending packets that is \"copy based\". We implement that\n    mecha",
+        "exists": true,
+        "reason": "The vulnerable construct is present in `netvsc_copy_to_send_buf()`: `char *src = phys_to_virt(packet->page_buf[i].pfn << PAGE_SHIFT);` followed by `memcpy(dest, (src + offset), len);`. This matches the root cause exactly: each `pb[i].pfn` is treated as a native PFN and converted with `phys_to_virt()`, which can be wrong for Hyper-V page-buffer entries and can produce invalid/unmapped addresses (including highmem pages) that are then dereferenced by `memcpy()`. There is no corrective handling in this function, such as using the page buffer entry as a mapped page or otherwise validating/obtaining a safe kernel virtual address, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "cc80ee13609d",
+          "anchor_file": "drivers/net/hyperv/netvsc.c",
+          "anchor_lineno": 690
+        },
+        "commit": "453263421f88b4a7e508c2e7b639c97e99c5b118",
+        "commit_short": "453263421f88",
+        "commit_msg": "net/hyperv: Remove unnecessary kmap_atomic in netvsc driver\n\n__get_free_pages() doesn't return HI memory, so the memory ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/hyperv/netvsc.c",
+        "display_lineno": 718,
+        "code_snippet": "commit 453263421f88b4a7e508c2e7b639c97e99c5b118\nAuthor: Haiyang Zhang <haiyangz@microsoft.com>\nDate:   Thu Dec 15 13:45:15 2011 -0800\n\n    net/hyperv: Remove unnecessary kmap_atomic in netvsc driver\n    \n    __get_free_pages() doesn't return HI memory, so the memory is always mapped.\n    kmap_atomic() is not necessary here. This patch removes the kmap_atomic()\n    calls and related code for locking and page manipulation.\n    \n    Signed-off-by: Haiyang Zhang <haiyangz@microsoft.com>\n    Signed-o",
+        "exists": false,
+        "reason": "The shown function body no longer contains the vulnerable page-buffer construction logic. The buggy construct described in the root cause was converting per-page buffer entries into PFNs and building `page_buf[]` entries for transmit/receive handling. In this diff, that whole block is removed: the code deletes `netvsc_packet->page_buf[0].pfn = start >> PAGE_SHIFT;`, the multi-page loop that filled `page_buf[j].pfn`, and all `virt_to_phys()`/PFN calculations. Instead, it now directly sets `netvsc_packet->data = (void *)((unsigned long)net_device->recv_buf + vmxferpage_packet->ranges[i].byte_offset);` and only keeps `netvsc_packet->total_data_buflen = vmxferpage_packet->ranges[i].byte_count;`. Because the vulnerable PFN/page-buffer handling is absent here, `has_bug` is false. Since the code has already been changed to avoid that logic, this function reflects the fix rather than the bug, so `is_fixed` is true."
+      }
+    },
+    {
+      "bic_found": "c25aaf814a63f9d9c4e45416f13d70ef0aa0be2e",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "11d8620e0867cb21313aa66ff6ce0172e28f68ff": 1,
+        "c25aaf814a63f9d9c4e45416f13d70ef0aa0be2e": 1
+      },
+      "bic_candidates": [
+        "11d8620e0867cb21313aa66ff6ce0172e28f68ff",
+        "c25aaf814a63f9d9c4e45416f13d70ef0aa0be2e"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

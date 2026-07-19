@@ -1,0 +1,302 @@
+{
+  "cveid": "CVE-2026-23161",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "8a1968bd997f45a9b11aefeabdd1232e1b6c7184"
+  ],
+  "ground_truth_bic": "809bc86517cc408b5b8cb8e08e69096639432bc8",
+  "predicted_bic": [
+    "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+    "55f3f7eab75c10d9b33d122670b5935ab64db50f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 30539,
+  "root_cause": {
+    "text": "A time-of-check-time-of-use (TOCTOU) race condition in shmem swap entry freeing where the swap entry order is retrieved without lock protection via `xa_get_order()`, allowing the entry to be split or modified between the order retrieval and the subsequent `xa_cmpxchg_irq()` operation, potentially causing truncation to erase data beyond the intended end border.",
+    "evidence": "The patch explicitly states the vulnerability: \"It uses xa_cmpxchg_irq to erase the swap entry, but it gets the entry order before that using xa_get_order without lock protection, and it may get an outdated order value if the entry is split or changed in other ways after the xa_get_order and before the xa_cmpxchg_irq.\" The fix moves both order retrieval (`xas_get_order()`) and value checking into the same critical section protected by `xas_lock_irq()`, and adds a bounds check (`if (base < index || base + nr_pages - 1 > end)`) to prevent erasing data beyond the end border. The patch also adds a secondary validation loop that skips large swap entries crossing the end border to handle race conditions that may have already occurred.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/shmem.c",
+      "lineno": 967,
+      "content": "int order = xa_get_order(&mapping->i_pages, index);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/shmem.c",
+      "lineno": 970,
+      "content": "old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/shmem.c",
+      "lineno": 973,
+      "content": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A time-of-check-time-of-use (TOCTOU) race condition in shmem swap entry freeing where the swap entry order is retrieved without lock protection via `xa_get_order()`, allowing the entry to be split or modified between the order retrieval and the subsequent `xa_cmpxchg_irq()` operation, potentially causing truncation to erase data beyond the intended end border.",
+      "evidence_points": "The patch explicitly states the vulnerability: \"It uses xa_cmpxchg_irq to erase the swap entry, but it gets the entry order before that using xa_get_order without lock protection, and it may get an outdated order value if the entry is split or changed in other ways after the xa_get_order and before the xa_cmpxchg_irq.\" The fix moves both order retrieval (`xas_get_order()`) and value checking into the same critical section protected by `xas_lock_irq()`, and adds a bounds check (`if (base < index || base + nr_pages - 1 > end)`) to prevent erasing data beyond the end border. The patch also adds a secondary validation loop that skips large swap entries crossing the end border to handle race conditions that may have already occurred."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add boundary validation to shmem_free_swap to prevent freeing swap entries that extend beyond a specified end offset.",
+        "what": "The shmem_free_swap function signature is extended with a new pgoff_t end parameter. The implementation is refactored from using xa_cmpxchg_irq with xa_get_order to using XA_STATE with xas_lock_irq/xas_unlock_irq. A boundary check is added to validate that the swap entry's address range (base to base + nr_pages - 1) falls within [index, end]. The return value changes from (1 << order) to nr_pages, which is set to 0 if the boundary check fails.",
+        "how": "The function now validates that freed swap entries do not extend beyond a specified end boundary. Previously, it would unconditionally free any swap entry found at the given index regardless of its extent. Now it acquires an IRQ-safe lock, loads the entry, calculates its full extent (base and nr_pages), checks if that extent is contained within [index, end], and only clears the entry and returns the page count if the check passes. This prevents freeing swap entries that partially overlap with the specified range boundary."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Pass the range end boundary to shmem_free_swap() to fix swap freeing logic that requires range context information.",
+        "what": "Modified the shmem_free_swap() function call to add a new argument 'end - 1' between 'indices[i]' and 'folio', and reformatted the multi-line call for alignment.",
+        "how": "The function now receives an additional parameter representing the end boundary (end - 1) to shmem_free_swap(). This likely enables the function to perform range-aware swap freeing operations, potentially affecting how swap entries are validated or freed within a specific range context."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix handling of large swap entries that cross truncation boundaries by adding a check to skip them when they extend beyond the end offset.",
+        "what": "Added an `int order` variable declaration and inserted a new conditional block that calls `shmem_confirm_swap()` to check for large swap entries crossing the end boundary. Modified the `shmem_free_swap()` call to pass an additional `end - 1` parameter. Added a comment explaining the logic for skipping large swap entries that cross the truncation boundary.",
+        "how": "The change prevents incorrect handling of large swap entries that span across the truncation end boundary. When `shmem_free_swap()` fails to free a swap entry, the code now checks if it's a large swap entry (order > 0) that extends beyond the `end` boundary. If so, it skips processing that entry with `continue`, avoiding potential data corruption or incorrect state since `truncate_inode_partial_folio()` should have already zeroed its content. This adds a boundary condition check that was previously missing."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix handling of large swap entries that cross truncation boundaries by adding a check to skip them when they extend beyond the end offset."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix swap entry freeing logic to properly handle large swap entries that cross truncation boundaries by validating against range end offsets.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the TOCTOU vulnerability by adding boundary validation to prevent freeing swap entries that extend beyond intended truncation boundaries. The changes ensure proper range context is passed to shmem_free_swap() and validate that large swap entries don't cross truncation boundaries, which prevents the data erasure beyond the intended end border that the vulnerability describes."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 967,
+            "content": "int order = xa_get_order(&mapping->i_pages, index);",
+            "rationale": "This line retrieves the swap entry order without any lock protection. The root cause is a TOCTOU race condition where the order is obtained via xa_get_order() but the entry can be split or modified before the subsequent xa_cmpxchg_irq() operation, leading to potential data corruption when truncating entries that cross boundaries."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 970,
+            "content": "old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);",
+            "rationale": "This xa_cmpxchg_irq() operation uses the order value retrieved earlier without lock protection. Between the xa_get_order() call and this operation, the swap entry could have been modified, causing a mismatch between the assumed order and the actual entry state, leading to incorrect freeing of swap entries that extend beyond truncation boundaries."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 973,
+            "content": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+            "rationale": "This line frees swap entries based on the order value that was retrieved without proper boundary validation. If the order was obtained for an entry that extends beyond the truncation end boundary, this will incorrectly free swap entries beyond the intended range, causing data loss."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "int order = xa_get_order(&mapping->i_pages, index);",
+            "location": "hunk",
+            "explanation": "This statement retrieves the swap entry order without lock protection, creating a TOCTOU race condition. The order is obtained via xa_get_order() but the entry can be split or modified before the subsequent xa_cmpxchg_irq() operation, allowing the order value to become stale and inconsistent with the actual entry state at the time of the cmpxchg operation."
+          },
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);",
+            "location": "hunk",
+            "explanation": "This xa_cmpxchg_irq() operation uses the order value retrieved earlier without lock protection. The race condition allows the swap entry to be modified between xa_get_order() and this operation, causing a mismatch between the assumed order and the actual entry state, leading to incorrect freeing of swap entries that may extend beyond truncation boundaries."
+          },
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+            "location": "hunk",
+            "explanation": "This statement frees swap entries based on the order value that was retrieved without proper boundary validation or lock protection. Due to the TOCTOU race condition, if the order was obtained for an entry that extends beyond the truncation end boundary, this will incorrectly free swap entries beyond the intended range, causing data loss."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 967
+        },
+        "commit": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "commit_short": "6ea0d1ccb110",
+        "commit_msg": "mm: shmem: return number of pages beeing freed in shmem_free_swap\n\nBoth shmem_free_swap callers expect the number of pag",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 866,
+        "code_snippet": "commit 6ea0d1ccb110387244e04637f28a1d2eda54e3fb\nAuthor: Daniel Gomez <da.gomez@samsung.com>\nDate:   Mon Aug 12 15:42:04 2024 +0800\n\n    mm: shmem: return number of pages beeing freed in shmem_free_swap\n    \n    Both shmem_free_swap callers expect the number of pages being freed.  In\n    the large folios context, this needs to support larger values other than 0\n    (used as 1 page being freed) and -ENOENT (used as 0 pages being freed).\n    In preparation for large folios adoption, make shmem_free",
+        "exists": true,
+        "reason": "The vulnerable construct is clearly present in this commit. The function retrieves the swap entry order WITHOUT lock protection via `int order = xa_get_order(&mapping->i_pages, index);` on line 866, BEFORE the subsequent `xa_cmpxchg_irq()` operation on line 869. This creates a classic TOCTOU race condition: between the time `xa_get_order()` reads the order and the time `xa_cmpxchg_irq()` attempts to atomically replace the entry, another CPU could split or modify the swap entry, causing the order value to become stale. The code then uses this potentially stale order value in `free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order)` on line 872, which could free an incorrect number of pages. The fix would require retrieving the order atomically as part of the `xa_cmpxchg_irq()` operation or protecting both operations with appropriate locking, neither of which is present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "50f381eccefd",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 866
+        },
+        "commit": "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+        "commit_short": "55f3f7eab75c",
+        "commit_msg": "XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n\nThese convenience wrappers match the other _irq and _bh wrappers we\nalread",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 664,
+        "code_snippet": "commit 55f3f7eab75c10d9b33d122670b5935ab64db50f\nAuthor: Matthew Wilcox <willy@infradead.org>\nDate:   Mon Nov 26 16:08:43 2018 -0500\n\n    XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n    \n    These convenience wrappers match the other _irq and _bh wrappers we\n    already have.  It turns out I'd already open-coded xa_cmpxchg_irq()\n    in the shmem code, so convert that.\n    \n    Signed-off-by: Matthew Wilcox <willy@infradead.org>\n\ndiff --git a/mm/shmem.c b/mm/shmem.c\nindex cddc72ac44d8..6adbdd3498",
+        "exists": false,
+        "reason": "The provided code snippet is insufficient to determine vulnerability status. The function body shows only the xa_cmpxchg_irq() operation itself (line 664), but the vulnerability root cause describes a TOCTOU race condition involving xa_get_order() being called WITHOUT lock protection BEFORE the xa_cmpxchg_irq() operation. The snippet does not show the preceding code where xa_get_order() would be called. Without seeing the complete context including where the order is retrieved and how it's used in relation to the cmpxchg operation, it's impossible to determine if this commit introduces or fixes the vulnerability. The commit message indicates this adds xa_cmpxchg_irq() wrappers and mentions 'open-coded xa_cmpxchg_irq() in the shmem code', suggesting this may be a refactoring, but the actual vulnerable pattern (unprotected xa_get_order() followed by xa_cmpxchg_irq()) is not visible in the provided lines."
+      }
+    },
+    {
+      "bic_found": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 970
+        },
+        "commit": "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+        "commit_short": "55f3f7eab75c",
+        "commit_msg": "XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n\nThese convenience wrappers match the other _irq and _bh wrappers we\nalread",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 664,
+        "code_snippet": "commit 55f3f7eab75c10d9b33d122670b5935ab64db50f\nAuthor: Matthew Wilcox <willy@infradead.org>\nDate:   Mon Nov 26 16:08:43 2018 -0500\n\n    XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n    \n    These convenience wrappers match the other _irq and _bh wrappers we\n    already have.  It turns out I'd already open-coded xa_cmpxchg_irq()\n    in the shmem code, so convert that.\n    \n    Signed-off-by: Matthew Wilcox <willy@infradead.org>\n\ndiff --git a/mm/shmem.c b/mm/shmem.c\nindex cddc72ac44d8..6adbdd3498",
+        "exists": false,
+        "reason": "The provided code snippet is insufficient to determine vulnerability status. The function body shows only the xa_cmpxchg_irq() operation itself (line 664), but the vulnerability root cause describes a TOCTOU race condition involving xa_get_order() being called WITHOUT lock protection BEFORE the xa_cmpxchg_irq() operation. The snippet does not show the preceding code where xa_get_order() would be called. Without seeing the complete context including where the order is retrieved and how it's used in relation to this cmpxchg operation, it's impossible to determine if this commit introduces or fixes the vulnerability. The commit message indicates this adds xa_cmpxchg_irq wrappers and mentions 'open-coded xa_cmpxchg_irq() in the shmem code', suggesting this may be refactoring existing code, but the critical xa_get_order() call that's part of the vulnerability is not visible in this snippet."
+      }
+    },
+    {
+      "bic_found": "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 973
+        },
+        "commit": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "commit_short": "6ea0d1ccb110",
+        "commit_msg": "mm: shmem: return number of pages beeing freed in shmem_free_swap\n\nBoth shmem_free_swap callers expect the number of pag",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 872,
+        "code_snippet": "commit 6ea0d1ccb110387244e04637f28a1d2eda54e3fb\nAuthor: Daniel Gomez <da.gomez@samsung.com>\nDate:   Mon Aug 12 15:42:04 2024 +0800\n\n    mm: shmem: return number of pages beeing freed in shmem_free_swap\n    \n    Both shmem_free_swap callers expect the number of pages being freed.  In\n    the large folios context, this needs to support larger values other than 0\n    (used as 1 page being freed) and -ENOENT (used as 0 pages being freed).\n    In preparation for large folios adoption, make shmem_free",
+        "exists": true,
+        "reason": "The vulnerability is a TOCTOU race condition in shmem_free_swap. The function retrieves the swap entry order via `xa_get_order(&mapping->i_pages, index)` on line 866 WITHOUT holding any lock that would prevent the entry from being modified. Then, the code performs `xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0)` on line 869. Between these two operations, another CPU could split or modify the swap entry, causing the order retrieved at line 866 to become stale. This stale order is then used in `free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order)` on line 873, potentially freeing an incorrect number of pages. The fix would require holding the xa_lock during both the order retrieval and the cmpxchg operation to ensure atomicity, but this code does not implement such protection. The vulnerable construct (unprotected xa_get_order followed by xa_cmpxchg_irq) is clearly present and the race condition exists."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "50f381eccefd",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 872
+        },
+        "commit": "7a5d0fbb29936fad7f17b1cb001b0c33a5f13328",
+        "commit_short": "7a5d0fbb2993",
+        "commit_msg": "tmpfs: convert shmem_truncate_range to radix-swap\n\nDisable the toy swapping implementation in shmem_writepage() - it's h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 326,
+        "code_snippet": "commit 7a5d0fbb29936fad7f17b1cb001b0c33a5f13328\nAuthor: Hugh Dickins <hughd@google.com>\nDate:   Wed Aug 3 16:21:22 2011 -0700\n\n    tmpfs: convert shmem_truncate_range to radix-swap\n    \n    Disable the toy swapping implementation in shmem_writepage() - it's hard\n    to support two schemes at once - and convert shmem_truncate_range() to a\n    lockless gang lookup of swap entries along with pages, freeing both.\n    \n    Since the second loop tightens its noose until all entries of either\n    kind ",
+        "exists": false,
+        "reason": "The vulnerability root cause describes a TOCTOU race condition involving `xa_get_order()` without lock protection, followed by `xa_cmpxchg_irq()`. However, this commit (7a5d0fbb2993) from 2011 predates the radix tree API changes that introduced `xa_get_order()` and `xa_cmpxchg_irq()` (which are part of the XArray API introduced much later). The code shown uses the older radix tree API with explicit spin_lock_irq/spin_unlock_irq protection in `shmem_free_swap()` at lines 315-320. The function `shmem_radix_tree_replace()` performs the lookup and replacement under the tree_lock (lines 244-260), and `shmem_free_swap()` wraps the replacement in spin_lock_irq/spin_unlock_irq. There is no `xa_get_order()` call visible in this commit, and the swap entry handling is protected by locks. The vulnerable construct described in the root cause (unprotected `xa_get_order()` followed by `xa_cmpxchg_irq()`) is not present in this code."
+      }
+    },
+    {
+      "bic_found": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "6ea0d1ccb110387244e04637f28a1d2eda54e3fb": 2,
+        "55f3f7eab75c10d9b33d122670b5935ab64db50f": 1
+      },
+      "bic_candidates": [
+        "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "55f3f7eab75c10d9b33d122670b5935ab64db50f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

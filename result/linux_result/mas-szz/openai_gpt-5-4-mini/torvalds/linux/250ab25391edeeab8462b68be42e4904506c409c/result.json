@@ -1,0 +1,222 @@
+{
+  "cveid": "CVE-2026-31481",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "250ab25391edeeab8462b68be42e4904506c409c"
+  ],
+  "ground_truth_bic": "61d445af0a7c70018111919e47beaaee15653f2f",
+  "predicted_bic": [
+    "61d445af0a7c70018111919e47beaaee15653f2f"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 22292,
+  "root_cause": {
+    "text": "The tracing `event_trigger_data` free path could defer boot-time frees onto `trigger_data_free_list` but, if `trigger_data` cleanup kthread creation never succeeded, it failed to drain that queued list in `trace_events_trigger.c`, leaving old nodes stranded and causing leaks/NULL-deref during later trigger frees.",
+    "evidence": "The CVE says “Boot-time trigger registration can fail before the trigger-data cleanup kthread exists” and “the post-boot fallback must still drain the deferred list if kthread creation never succeeds,” while the patch adds `trigger_data_free_queued_locked()` to `kernel/trace/trace_events_trigger.c` and calls it both when `kthread_create()` fails and in the late-init path instead of freeing only the current object.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/trace/trace_events_trigger.c",
+      "lineno": 75,
+      "content": "kfree(data);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/trace/trace_events_trigger.c",
+      "lineno": 74,
+      "content": "tracepoint_synchronize_unregister();",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The tracing trigger free path in `kernel/trace/trace_events_trigger.c` deferred `event_trigger_data` objects onto `trigger_data_free_list` even when the cleanup kthread could not be created, but it failed to drain that queued list synchronously, leaving stale deferred frees stranded and later causing leaks/NULL dereference when triggers were retried or freed again.",
+      "evidence_points": "The patch adds `trigger_data_free_queued_locked()` to `llist_del_all()` and `kfree()` the entire `trigger_data_free_list`, and changes `trigger_data_free()` so that if `kthread_create()` fails it now queues the object and immediately drains the whole list; the commit message explicitly says “boot-deferred nodes can accumulate on trigger_data_free_list” and that “later frees fall back to synchronously freeing only the current object, and the older queued entries are leaked forever,” with the crash reproduced by duplicate boot-time `trace_trigger=` entries."
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The evidence does not support the “NULL dereference when triggers were retried or freed again” part of the proposed root cause. The CVE/commit message says the problem is that deferred nodes accumulate, later frees only free the current object, and older queued entries are leaked forever; it also mentions a crash from duplicate boot-time triggers, but the patch itself only shows adding synchronous draining when kthread creation fails and in late init. The root cause is also partially inconsistent by focusing on “cleanup kthread could not be created” and “failed to drain that queued list synchronously” without clearly matching the actual bug mechanism: boot-time frees were intentionally deferred, but if kthread creation never succeeds the list was left stranded and later frees could dereference stale state. The proposed explanation mixes in leaks and NULL dereferences in a way that is broader than what the patch evidence directly establishes."
+      }
+    },
+    {
+      "root_cause_candidate": "The tracing trigger free path in `kernel/trace/trace_events_trigger.c` deferred `event_trigger_data` objects onto `trigger_data_free_list` during boot, but if the cleanup kthread could not be created, the code failed to synchronously drain that queued list, leaving deferred entries stranded and the free path operating on stale accumulated state.",
+      "evidence_points": "The CVE/commit message says “Boot-time trigger registration can fail before the trigger-data cleanup kthread exists” and that “the post-boot fallback must still drain the deferred list if kthread creation never succeeds,” while the patch adds `trigger_data_free_queued_locked()` and calls it both when `kthread_create()` fails and in the late-init drain path instead of only freeing the current object."
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The evidence does not support the root cause’s “stale accumulated state” framing. The patch and CVE describe a leak/stranding problem: boot-deferred `event_trigger_data` nodes can accumulate on `trigger_data_free_list`, and if kthread creation fails the code must drain the whole queued list synchronously. There is no indication that the free path “operating on stale accumulated state” is the actual bug mechanism. Also, the support text implies the patch adds draining both on kthread-create failure and late-init, which is correct, but the proposed root cause should explain that queued nodes were otherwise never freed and could later cause leaks/NULL deref from the accumulated list, not just that cleanup was deferred."
+      }
+    },
+    {
+      "root_cause_candidate": "The tracing `event_trigger_data` free path could defer boot-time frees onto `trigger_data_free_list` but, if `trigger_data` cleanup kthread creation never succeeded, it failed to drain that queued list in `trace_events_trigger.c`, leaving old nodes stranded and causing leaks/NULL-deref during later trigger frees.",
+      "evidence_points": "The CVE says “Boot-time trigger registration can fail before the trigger-data cleanup kthread exists” and “the post-boot fallback must still drain the deferred list if kthread creation never succeeds,” while the patch adds `trigger_data_free_queued_locked()` to `kernel/trace/trace_events_trigger.c` and calls it both when `kthread_create()` fails and in the late-init path instead of freeing only the current object."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/trace/trace_events_trigger.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/trace/trace_events_trigger.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add locked helper routines to lazily create the cleanup kthread and safely free queued trigger data after tracepoint synchronization.",
+        "what": "The diff adds a forward declaration for trigger_kthread_fn and introduces two new static helper functions: trigger_create_kthread_locked(), which creates the trigger_data_free kernel thread if it does not already exist and stores it with WRITE_ONCE(), and trigger_data_free_queued_locked(), which removes all nodes from trigger_data_free_list, synchronizes tracepoint unregistration, and frees each queued event_trigger_data element.",
+        "how": "At runtime, this enables deferred creation of the cleanup kthread under the trigger_data_kthread_mutex and provides a locked path to drain and safely free queued trigger data only after tracepoint unregister activity has quiesced, reducing the risk of freeing data still reachable by tracepoint teardown paths."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix trigger data teardown so boot-time and kthread-creation-failure cases use deferred freeing with late-init draining instead of unsafe direct free fallback.",
+        "what": "The function now special-cases boot-time teardown when no trigger kthread exists by queueing the object on `trigger_data_free_list` and returning early. It also changes the lazy kthread creation path to call `trigger_create_kthread_locked()`, and if creation still fails, it queues the object and immediately drains the queued frees synchronously instead of falling back to direct `kfree()`. A new `__init` late-init function `trigger_data_free_init()` is added, registered with `late_initcall()`, which acquires the mutex, creates the kthread if there are queued frees, wakes it if present, or drains the queue synchronously if not.",
+        "how": "This ensures deferred freeing works correctly even during boot before kthread creation is available, and that any frees queued during that period are serviced later during late init. It removes the previous direct-free fallback path and replaces it with queued or synchronous draining behavior, preventing premature freeing when the tracepoint teardown path depends on deferred execution."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix trigger data teardown so boot-time and kthread-creation-failure cases use deferred freeing with late-init draining instead of unsafe direct free fallback."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix trigger data teardown so boot-time and kthread-creation-failure cases use deferred freeing with late-init draining instead of unsafe direct free fallback.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the reported trigger_data free-path bug: deferred boot-time frees, kthread creation failure handling, and draining the queued trigger_data_free_list to prevent leaks/NULL-deref during later frees."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/trace/trace_events_trigger.c",
+            "lineno": 75,
+            "content": "kfree(data);",
+            "rationale": "This direct free fallback is the vulnerable behavior: when trigger-data cleanup kthread creation had not succeeded, the code freed the object immediately instead of deferring it and draining the queued free list later, which could leave boot-time queued nodes stranded and lead to leaks or later invalid access."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/trace/trace_events_trigger.c",
+            "lineno": 74,
+            "content": "tracepoint_synchronize_unregister();",
+            "rationale": "This synchronization-only fallback was paired with the unsafe direct free path. In the failure case where no cleanup kthread existed, it did not drain deferred frees from trigger_data_free_list, so queued trigger data could remain unprocessed."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/trace/trace_events_trigger.c",
+            "stmt_text": "kfree(data);",
+            "location": "hunk",
+            "explanation": "This direct free fallback bypassed the deferred-free mechanism. When cleanup kthread creation had failed, boot-time queued trigger_data objects were not drained from trigger_data_free_list, which could strand nodes and later cause leaks or invalid access during trigger frees."
+          },
+          {
+            "vuln_file": "kernel/trace/trace_events_trigger.c",
+            "stmt_text": "tracepoint_synchronize_unregister();",
+            "location": "hunk",
+            "explanation": "This synchronization-only path did not drain deferred trigger_data frees. In the kthread-creation-failure case, it left trigger_data_free_list entries unprocessed, enabling the leak/NULL-deref condition described in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1f9885732248",
+          "anchor_file": "kernel/trace/trace_events_trigger.c",
+          "anchor_lineno": 75
+        },
+        "commit": "61d445af0a7c70018111919e47beaaee15653f2f",
+        "commit_short": "61d445af0a7c",
+        "commit_msg": "tracing: Add bulk garbage collection of freeing event_trigger_data\n\nThe event trigger data requires a full tracepoint_sy",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace_events_trigger.c",
+        "display_lineno": 72,
+        "code_snippet": "commit 61d445af0a7c70018111919e47beaaee15653f2f\nAuthor: Steven Rostedt <rostedt@goodmis.org>\nDate:   Tue Nov 25 16:40:06 2025 -0500\n\n    tracing: Add bulk garbage collection of freeing event_trigger_data\n    \n    The event trigger data requires a full tracepoint_synchronize_unregister()\n    call before freeing. That call can take 100s of milliseconds to complete.\n    In order to allow for bulk freeing of the trigger data, it can not call\n    the tracepoint_synchronize_unregister() for every indi",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the failure to drain deferred frees when the cleanup kthread never exists, leaving nodes stranded on a free list. This diff shows the fix already present: `trigger_data_free()` now either creates `trigger_kthread` or falls back to the slow path (`tracepoint_synchronize_unregister(); kfree(data); return;`). When the kthread is available, it no longer frees directly but queues the object with `llist_add(&data->llist, &trigger_data_free_list);` and wakes the thread. The kthread function explicitly drains the entire list with `llnodes = llist_del_all(&trigger_data_free_list);` and frees each entry after synchronization. So the bug condition is not present in this code; the handling to drain deferred frees is already implemented."
+      }
+    },
+    {
+      "bic_found": "61d445af0a7c70018111919e47beaaee15653f2f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "1f9885732248",
+          "anchor_file": "kernel/trace/trace_events_trigger.c",
+          "anchor_lineno": 74
+        },
+        "commit": "61d445af0a7c70018111919e47beaaee15653f2f",
+        "commit_short": "61d445af0a7c",
+        "commit_msg": "tracing: Add bulk garbage collection of freeing event_trigger_data\n\nThe event trigger data requires a full tracepoint_sy",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace_events_trigger.c",
+        "display_lineno": 71,
+        "code_snippet": "commit 61d445af0a7c70018111919e47beaaee15653f2f\nAuthor: Steven Rostedt <rostedt@goodmis.org>\nDate:   Tue Nov 25 16:40:06 2025 -0500\n\n    tracing: Add bulk garbage collection of freeing event_trigger_data\n    \n    The event trigger data requires a full tracepoint_synchronize_unregister()\n    call before freeing. That call can take 100s of milliseconds to complete.\n    In order to allow for bulk freeing of the trigger data, it can not call\n    the tracepoint_synchronize_unregister() for every indi",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the failure to drain a deferred free list when kthread creation fails, leaving nodes stranded. This snippet already shows the fix: `trigger_data_free()` now attempts `kthread_create(trigger_kthread_fn, ...)`, and if that fails it explicitly falls back to `tracepoint_synchronize_unregister(); kfree(data); return;`. When the kthread exists, it queues with `llist_add(&data->llist, &trigger_data_free_list);` and the new `trigger_kthread_fn()` drains the entire list via `llist_del_all(&trigger_data_free_list)` and frees each node. So the missing-drain bug is not present here; the code has the correct handling."
+      }
+    },
+    {
+      "bic_found": "61d445af0a7c70018111919e47beaaee15653f2f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "61d445af0a7c70018111919e47beaaee15653f2f": 2
+      },
+      "bic_candidates": [
+        "61d445af0a7c70018111919e47beaaee15653f2f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

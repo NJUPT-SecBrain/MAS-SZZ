@@ -1,0 +1,247 @@
+{
+  "cveid": "CVE-2026-46242",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a6dc643c69311677c574a0f17a3f4d66a5f3744b"
+  ],
+  "ground_truth_bic": "58c9b016e12855286370dfb704c08498edbc857a",
+  "predicted_bic": [
+    "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+    "0feaf644f7180c4a91b6b405a881afbfd958f1cf"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 16213,
+  "root_cause": {
+    "text": "epoll's ep_remove() cleared struct file->f_ep and then continued to access the same struct file and its linked struct eventpoll without first pinning the file, allowing a race with __fput()/eventpoll_release() that freed or recycled those objects and caused UAF.",
+    "evidence": "The commit states ep_remove() \"cleared file->f_ep under file->f_lock but then kept using @file inside the critical section,\" so concurrent __fput() could \"skip eventpoll_release_file() and run to f_op->release / file_free(),\" and the patch fixes this by adding `file = epi_fget(epi); if (!file) return;` before taking `file->f_lock` to hold a reference across `ep_remove_file()` and `hlist_del_rcu()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/eventpoll.c",
+      "lineno": 915,
+      "content": "struct file *file = epi->ffd.file;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/eventpoll.c",
+      "lineno": 926,
+      "content": "spin_lock(&file->f_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/eventpoll.c",
+      "lineno": 931,
+      "content": "ep_remove_file(ep, epi, file);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "epoll's ep_remove() cleared struct file->f_ep and then continued to access the same struct file and its linked struct eventpoll without first pinning the file, allowing a race with __fput()/eventpoll_release() that freed or recycled those objects and caused UAF.",
+      "evidence_points": "The commit states ep_remove() \"cleared file->f_ep under file->f_lock but then kept using @file inside the critical section,\" so concurrent __fput() could \"skip eventpoll_release_file() and run to f_op->release / file_free(),\" and the patch fixes this by adding `file = epi_fget(epi); if (!file) return;` before taking `file->f_lock` to hold a reference across `ep_remove_file()` and `hlist_del_rcu()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/eventpoll.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use a refcounted file lookup in ep_remove() to safely synchronize with file release and avoid operating on a dying epoll file.",
+        "what": "The local variable in ep_remove() was changed from direct assignment `struct file *file = epi->ffd.file;` to `struct file *file __free(fput) = NULL;`, the comment above the early return on `epi->dying` was updated to say \"cheap sync with eventpoll_release_file()\", the code that previously locked `file->f_lock` and rechecked `epi->dying` under that lock was removed, and new logic was added to acquire the file through `file = epi_fget(epi);` with an early return if that acquisition fails before taking `file->f_lock` and calling `ep_remove_file()`.",
+        "how": "At runtime, ep_remove() now safely obtains a reference to the target file before operating on it, and aborts if the file is already being released. This avoids using the raw `epi->ffd.file` pointer without refcount protection and replaces the old lock-based `epi->dying` recheck with reference acquisition as synchronization against `eventpoll_release_file()`. The `__free(fput)` annotation also ensures the acquired file reference is released automatically on function exit."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use a refcounted file lookup in ep_remove() to safely synchronize with file release and avoid operating on a dying epoll file."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by pinning/looking up the file with a refcount in ep_remove(), preventing races with __fput()/eventpoll_release() and avoiding use-after-free of struct file/eventpoll after f_ep is cleared."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/eventpoll.c",
+            "lineno": 915,
+            "content": "struct file *file = epi->ffd.file;",
+            "rationale": "ep_remove() takes a raw file pointer from epi and continues to use it without acquiring a reference, which matches the root cause: the file can be released concurrently after f_ep is cleared, leading to UAF on file or associated eventpoll state."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/eventpoll.c",
+            "lineno": 926,
+            "content": "spin_lock(&file->f_lock);",
+            "rationale": "This dereferences the unpinned file pointer after the race window described in the root cause. If __fput()/eventpoll_release() has freed or recycled the file, taking file->f_lock becomes a use-after-free."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/eventpoll.c",
+            "lineno": 931,
+            "content": "ep_remove_file(ep, epi, file);",
+            "rationale": "This continues operating on the same unreferenced file object after synchronization only via f_ep/dying checks, which was insufficient against concurrent file release and can access freed or recycled state."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/eventpoll.c",
+            "stmt_text": "struct file *file = epi->ffd.file;",
+            "location": "hunk",
+            "explanation": "This obtains only a raw pointer to the file from epi without taking a reference. Per the root cause, ep_remove() later clears f_ep and continues using this unpinned file, allowing concurrent __fput()/eventpoll_release() to free or recycle the file and associated eventpoll state, creating the UAF condition."
+          },
+          {
+            "vuln_file": "fs/eventpoll.c",
+            "stmt_text": "spin_lock(&file->f_lock);",
+            "location": "hunk",
+            "explanation": "This dereferences the previously unpinned file pointer after the race window. If the file has been freed or recycled by concurrent file release after f_ep handling, locking file->f_lock is a direct use-after-free."
+          },
+          {
+            "vuln_file": "fs/eventpoll.c",
+            "stmt_text": "ep_remove_file(ep, epi, file);",
+            "location": "hunk",
+            "explanation": "This continues operating on the same unreferenced file object and related eventpoll state after the insufficient synchronization described in the root cause. If concurrent release has already destroyed or recycled the file, this call propagates the use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "86e87059e6d1",
+          "anchor_file": "fs/eventpoll.c",
+          "anchor_lineno": 915
+        },
+        "commit": "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+        "commit_short": "e9e5cd40d7c4",
+        "commit_msg": "eventpoll: kill __ep_remove()\n\nRemove the boolean conditional in __ep_remove() and restructure the code\nso the check for",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/eventpoll.c",
+        "display_lineno": 887,
+        "code_snippet": "commit e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Thu Apr 23 11:56:06 2026 +0200\n\n    eventpoll: kill __ep_remove()\n    \n    Remove the boolean conditional in __ep_remove() and restructure the code\n    so the check for racing with eventpoll_release_file() are only done in\n    the ep_remove_safe() path where they belong.\n    \n    Link: https://patch.msgid.link/20260423-work-epoll-uaf-v1-3-2470f9eec0f5@kernel.org\n    Signed-off-by: Christian Bra",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the full removal paths relevant to the stated root cause: `ep_remove_safe()`, `__ep_remove_file()`, and `eventpoll_release_file()`. The root cause was that `ep_remove()` cleared `struct file->f_ep` and then continued to access the same `struct file`/`eventpoll` without first pinning the file, creating a race with `__fput()/eventpoll_release()`. In this commit, the old generic `__ep_remove(..., bool force)` helper is deleted, and the racing checks are moved into the safe path only. In `ep_remove_safe()`, the code first does `ep_unregister_pollwait(ep, epi);`, then checks `if (unlikely(READ_ONCE(epi->dying))) return;`, then under `spin_lock(&file->f_lock)` rechecks `if (epi->dying) { spin_unlock(&file->f_lock); return; }`, and only then calls `__ep_remove_file(ep, epi, file);` followed by `if (__ep_remove_epi(ep, epi)) ...`. In the release path `eventpoll_release_file()`, it marks the item dying with `WRITE_ONCE(epi->dying, true);`, then takes `ep->mtx`, calls `ep_unregister_pollwait(ep, epi);`, takes `spin_lock(&file->f_lock);`, calls `__ep_remove_file(ep, epi, file);`, and then `dispose = __ep_remove_epi(ep, epi);`. This restructuring matches the commit message: removal races with `eventpoll_release_file()` are handled only in `ep_remove_safe()`, and the release path removes the item directly while holding the appropriate locks. The vulnerable construct described in the root cause—clearing `file->f_ep` and then continuing in a way that races with release because the file was not pinned—is not present here as an unchecked shared helper path; instead there is explicit synchronization via `epi->dying`, `READ_ONCE/WRITE_ONCE`, `file->f_lock`, and `ep->mtx`. Therefore this commit version already contains the fix and should not be classified as bug-introducing."
+      }
+    },
+    {
+      "bic_found": "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "86e87059e6d1",
+          "anchor_file": "fs/eventpoll.c",
+          "anchor_lineno": 926
+        },
+        "commit": "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+        "commit_short": "e9e5cd40d7c4",
+        "commit_msg": "eventpoll: kill __ep_remove()\n\nRemove the boolean conditional in __ep_remove() and restructure the code\nso the check for",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/eventpoll.c",
+        "display_lineno": 898,
+        "code_snippet": "commit e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Thu Apr 23 11:56:06 2026 +0200\n\n    eventpoll: kill __ep_remove()\n    \n    Remove the boolean conditional in __ep_remove() and restructure the code\n    so the check for racing with eventpoll_release_file() are only done in\n    the ep_remove_safe() path where they belong.\n    \n    Link: https://patch.msgid.link/20260423-work-epoll-uaf-v1-3-2470f9eec0f5@kernel.org\n    Signed-off-by: Christian Bra",
+        "exists": false,
+        "reason": "The diff is sufficient because it shows the full relevant removal paths and the synchronization logic around `file->f_ep`, `epi->dying`, and `eventpoll_release_file()`. The root cause was that `ep_remove()` cleared `struct file->f_ep` and then continued to access the same `struct file` / `eventpoll` without first pinning the file, creating a race with `__fput()/eventpoll_release()`. In this commit, the unsafe generic helper `__ep_remove()` is deleted entirely. The normal path `ep_remove_safe()` now does `ep_unregister_pollwait(ep, epi);`, checks `READ_ONCE(epi->dying)` before taking `file->f_lock`, then under `spin_lock(&file->f_lock)` rechecks `epi->dying`, calls `__ep_remove_file(ep, epi, file);`, and only then proceeds to `__ep_remove_epi(ep, epi)`. The release path `eventpoll_release_file()` explicitly marks `WRITE_ONCE(epi->dying, true)`, locks `ep->mtx`, performs `ep_unregister_pollwait(ep, epi);`, then under `spin_lock(&file->f_lock)` calls `__ep_remove_file(ep, epi, file);` and `__ep_remove_epi(ep, epi)`. This restructuring matches the commit message: racing checks are done only in `ep_remove_safe()`, while the release path performs removal in a controlled way. The vulnerable construct described in the root cause—clearing `file->f_ep` and then continuing unsafely via the old shared `__ep_remove()` path—is absent because `__ep_remove()` has been removed and the code now uses `epi->dying` synchronization plus lock-protected removal paths."
+      }
+    },
+    {
+      "bic_found": "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "86e87059e6d1",
+          "anchor_file": "fs/eventpoll.c",
+          "anchor_lineno": 931
+        },
+        "commit": "0feaf644f7180c4a91b6b405a881afbfd958f1cf",
+        "commit_short": "0feaf644f718",
+        "commit_msg": "eventpoll: drop vestigial __ prefix from ep_remove_{file,epi}()\n\nWith __ep_remove() gone, the double-underscore on __ep_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/eventpoll.c",
+        "display_lineno": 903,
+        "code_snippet": "commit 0feaf644f7180c4a91b6b405a881afbfd958f1cf\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Fri Apr 24 00:23:18 2026 +0200\n\n    eventpoll: drop vestigial __ prefix from ep_remove_{file,epi}()\n    \n    With __ep_remove() gone, the double-underscore on __ep_remove_file()\n    and __ep_remove_epi() no longer contrasts with a __-less parent and\n    just reads as noise. Rename both to ep_remove_file() and\n    ep_remove_epi(). No functional change.\n    \n    Signed-off-by: Christian Brauner (",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the relevant call flow and states there is 'No functional change'. The root cause is a race where ep_remove() clears file->f_ep and then continues to access the same struct file / struct eventpoll without first pinning the file. In this commit, only renaming occurs: '__ep_remove_file()' becomes 'ep_remove_file()' and '__ep_remove_epi()' becomes 'ep_remove_epi()'. The vulnerable behavior is still present because in both call sites the code still performs 'ep_remove_file(ep, epi, file);' followed by 'if (ep_remove_epi(ep, epi)) ...' or 'dispose = ep_remove_epi(ep, epi);'. Since the commit message explicitly says 'No functional change', there is no indication of any added file pinning, reference taking, or reordering to prevent the race after clearing/removing from file state. Therefore the vulnerable construct remains present and the fix is not included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e9e5cd40d7c4",
+          "anchor_file": "fs/eventpoll.c",
+          "anchor_lineno": 903
+        },
+        "commit": "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+        "commit_short": "e9e5cd40d7c4",
+        "commit_msg": "eventpoll: kill __ep_remove()\n\nRemove the boolean conditional in __ep_remove() and restructure the code\nso the check for",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/eventpoll.c",
+        "display_lineno": 903,
+        "code_snippet": "commit e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Thu Apr 23 11:56:06 2026 +0200\n\n    eventpoll: kill __ep_remove()\n    \n    Remove the boolean conditional in __ep_remove() and restructure the code\n    so the check for racing with eventpoll_release_file() are only done in\n    the ep_remove_safe() path where they belong.\n    \n    Link: https://patch.msgid.link/20260423-work-epoll-uaf-v1-3-2470f9eec0f5@kernel.org\n    Signed-off-by: Christian Bra",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the full removal paths relevant to the described race: `ep_remove_safe()` and `eventpoll_release_file()`, including how `file->f_ep`, `epi->dying`, and `epi->ep` are handled under locking. The vulnerable root cause was that epoll removal cleared `struct file->f_ep` and then continued to access the same `struct file` / related eventpoll objects without first pinning the file, allowing a race with `__fput()/eventpoll_release()`. In this commit, the logic is restructured so the race checks are confined to `ep_remove_safe()` and the release path performs removal in a coordinated way.\n\nIn `ep_remove_safe()` the code first does `ep_unregister_pollwait(ep, epi);`, then explicitly checks `if (unlikely(READ_ONCE(epi->dying))) return;`, then takes `spin_lock(&file->f_lock);` and rechecks `if (epi->dying) { spin_unlock(&file->f_lock); return; }`, and only then calls `__ep_remove_file(ep, epi, file);`. This shows the safe path avoids proceeding when `eventpoll_release_file()` has marked the item dying.\n\nIn `eventpoll_release_file()`, the code marks the item as dying with `WRITE_ONCE(epi->dying, true);`, then locks `ep->mtx`, performs `ep_unregister_pollwait(ep, epi);`, takes `spin_lock(&file->f_lock);`, calls `__ep_remove_file(ep, epi, file);`, and then `dispose = __ep_remove_epi(ep, epi);`. This means the file-release path itself owns the removal once `dying` is set, rather than racing with the normal safe-removal path.\n\nAlso, `__ep_remove_file()` now asserts `lockdep_assert_held(&file->f_lock);`, reinforcing that manipulation of `file->f_ep` happens while holding the file lock. The commit message itself states the restructuring is to ensure the racing checks are done only in `ep_remove_safe()` where they belong, and the code matches that fix pattern.\n\nTherefore, the vulnerable construct is not present in this version, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "0feaf644f7180c4a91b6b405a881afbfd958f1cf",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330": 2,
+        "0feaf644f7180c4a91b6b405a881afbfd958f1cf": 1
+      },
+      "bic_candidates": [
+        "e9e5cd40d7c403e19f21d0f7b8b8ba3a76b58330",
+        "0feaf644f7180c4a91b6b405a881afbfd958f1cf"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

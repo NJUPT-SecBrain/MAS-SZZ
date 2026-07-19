@@ -1,0 +1,305 @@
+{
+  "cveid": "CVE-2026-43194",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "7aa767d0d3d04e50ae94e770db7db8197f666970"
+  ],
+  "ground_truth_bic": "1f59533f9ca5634e7b8914252e48aee9d9cbe501",
+  "predicted_bic": [
+    "ce93718fb7cdbc064c3000ff59e4d3200bdfa744",
+    "572a9d7b6fc7f20f573664063324c086be310c42",
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 46350,
+  "root_cause": {
+    "text": "In `__dev_queue_xmit()` the direct-xmit/qdisc-less path incorrectly propagated device transmit errors for GSO skbs, so a single dropped segment on a `skb->next` list was treated by TCP as if none of the GSO data had been sent, leaving `snd_nxt`/retransmit state inconsistent.",
+    "evidence": "The patch adds `is_list = !!skb->next` and then forces `rc = NETDEV_TX_OK` when a GSO skb was split into a list, with the comment “TCP expects error to mean none of the data was sent,” and the CVE description explains that `tcp_write_xmit()` only sees the last return code for the GSO frame and can misinterpret a partial loss as total failure, causing the stall.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/core/dev.c",
+      "lineno": 4836,
+      "content": "skb = dev_hard_start_xmit(skb, dev, txq, &rc);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/core/dev.c",
+      "lineno": 4838,
+      "content": "if (dev_xmit_complete(rc)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/core/dev.c",
+      "lineno": 4840,
+      "content": "goto out;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In `__dev_queue_xmit()` the direct-xmit/qdisc-less path incorrectly propagated device transmit errors for GSO skbs, so a single dropped segment on a `skb->next` list was treated by TCP as if none of the GSO data had been sent, leaving `snd_nxt`/retransmit state inconsistent.",
+      "evidence_points": "The patch adds `is_list = !!skb->next` and then forces `rc = NETDEV_TX_OK` when a GSO skb was split into a list, with the comment “TCP expects error to mean none of the data was sent,” and the CVE description explains that `tcp_write_xmit()` only sees the last return code for the GSO frame and can misinterpret a partial loss as total failure, causing the stall."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/core/dev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/core/dev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/core/dev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Introduce a local `is_list` flag in `__dev_queue_xmit()` as setup for subsequent transmit-path handling.",
+        "what": "A new local boolean variable, `is_list`, initialized to `false`, was added inside `__dev_queue_xmit()` just before the existing `dev_xmit_recursion()` check in the `if (READ_ONCE(txq->xmit_lock_owner) != cpu)` block.",
+        "how": "At runtime, this change only introduces a new local variable declaration at that point in the function; by itself, the shown hunk does not alter control flow or behavior, but it likely prepares for later logic in the surrounding block to track whether the packet is on a list."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix skb list/GSO transmit handling so partial sends are not reported as errors and completion is detected correctly after unlocking.",
+        "what": "The transmit path in __dev_queue_xmit() was changed to record whether the current skb is a list via `is_list = !!skb->next;` before calling `dev_hard_start_xmit()`. The previous early exit on `dev_xmit_complete(rc)` was removed, and instead the code now forces `rc = NETDEV_TX_OK` when the skb was a list (GSO case). After unlocking the TX lock, it now checks `if (!skb)` to detect completed transmission and exit. If transmission did not complete, it still logs the virtual-device queue warning, and for non-list skbs it sets `rc = -ENETDOWN`.",
+        "how": "This changes error handling for segmented/GSO transmissions so that partial transmission of a single logical packet is not reported as a send failure. For skb lists produced by GSO, the caller is now treated as having successfully handed off the data even if the lower layer returns a non-complete status, matching the expectation that TCP should not see an error when some segments may already have been transmitted. For non-list packets, failure handling remains in place and may return `-ENETDOWN` when the device requests queuing or the queue is stopped."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Move the `-ENETDOWN` return assignment into the dead-loop error path so it is set only when that condition occurs.",
+        "what": "The assignment of `rc = -ENETDOWN;` was moved from after the `if`/`recursion_alert` block to inside the `recursion_alert:` path, immediately after the `net_crit_ratelimited()` call, while the later unconditional assignment was removed.",
+        "how": "The function now sets the return code to `-ENETDOWN` only when the recursion/dead-loop condition is actually hit, instead of unconditionally after the block. This preserves the intended error reporting for that failure path while avoiding overwriting `rc` in cases where execution should continue with a different value."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Introduce a local `is_list` flag in `__dev_queue_xmit()` as setup for subsequent transmit-path handling."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix skb list/GSO transmit handling so partial sends are not reported as errors and completion is detected correctly after unlocking."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Move the `-ENETDOWN` return assignment into the dead-loop error path so it is set only when that condition occurs."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only introduces a local `is_list` flag as preparatory setup and does not address the erroneous error propagation for GSO skb lists in `__dev_queue_xmit()`. It is a refactoring/enablement change, not the vulnerability fix itself."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it fixes qdisc-less/direct transmit handling for skb list/GSO packets so partial segment sends are not wrongly treated as transmit errors, which is the inconsistent TCP state issue described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The change only moves the -ENETDOWN assignment into a specific dead-loop error path. It does not address the direct-xmit/qdisc-less GSO error propagation issue where a dropped segment on an skb->next list was incorrectly treated as if no GSO data had been sent."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/core/dev.c",
+            "lineno": 4836,
+            "content": "skb = dev_hard_start_xmit(skb, dev, txq, &rc);",
+            "rationale": "This direct-xmit call is where the skb/GSO list is transmitted and the return code is captured; the bug is that partial transmission/error handling from this path was propagated incorrectly to TCP as a full send failure."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/core/dev.c",
+            "lineno": 4838,
+            "content": "if (dev_xmit_complete(rc)) {",
+            "rationale": "This completion check governs whether the transmit result is treated as fully complete; with GSO skb lists, the pre-fix logic could misclassify partial progress or a dropped segment as an error/complete failure state."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/core/dev.c",
+            "lineno": 4840,
+            "content": "goto out;",
+            "rationale": "This exit path is taken when transmit completion is detected; in the buggy flow, incorrect completion/error propagation could cause TCP to believe nothing was sent, leaving snd_nxt and retransmit state inconsistent."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/core/dev.c",
+            "stmt_text": "skb = dev_hard_start_xmit(skb, dev, txq, &rc);",
+            "location": "hunk",
+            "explanation": "This direct transmit call is where a GSO skb list is handed off and the transmit status is captured. In the vulnerable logic, partial progress or a dropped segment could be propagated as a full failure, causing TCP to incorrectly treat already-sent GSO data as unsent."
+          },
+          {
+            "vuln_file": "net/core/dev.c",
+            "stmt_text": "if (dev_xmit_complete(rc)) {",
+            "location": "hunk",
+            "explanation": "This completion test determines whether the direct-xmit path is considered fully done. The bug was that this logic could misclassify a partial GSO/list transmit situation, leading to incorrect error propagation to TCP."
+          },
+          {
+            "vuln_file": "net/core/dev.c",
+            "stmt_text": "goto out;",
+            "location": "hunk",
+            "explanation": "This exit path is reached when transmit completion is detected. In the vulnerable flow, the wrong completion/error handling could terminate processing in a way that made TCP believe none of the GSO payload had been sent."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f0a2f2aadbef",
+          "anchor_file": "net/core/dev.c",
+          "anchor_lineno": 4836
+        },
+        "commit": "ce93718fb7cdbc064c3000ff59e4d3200bdfa744",
+        "commit_short": "ce93718fb7cd",
+        "commit_msg": "net: Don't keep around original SKB when we software segment GSO frames.\n\nJust maintain the list properly by returning t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/dev.c",
+        "display_lineno": 2897,
+        "code_snippet": "commit ce93718fb7cdbc064c3000ff59e4d3200bdfa744\nAuthor: David S. Miller <davem@davemloft.net>\nDate:   Sat Aug 30 19:22:20 2014 -0700\n\n    net: Don't keep around original SKB when we software segment GSO frames.\n    \n    Just maintain the list properly by returning the head of the remaining\n    SKB list from dev_hard_start_xmit().\n    \n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/core/dev.c b/net/core/dev.c\nindex 75bc5b068a13..c89da4f306b1 100644\n--- a/net/core/dev.c",
+        "exists": false,
+        "reason": "The snippet shows the updated transmit path, not the buggy one. The root-cause bug was that `__dev_queue_xmit()`/direct xmit incorrectly propagated transmit errors for GSO skb lists, but here `dev_hard_start_xmit()` has been changed to return the remaining skb list head and `__dev_queue_xmit()` now assigns `skb = dev_hard_start_xmit(skb, dev, txq, &rc);`. The old behavior that consumed or freed the original skb incorrectly is gone. Also, in `validate_xmit_skb()` the old `dev_gso_segment()`/`skb->next` destructor scheme was removed and replaced with `segs = skb_gso_segment(skb, features); kfree_skb(skb); if (IS_ERR(segs)) segs = NULL; skb = segs;`, which prevents keeping the original skb around. So the vulnerable construct is absent and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "ce93718fb7cdbc064c3000ff59e4d3200bdfa744",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f0a2f2aadbef",
+          "anchor_file": "net/core/dev.c",
+          "anchor_lineno": 4838
+        },
+        "commit": "572a9d7b6fc7f20f573664063324c086be310c42",
+        "commit_short": "572a9d7b6fc7",
+        "commit_msg": "net: allow to propagate errors through ->ndo_hard_start_xmit()\n\nCurrently the ->ndo_hard_start_xmit() callbacks are only",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/dev.c",
+        "display_lineno": 2027,
+        "code_snippet": "commit 572a9d7b6fc7f20f573664063324c086be310c42\nAuthor: Patrick McHardy <kaber@trash.net>\nDate:   Tue Nov 10 06:14:14 2009 +0000\n\n    net: allow to propagate errors through ->ndo_hard_start_xmit()\n    \n    Currently the ->ndo_hard_start_xmit() callbacks are only permitted to return\n    one of the NETDEV_TX codes. This prevents any kind of error propagation for\n    virtual devices, like queue congestion of the underlying device in case of\n    layered devices, or unreachability in case of tunnels.",
+        "exists": false,
+        "reason": "The shown code already contains the fix for the GSO/qdisc-less error-propagation issue. In `dev_hard_start_xmit()` the loop over GSO segments now checks `if (unlikely(rc != NETDEV_TX_OK)) { if (rc & ~NETDEV_TX_MASK) goto out_kfree_gso_skb; ... return rc; }`, and the new `out_kfree_gso_skb:` path returns the driver error code instead of always forcing success. More importantly for the root cause, `dev_queue_xmit()` no longer assumes success from `dev_hard_start_xmit()`: it now does `rc = dev_hard_start_xmit(skb, dev, txq);` and uses `if (dev_xmit_complete(rc)) { ... goto out; }`, where `dev_xmit_complete()` treats `rc < 0` and `rc & NET_XMIT_MASK` as completed/consumed cases. This means the vulnerable construct where a transmit error in the direct-xmit path would be lost is not present here, so has_bug=false and is_fixed=true."
+      }
+    },
+    {
+      "bic_found": "572a9d7b6fc7f20f573664063324c086be310c42",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f0a2f2aadbef",
+          "anchor_file": "net/core/dev.c",
+          "anchor_lineno": 4840
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/dev.c",
+        "display_lineno": 1309,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The shown `dev_queue_xmit()` implementation does include the direct/no-queue transmit path (`if (dev->flags & IFF_UP) { ... if (!dev->hard_start_xmit(skb, dev)) { ... } }`), but it does not show the vulnerable GSO-specific construct from the root cause. There is no GSO/TSO list handling, no `skb->next` list processing, and no logic that propagates transmit errors for a multi-segment skb differently from a normal skb. The only error path here is a generic `rc = -ENETDOWN; ... kfree_skb(skb); return rc;`, which is not the described bug. Since the vulnerable construct is absent from this function body, `has_bug` is false and there is no evidence of the later fix being present either."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "ce93718fb7cdbc064c3000ff59e4d3200bdfa744": 1,
+        "572a9d7b6fc7f20f573664063324c086be310c42": 1,
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 1
+      },
+      "bic_candidates": [
+        "ce93718fb7cdbc064c3000ff59e4d3200bdfa744",
+        "572a9d7b6fc7f20f573664063324c086be310c42",
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

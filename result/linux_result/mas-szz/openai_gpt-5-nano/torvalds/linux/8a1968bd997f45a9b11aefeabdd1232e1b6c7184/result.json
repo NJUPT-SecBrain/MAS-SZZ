@@ -1,0 +1,395 @@
+{
+  "cveid": "CVE-2026-23161",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "8a1968bd997f45a9b11aefeabdd1232e1b6c7184"
+  ],
+  "ground_truth_bic": "809bc86517cc408b5b8cb8e08e69096639432bc8",
+  "predicted_bic": [
+    "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+    "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+    "245132643e1cfcd145bbc86a716c1818371fcb93"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 24,
+  "llm_tokens": 34518,
+  "root_cause": {
+    "text": "A race in mm/shmem’s shmem_free_swap() read the XArray swap-entry order without holding the XArray lock, so truncate could act on a stale or enlarged multi-page swap entry after it had been split or replaced, freeing/erasing pages past the intended range.",
+    "evidence": "The CVE/commit explicitly says shmem_free_swap() used xa_get_order “without lock protection” before xa_cmpxchg_irq, allowing an “outdated order value” if the entry was split or changed; the patch fixes this by moving order retrieval and validation into the same xas_lock_irq critical section and by rejecting entries whose computed range “base + nr_pages - 1 > end.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/shmem.c",
+      "lineno": 967,
+      "content": "int order = xa_get_order(&mapping->i_pages, index);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/shmem.c",
+      "lineno": 973,
+      "content": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/shmem.c",
+      "lineno": 975,
+      "content": "return 1 << order;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race in mm/shmem’s shmem_free_swap() read the XArray swap-entry order without holding the XArray lock, so truncate could act on a stale or enlarged multi-page swap entry after it had been split or replaced, freeing/erasing pages past the intended range.",
+      "evidence_points": "The CVE/commit explicitly says shmem_free_swap() used xa_get_order “without lock protection” before xa_cmpxchg_irq, allowing an “outdated order value” if the entry was split or changed; the patch fixes this by moving order retrieval and validation into the same xas_lock_irq critical section and by rejecting entries whose computed range “base + nr_pages - 1 > end.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "mm/shmem.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix shmem_free_swap() to only remove and free a multi-page swap entry when the entire entry falls within the requested index range.",
+        "what": "The function shmem_free_swap() was changed to take an additional pgoff_t end parameter, replacing a direct xa_get_order()/xa_cmpxchg_irq() sequence with an XA_STATE-based lookup and lock. It now loads the entry at the given index, verifies it matches radswap, computes the number of pages from xas_get_order(), rounds down to the entry's base index, checks that the entire multi-page range lies within [index, end], conditionally clears the xarray slot with xas_store(NULL), and returns nr_pages instead of always returning 1 << order or 0.",
+        "how": "At runtime, this change makes swap freeing aware of the full bounds of a potentially multi-page xarray entry before removing it and freeing swap/cache. It prevents deleting and freeing a large-order swap entry when the requested range only partially covers that entry, avoiding incorrect removal or freeing outside the caller's intended page range. When the whole entry is covered, behavior remains to remove the entry and free the corresponding number of swap pages."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Pass the end-of-range index to shmem_free_swap() in shmem_undo_range() so swap entries are freed correctly within the target range.",
+        "what": "The call to shmem_free_swap() inside shmem_undo_range() was changed from passing three arguments `(mapping, indices[i], folio)` to passing four arguments `(mapping, indices[i], end - 1, folio)`, with only line wrapping adjusted for formatting.",
+        "how": "At runtime, shmem_free_swap() now receives an additional upper-bound/index value of `end - 1`, allowing swap freeing to be constrained or processed with awareness of the range end instead of operating only from the current index and folio. This changes behavior by making swap cleanup range-sensitive in this path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix shmem undo-range handling to correctly skip large swap entries that cross the end boundary instead of retrying them as replaced pages.",
+        "what": "In shmem_undo_range(), the call to shmem_free_swap() was changed to pass an additional end - 1 argument, and when shmem_free_swap() returns 0 the code now declares an order variable, calls shmem_confirm_swap(mapping, indices[i], radix_to_swp_entry(folio)), and skips the entry if it is a large swap entry whose covered range extends past end; otherwise it keeps the existing retry path by resetting index and breaking.",
+        "how": "This changes truncation/undo-range handling for swap-backed shmem so that large swap entries spanning beyond the truncation boundary are recognized and not incorrectly retried as if they were replaced by a page. It allows partial-range handling to leave cross-boundary large swap entries in place after their relevant portion has been zeroed, avoiding wrong retry behavior during execution."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix shmem undo-range handling to correctly skip large swap entries that cross the end boundary instead of retrying them as replaced pages."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix shmem undo-range swap handling so multi-page swap entries are only freed when fully within the requested range and are correctly skipped at range boundaries.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly modify shmem_free_swap()/shmem_undo_range() range handling for multi-page swap entries, preventing freeing or erasing pages beyond the intended truncate range at entry boundaries—the same failure mode described in the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 967,
+            "content": "int order = xa_get_order(&mapping->i_pages, index);",
+            "rationale": "This is the direct root cause: it reads the XArray entry order before taking the XArray lock/atomic replacement path, so the order can become stale if truncate or another thread splits/replaces the multi-page swap entry."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 973,
+            "content": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+            "rationale": "This uses the potentially stale order read earlier to free multiple swap slots, which can free beyond the intended entry/range after the entry was split or replaced."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/shmem.c",
+            "lineno": 975,
+            "content": "return 1 << order;",
+            "rationale": "This propagates the stale enlarged order as the number of pages handled, causing callers such as truncate/undo-range logic to skip or erase pages past the intended range."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "mm/shmem.c",
+            "lineno": 1127,
+            "content": "nr_swaps_freed += shmem_free_swap(mapping,",
+            "rationale": "The caller invoked shmem_free_swap() with only the starting index and no end-boundary information, allowing a multi-page swap entry extending beyond the requested range to be freed based on stale or oversized order."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "mm/shmem.c",
+            "lineno": 1198,
+            "content": "swaps_freed = shmem_free_swap(mapping, indices[i], folio);",
+            "rationale": "This call site similarly lacked range-end validation, so if shmem_free_swap() observed a stale/enlarged order it could free a large swap entry crossing the truncate boundary and mis-handle retry logic."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "int order = xa_get_order(&mapping->i_pages, index);",
+            "location": "hunk",
+            "explanation": "This statement reads the XArray swap-entry order without holding the XArray lock, creating the race described in the root cause. The resulting stale or enlarged order can later be used after the entry has been split or replaced."
+          },
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);",
+            "location": "hunk",
+            "explanation": "This statement consumes the potentially stale order value to free multiple swap slots, which can free pages beyond the intended truncate range when the multi-page entry has changed concurrently."
+          },
+          {
+            "vuln_file": "mm/shmem.c",
+            "stmt_text": "return 1 << order;",
+            "location": "hunk",
+            "explanation": "This returns the stale multi-page size derived from the unlocked order read, causing callers to believe more pages were handled and potentially skip or erase pages past the intended range."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 967
+        },
+        "commit": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "commit_short": "6ea0d1ccb110",
+        "commit_msg": "mm: shmem: return number of pages beeing freed in shmem_free_swap\n\nBoth shmem_free_swap callers expect the number of pag",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 866,
+        "code_snippet": "commit 6ea0d1ccb110387244e04637f28a1d2eda54e3fb\nAuthor: Daniel Gomez <da.gomez@samsung.com>\nDate:   Mon Aug 12 15:42:04 2024 +0800\n\n    mm: shmem: return number of pages beeing freed in shmem_free_swap\n    \n    Both shmem_free_swap callers expect the number of pages being freed.  In\n    the large folios context, this needs to support larger values other than 0\n    (used as 1 page being freed) and -ENOENT (used as 0 pages being freed).\n    In preparation for large folios adoption, make shmem_free",
+        "exists": true,
+        "reason": "The function body is sufficient to assess the race. In `shmem_free_swap()`, the code reads `int order = xa_get_order(&mapping->i_pages, index);` before performing `old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);`. This means the XArray entry order is fetched without first holding the XArray lock protecting the entry state. The root cause describes exactly this pattern: reading the XArray swap-entry order without the XArray lock, allowing truncate to act on a stale or changed multi-page swap entry after it has been split or replaced. Here, the returned page count and the call `free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);` both depend on that unlocked `order` value. If the entry changes size/order before the locked cmpxchg removes it, `1 << order` may no longer match the actual entry being removed, matching the vulnerable construct. There is no visible fix here such as obtaining the order under the XArray lock / from the locked entry state after successful removal, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "50f381eccefd",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 866
+        },
+        "commit": "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+        "commit_short": "55f3f7eab75c",
+        "commit_msg": "XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n\nThese convenience wrappers match the other _irq and _bh wrappers we\nalread",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 664,
+        "code_snippet": "commit 55f3f7eab75c10d9b33d122670b5935ab64db50f\nAuthor: Matthew Wilcox <willy@infradead.org>\nDate:   Mon Nov 26 16:08:43 2018 -0500\n\n    XArray: Add xa_cmpxchg_irq and xa_cmpxchg_bh\n    \n    These convenience wrappers match the other _irq and _bh wrappers we\n    already have.  It turns out I'd already open-coded xa_cmpxchg_irq()\n    in the shmem code, so convert that.\n    \n    Signed-off-by: Matthew Wilcox <willy@infradead.org>\n\ndiff --git a/mm/shmem.c b/mm/shmem.c\nindex cddc72ac44d8..6adbdd3498",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the entire relevant operation in `shmem_free_swap()`: the code performs a compare-exchange on `mapping->i_pages` at a single `index` and then frees the swap entry. The root cause is reading/using the XArray swap-entry order without holding the XArray lock across validation of the multi-page entry's extent, allowing truncate to operate on stale or changed entries. In this commit, the function only does `old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);` (previously open-coded as `xa_lock_irq(); __xa_cmpxchg(...); xa_unlock_irq();`) and then `if (old != radswap) return -ENOENT; free_swap_and_cache(radix_to_swp_entry(radswap));`. This change is merely a wrapper substitution for the same locked cmpxchg and does not add any logic to safely read/check the swap-entry order or otherwise prevent acting on a stale/enlarged multi-page swap entry after split/replacement. Thus the vulnerable construct is still present, and the fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "eff3860bbfed",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 664
+        },
+        "commit": "b93b016313b3ba8003c3b8bb71f569af91f19fc7",
+        "commit_short": "b93b016313b3",
+        "commit_msg": "page cache: use xa_lock\n\nRemove the address_space ->tree_lock and use the xa_lock newly added to\nthe radix_tree_root.  R",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 665,
+        "code_snippet": "commit b93b016313b3ba8003c3b8bb71f569af91f19fc7\nAuthor: Matthew Wilcox <willy@infradead.org>\nDate:   Tue Apr 10 16:36:56 2018 -0700\n\n    page cache: use xa_lock\n    \n    Remove the address_space ->tree_lock and use the xa_lock newly added to\n    the radix_tree_root.  Rename the address_space ->page_tree to ->i_pages,\n    since we don't really care that it's a tree.\n    \n    [willy@infradead.org: fix nds32, fs/dax.c]\n      Link: http://lkml.kernel.org/r/20180406145415.GB20605@bombadil.infradead.o",
+        "exists": false,
+        "reason": "The shown function body only performs deletion of a specific radix-tree/XArray item under the mapping lock: `xa_lock_irq(&mapping->i_pages); ... radix_tree_delete_item(&mapping->i_pages, index, radswap); ... xa_unlock_irq(&mapping->i_pages);`. The root cause described is a race in `shmem_free_swap()` where the code reads the XArray swap-entry order without holding the XArray lock, allowing truncate to act on stale or changed multi-page swap entries. This snippet does not show any read of swap-entry order, any multi-page entry handling, or the broader `shmem_free_swap()` logic that decides ranges based on entry order. So the relevant vulnerable construct is not visible here, but critical context is missing to determine whether the larger function still contains the race or already includes the fix."
+      }
+    },
+    {
+      "bic_found": "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 973
+        },
+        "commit": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "commit_short": "6ea0d1ccb110",
+        "commit_msg": "mm: shmem: return number of pages beeing freed in shmem_free_swap\n\nBoth shmem_free_swap callers expect the number of pag",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 872,
+        "code_snippet": "commit 6ea0d1ccb110387244e04637f28a1d2eda54e3fb\nAuthor: Daniel Gomez <da.gomez@samsung.com>\nDate:   Mon Aug 12 15:42:04 2024 +0800\n\n    mm: shmem: return number of pages beeing freed in shmem_free_swap\n    \n    Both shmem_free_swap callers expect the number of pages being freed.  In\n    the large folios context, this needs to support larger values other than 0\n    (used as 1 page being freed) and -ENOENT (used as 0 pages being freed).\n    In preparation for large folios adoption, make shmem_free",
+        "exists": true,
+        "reason": "The function body is sufficient to decide because it shows exactly how the swap-entry order is obtained and used. In `shmem_free_swap()`, the code reads `int order = xa_get_order(&mapping->i_pages, index);` before performing `old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);`. This matches the root cause: the XArray order is read without holding the XArray lock, and only afterward does the code perform the locked/atomic replacement. If another thread truncates, splits, or replaces the multi-page swap entry between these two operations, `order` can be stale or too large. That stale `order` is then used in `free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);` and returned via `return 1 << order;`, which can free/count more pages than intended. The fix described by the root cause would require obtaining/validating the order under the XArray lock or after successful locked lookup/replacement; that handling is not present here. Therefore the vulnerable construct is present and the fix is not."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "50f381eccefd",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 872
+        },
+        "commit": "7a5d0fbb29936fad7f17b1cb001b0c33a5f13328",
+        "commit_short": "7a5d0fbb2993",
+        "commit_msg": "tmpfs: convert shmem_truncate_range to radix-swap\n\nDisable the toy swapping implementation in shmem_writepage() - it's h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 326,
+        "code_snippet": "commit 7a5d0fbb29936fad7f17b1cb001b0c33a5f13328\nAuthor: Hugh Dickins <hughd@google.com>\nDate:   Wed Aug 3 16:21:22 2011 -0700\n\n    tmpfs: convert shmem_truncate_range to radix-swap\n    \n    Disable the toy swapping implementation in shmem_writepage() - it's hard\n    to support two schemes at once - and convert shmem_truncate_range() to a\n    lockless gang lookup of swap entries along with pages, freeing both.\n    \n    Since the second loop tightens its noose until all entries of either\n    kind ",
+        "exists": false,
+        "reason": "The snippet is sufficient because it includes the full introduced logic for `shmem_free_swap()` and its callers in `shmem_truncate_range()`, which is the area relevant to the stated race. The root cause requires reading a swap-entry order from the XArray/radix entry without holding the tree lock, then acting on that stale or enlarged multi-page entry. In this commit's `shmem_free_swap()`, the function does not inspect any order or range metadata from the swap entry at all. Instead it takes `mapping->tree_lock`, then calls `shmem_radix_tree_replace(mapping, index, radswap, NULL)`, and `shmem_radix_tree_replace()` rechecks under lock that `item == expected` before deleting: `if (item != expected) return -ENOENT; ... else radix_tree_delete(&mapping->page_tree, index);`. Only after a successful locked delete does it call `free_swap_and_cache(radix_to_swp_entry(radswap));`. This shows the later vulnerable construct described in the root cause is absent here. However, the code also does not contain the eventual fix for multi-page swap-entry order handling under lock, because there is no handling of entry order/splitting at all—only single-entry exceptional radix entries are deleted by exact pointer match. Therefore the vulnerable construct from the root cause is not present in this version (`has_bug=false`), but the specific fix is also not present (`is_fixed=false`)."
+      }
+    },
+    {
+      "bic_found": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6c790212c588",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 975
+        },
+        "commit": "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "commit_short": "6ea0d1ccb110",
+        "commit_msg": "mm: shmem: return number of pages beeing freed in shmem_free_swap\n\nBoth shmem_free_swap callers expect the number of pag",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 874,
+        "code_snippet": "commit 6ea0d1ccb110387244e04637f28a1d2eda54e3fb\nAuthor: Daniel Gomez <da.gomez@samsung.com>\nDate:   Mon Aug 12 15:42:04 2024 +0800\n\n    mm: shmem: return number of pages beeing freed in shmem_free_swap\n    \n    Both shmem_free_swap callers expect the number of pages being freed.  In\n    the large folios context, this needs to support larger values other than 0\n    (used as 1 page being freed) and -ENOENT (used as 0 pages being freed).\n    In preparation for large folios adoption, make shmem_free",
+        "exists": true,
+        "reason": "The vulnerable construct is present in `shmem_free_swap()`. The function reads `int order = xa_get_order(&mapping->i_pages, index);` before performing `old = xa_cmpxchg_irq(&mapping->i_pages, index, radswap, NULL, 0);`. The root cause says `shmem_free_swap()` must not read the XArray swap-entry order without holding the XArray lock, because truncate can race with split/replacement and make that order stale or enlarged. In this snippet, `xa_get_order()` is done outside the locked cmpxchg operation and there is no surrounding XArray lock held while reading the order. The function then uses that potentially stale value in `free_swap_and_cache_nr(radix_to_swp_entry(radswap), 1 << order);` and returns `1 << order`, which means an incorrect order can cause freeing more pages than intended. Therefore the buggy logic is clearly present. The fix is not present here because there is no protected/locked retrieval of the order tied to the successful removal of the entry; instead the order is fetched first, unsafely, exactly matching the described race."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "50f381eccefd",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 874
+        },
+        "commit": "6a15a37097c7e02390bb08d83dac433c9f10144f",
+        "commit_short": "6a15a37097c7",
+        "commit_msg": "mm, proc: reduce cost of /proc/pid/smaps for shmem mappings\n\nThe previous patch has improved swap accounting for shmem m",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 363,
+        "code_snippet": "commit 6a15a37097c7e02390bb08d83dac433c9f10144f\nAuthor: Vlastimil Babka <vbabka@kernel.org>\nDate:   Thu Jan 14 15:19:20 2016 -0800\n\n    mm, proc: reduce cost of /proc/pid/smaps for shmem mappings\n    \n    The previous patch has improved swap accounting for shmem mapping, which\n    however made /proc/pid/smaps more expensive for shmem mappings, as we\n    consult the radix tree for each pte_none entry, so the overal complexity\n    is O(n*log(n)).\n    \n    We can reduce this significantly for mappi",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the relevant XArray/radix-tree traversal logic done without the tree lock. The added function `shmem_swap_usage()` explicitly states it is 'safe to call without i_mutex or mapping->tree_lock thanks to RCU', and then walks `mapping->page_tree` under only `rcu_read_lock()`. In the loop, it does `page = radix_tree_deref_slot(slot);` and only checks `radix_tree_exceptional_entry(page)` to count swapped entries, but it does not hold the tree lock or otherwise stabilize the order/size metadata of exceptional swap entries while inspecting them. The root cause of the vulnerability is reading swap-entry order without the XArray lock, allowing races with truncate/split/replace of multi-page swap entries. This function contains that unlocked tree walk over swap entries, so the vulnerable construct is present. There is no fix here that would add locking or otherwise safely handle swap-entry order under concurrent modification; the code relies solely on RCU and restart logic, which does not address the stated race. Therefore `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "c261e7d94f0d",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 363
+        },
+        "commit": "245132643e1cfcd145bbc86a716c1818371fcb93",
+        "commit_short": "245132643e1c",
+        "commit_msg": "SHM_UNLOCK: fix Unevictable pages stranded after swap\n\nCommit cc39c6a9bbde (\"mm: account skipped entries to avoid loopin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 395,
+        "code_snippet": "commit 245132643e1cfcd145bbc86a716c1818371fcb93\nAuthor: Hugh Dickins <hughd@google.com>\nDate:   Fri Jan 20 14:34:21 2012 -0800\n\n    SHM_UNLOCK: fix Unevictable pages stranded after swap\n    \n    Commit cc39c6a9bbde (\"mm: account skipped entries to avoid looping in\n    find_get_pages\") correctly fixed an infinite loop; but left a problem\n    that find_get_pages() on shmem would return 0 (appearing to callers to\n    mean end of tree) when it meets a run of nr_pages swap entries.\n    \n    The only ",
+        "exists": true,
+        "reason": "The root cause concerns `shmem_free_swap()` reading XArray swap-entry order without holding the XArray lock, allowing truncate to act on stale/enlarged multi-page swap entries after split/replace. This diff shows the relevant area around `shmem_free_swap` only as context (`@@ -379,7 +379,7 @@ static int shmem_free_swap(struct address_space *mapping,`), but all actual changes are unrelated: renaming `shmem_pagevec_release()` to `shmem_deswap_pagevec()`, adding `shmem_unlock_mapping()`, and replacing call sites in `shmem_truncate_range()` with `shmem_deswap_pagevec(&pvec); pagevec_release(&pvec);`. There is no added locking, no XArray/xa_lock handling, and no change to the swap-entry order handling in `shmem_free_swap()`. Since the vulnerable function/logic is not fixed here and the commit is about SHM_UNLOCK/Unevictable pages, this commit version still contains the vulnerable construct. The snippet is sufficient because it clearly shows that the commit does not modify the relevant race-prone logic at all."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "85046579bde1",
+          "anchor_file": "mm/shmem.c",
+          "anchor_lineno": 395
+        },
+        "commit": "7a5d0fbb29936fad7f17b1cb001b0c33a5f13328",
+        "commit_short": "7a5d0fbb2993",
+        "commit_msg": "tmpfs: convert shmem_truncate_range to radix-swap\n\nDisable the toy swapping implementation in shmem_writepage() - it's h",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/shmem.c",
+        "display_lineno": 343,
+        "code_snippet": "commit 7a5d0fbb29936fad7f17b1cb001b0c33a5f13328\nAuthor: Hugh Dickins <hughd@google.com>\nDate:   Wed Aug 3 16:21:22 2011 -0700\n\n    tmpfs: convert shmem_truncate_range to radix-swap\n    \n    Disable the toy swapping implementation in shmem_writepage() - it's hard\n    to support two schemes at once - and convert shmem_truncate_range() to a\n    lockless gang lookup of swap entries along with pages, freeing both.\n    \n    Since the second loop tightens its noose until all entries of either\n    kind ",
+        "exists": false,
+        "reason": "The snippet shows the relevant shmem_free_swap() logic clearly, so it is sufficient. The root cause is reading the XArray/radix swap-entry order without holding the tree lock and then acting on a stale or enlarged multi-page swap entry. In this commit, shmem_free_swap() does not inspect any swap-entry order at all: it takes a specific radix-tree item pointer `radswap` obtained earlier and then removes it under `mapping->tree_lock` via `shmem_radix_tree_replace(mapping, index, radswap, NULL)`. That helper explicitly rechecks under lock: `pslot = radix_tree_lookup_slot(&mapping->page_tree, index); ... if (item != expected) return -ENOENT;` and only then deletes/replaces the slot. So the vulnerable construct described in the root cause—reading the entry order locklessly and using that order to free/erase beyond the intended range—is absent from this function body. However, this code also does not contain the later fix for multi-page swap-entry order handling; there is no logic here that reads or validates swap-entry order under lock because this older radix-tree exceptional-entry scheme predates that fix. Therefore `has_bug` is false for this function as shown, and `is_fixed` is also false because the specific fix is not present here."
+      }
+    },
+    {
+      "bic_found": "245132643e1cfcd145bbc86a716c1818371fcb93",
+      "depth": 3
+    },
+    {
+      "bic_votes": {
+        "55f3f7eab75c10d9b33d122670b5935ab64db50f": 1,
+        "6ea0d1ccb110387244e04637f28a1d2eda54e3fb": 1,
+        "245132643e1cfcd145bbc86a716c1818371fcb93": 1
+      },
+      "bic_candidates": [
+        "55f3f7eab75c10d9b33d122670b5935ab64db50f",
+        "6ea0d1ccb110387244e04637f28a1d2eda54e3fb",
+        "245132643e1cfcd145bbc86a716c1818371fcb93"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,202 @@
+{
+  "cveid": "CVE-2026-46041",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6b526dca0966f2370835765019a54319b78fca8d"
+  ],
+  "ground_truth_bic": "ec558bbfea671ac020a6dc6be8bf8f0ee556cce0",
+  "predicted_bic": [
+    "ec558bbfea671ac020a6dc6be8bf8f0ee556cce0"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 18566,
+  "root_cause": {
+    "text": "The greybus gb-beagleplay HDLC transmit path wrongly embedded a blocking wait (`usleep_range()`) inside `hdlc_append()`, even though that function is invoked from `hdlc_tx_frames()` while holding the `tx_producer_lock` spinlock, causing a sleep in atomic context when the TX circular buffer filled.",
+    "evidence": "The CVE/commit explicitly states \"`hdlc_append() calls usleep_range() ... but it is called with tx_producer_lock (a spinlock) held`\"; in the patch, `hdlc_append()` removes the loop with `usleep_range(3000, 5000)` and adds `lockdep_assert_held(&bg->tx_producer_lock)`, while the wait-for-space logic is moved to `hdlc_tx_frames()` before `spin_lock(&bg->tx_producer_lock)`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/greybus/gb-beagleplay.c",
+      "lineno": 267,
+      "content": "usleep_range(3000, 5000);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The greybus gb-beagleplay HDLC transmit path wrongly embedded a blocking wait (`usleep_range()`) inside `hdlc_append()`, even though that function is invoked from `hdlc_tx_frames()` while holding the `tx_producer_lock` spinlock, causing a sleep in atomic context when the TX circular buffer filled.",
+      "evidence_points": "The CVE/commit explicitly states \"`hdlc_append() calls usleep_range() ... but it is called with tx_producer_lock (a spinlock) held`\"; in the patch, `hdlc_append()` removes the loop with `usleep_range(3000, 5000)` and adds `lockdep_assert_held(&bg->tx_producer_lock)`, while the wait-for-space logic is moved to `hdlc_tx_frames()` before `spin_lock(&bg->tx_producer_lock)`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/greybus/gb-beagleplay.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/greybus/gb-beagleplay.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Refactor hdlc_append() into a non-blocking single-byte buffer append helper that asserts caller-held locking and buffer-space preconditions.",
+        "what": "The patch updates the hdlc_append() comment to say it queues a single HDLC byte and requires the caller to hold tx_producer_lock and ensure buffer space beforehand, removes the internal while(true) retry loop, initializes head from bg->tx_circ_buf.head and tail via READ_ONCE(), adds lockdep_assert_held(&bg->tx_producer_lock), adds a WARN_ON_ONCE() check that returns if the circular buffer has no space, and keeps the byte write plus smp_store_release() head advance with a revised visibility comment.",
+        "how": "At runtime, hdlc_append() no longer blocks and repeatedly sleeps waiting for transmit buffer space; instead it becomes a single-attempt append that assumes its preconditions are already satisfied, emits a warning and drops out if called without available space, and verifies locking in debug builds. This shifts flow control responsibility to the caller and prevents sleeping/spinning behavior inside this low-level byte append helper."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Prevent partial HDLC frame transmission and sleeping under the producer lock by waiting for sufficient TX buffer space before atomically enqueueing a complete frame.",
+        "what": "The change adds a new helper function, hdlc_encoded_length(), to compute the worst-case encoded size of an HDLC frame from its payloads; introduces retry and sleep constants for transmit buffer waiting; and updates hdlc_tx_frames() to precompute required space, poll for enough circular-buffer room outside the spinlock using head/tail checks plus schedule_work() and usleep_range(), then recheck available space after acquiring tx_producer_lock and drop the frame with a ratelimited warning if space is still unavailable before proceeding with frame append operations.",
+        "how": "At runtime, transmission now waits briefly for enough room in the TX circular buffer before taking the producer spinlock, which avoids sleeping in atomic context and prevents writing partial HDLC frames when buffer space is insufficient. If space does not become available after retries, or unexpectedly disappears before the locked write, the frame is safely dropped and a warning is logged."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor hdlc_append() into a non-blocking single-byte buffer append helper that asserts caller-held locking and buffer-space preconditions."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Prevent partial HDLC frame transmission and sleeping under the producer lock by waiting for sufficient TX buffer space before atomically enqueueing a complete frame."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is that hdlc_append() could block with usleep_range() while called under a spinlock. This change directly refactors hdlc_append() into a non-blocking helper and enforces caller-held lock/buffer-space assumptions, which addresses that atomic-context sleep issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly targets the root cause: it moves the wait for TX buffer space out of the locked enqueue path so a complete HDLC frame is only appended atomically once enough space exists, avoiding usleep/sleep while holding the spinlock and preventing partial transmission."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/greybus/gb-beagleplay.c",
+            "lineno": 267,
+            "content": "usleep_range(3000, 5000);",
+            "rationale": "This is the direct blocking sleep inside hdlc_append(); because hdlc_append() is called while tx_producer_lock is held, this causes sleeping in atomic context when the TX circular buffer is full."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/greybus/gb-beagleplay.c",
+            "lineno": 321,
+            "content": "spin_lock(&bg->tx_producer_lock);",
+            "rationale": "This shows the caller holds a spinlock before invoking the append helpers, making any sleep in the transmit path invalid and exposing the atomic-context sleep bug."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/greybus/gb-beagleplay.c",
+            "lineno": 255,
+            "content": "while (true) {",
+            "rationale": "The retry loop keeps hdlc_append() waiting until buffer space appears; combined with the embedded usleep_range(), it turns the append helper into a blocking wait while under the producer spinlock."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/greybus/gb-beagleplay.c",
+            "lineno": 323,
+            "content": "hdlc_append_tx_frame(bg);",
+            "rationale": "This call occurs after acquiring tx_producer_lock and enters the append path that can block, helping identify the call chain that triggers the sleep-in-atomic-context bug."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/greybus/gb-beagleplay.c",
+            "stmt_text": "usleep_range(3000, 5000);",
+            "location": "hunk",
+            "explanation": "This is the blocking sleep embedded in the HDLC append path. Because hdlc_append() is reached from hdlc_tx_frames() while tx_producer_lock is held, this statement causes sleeping in atomic context when the TX buffer is full."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6597a08dbd82",
+          "anchor_file": "drivers/greybus/gb-beagleplay.c",
+          "anchor_lineno": 267
+        },
+        "commit": "ec558bbfea671ac020a6dc6be8bf8f0ee556cce0",
+        "commit_short": "ec558bbfea67",
+        "commit_msg": "greybus: Add BeaglePlay Linux Driver\n\nAdd the Greybus host driver for BeaglePlay board by BeagleBoard.org.\n\nThe current ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/greybus/gb-beagleplay.c",
+        "display_lineno": 152,
+        "code_snippet": "commit ec558bbfea671ac020a6dc6be8bf8f0ee556cce0\nAuthor: Ayush Singh <ayushdevel1325@gmail.com>\nDate:   Tue Oct 17 15:41:13 2023 +0530\n\n    greybus: Add BeaglePlay Linux Driver\n    \n    Add the Greybus host driver for BeaglePlay board by BeagleBoard.org.\n    \n    The current greybus setup involves running SVC in a user-space\n    application (GBridge) and using netlink to communicate with kernel\n    space. GBridge itself uses wpanusb kernel driver, so the greybus messages\n    travel from kernel sp",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes both the producer-side helper `hdlc_append()` and its caller `hdlc_tx_frames()`, showing the locking context clearly. The vulnerable construct is present in `hdlc_append()`: when the TX circular buffer is full, it executes `usleep_range(3000, 5000);` inside a `while (true)` loop after `dev_warn(&bg->sd->dev, \"Tx circ buf full\");`. The function comment states `Assumes that producer lock as been acquired.` and `hdlc_tx_frames()` does exactly that with `spin_lock(&bg->tx_producer_lock);` before calling `hdlc_append_tx_frame()`, `hdlc_append_tx_u8()`, `hdlc_append_tx_buf()`, and `hdlc_append_tx_crc()`, all of which can reach `hdlc_append()`. Therefore this code can sleep while holding a spinlock, i.e. in atomic context. No fix is present here: there is no non-blocking handling, no lock release before waiting, and no deferred retry mechanism in `hdlc_append()`."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "ec558bbfea671ac020a6dc6be8bf8f0ee556cce0",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "ec558bbfea671ac020a6dc6be8bf8f0ee556cce0": 1
+      },
+      "bic_candidates": [
+        "ec558bbfea671ac020a6dc6be8bf8f0ee556cce0"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

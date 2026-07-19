@@ -1,0 +1,337 @@
+{
+  "cveid": "CVE-2026-31480",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "1f9885732248d22f788e4992c739a98c88ab8a55"
+  ],
+  "ground_truth_bic": "bce29ac9ce0bb0b0b146b687ab978378c21e9078",
+  "predicted_bic": [
+    "bce29ac9ce0bb0b0b146b687ab978378c21e9078"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 43159,
+  "root_cause": {
+    "text": "The osnoise tracer code in `kernel/trace/trace_osnoise.c` acquired `interface_lock` before `cpus_read_lock()`, creating an लॉक-order inversion with CPU hotplug paths that take `cpus_write_lock()` and then wait on osnoise kthreads that later try to lock `interface_lock`, causing a deadlock.",
+    "evidence": "The CVE description shows the deadlock sequence: task1 holds `interface_lock`, task2 enters CPU offline with `cpus_write_lock()` and calls `osnoise_cpu_die()`/`kthread_stop()`, task3 in `osnoise_sleep()` blocks on `mutex_lock(&interface_lock)`, while task1 then takes `cpus_read_lock()`, producing `[DEAD LOCK]`; the patch fixes this by swapping the order to `cpus_read_lock()` before `mutex_lock(&interface_lock)` in `osnoise_hotplug_workfn()`, `osnoise_options_write()`, and `osnoise_cpus_write()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/trace/trace_osnoise.c",
+      "lineno": 2240,
+      "content": "mutex_lock(&interface_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/trace/trace_osnoise.c",
+      "lineno": 2244,
+      "content": "cpus_read_lock();",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The osnoise tracer code in `kernel/trace/trace_osnoise.c` acquired `interface_lock` before `cpus_read_lock()`, creating an लॉक-order inversion with CPU hotplug paths that take `cpus_write_lock()` and then wait on osnoise kthreads that later try to lock `interface_lock`, causing a deadlock.",
+      "evidence_points": "The CVE description shows the deadlock sequence: task1 holds `interface_lock`, task2 enters CPU offline with `cpus_write_lock()` and calls `osnoise_cpu_die()`/`kthread_stop()`, task3 in `osnoise_sleep()` blocks on `mutex_lock(&interface_lock)`, while task1 then takes `cpus_read_lock()`, producing `[DEAD LOCK]`; the patch fixes this by swapping the order to `cpus_read_lock()` before `mutex_lock(&interface_lock)` in `osnoise_hotplug_workfn()`, `osnoise_options_write()`, and `osnoise_cpus_write()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/trace/trace_osnoise.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/trace/trace_osnoise.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/trace/trace_osnoise.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/trace/trace_osnoise.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Reorder hotplug and interface locking in osnoise_hotplug_workfn() to use the correct synchronization order.",
+        "what": "In osnoise_hotplug_workfn(), the order of two scoped guards was changed: guard(mutex)(&interface_lock) was moved to occur after guard(cpus_read_lock)(), whereas it previously came before it.",
+        "how": "This changes the locking acquisition order at runtime so the CPU hotplug read lock is taken before interface_lock. The function's observable behavior is otherwise unchanged, but the new order likely avoids lock ordering issues or aligns with required synchronization rules when checking cpu_online(cpu)."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Reorder locking in `osnoise_options_write()` to correctly protect option updates against CPU hotplug races.",
+        "what": "The order of two synchronization calls was changed in `osnoise_options_write()`: `mutex_lock(&interface_lock)` was moved to occur after `cpus_read_lock()`, instead of before it. No other logic in the function was modified.",
+        "how": "This changes the locking sequence so the CPU hotplug read-side lock is acquired before the interface mutex. At runtime, this helps ensure that option updates are protected against concurrent CPU hotplug activity in the intended order, reducing the chance that hotplug code observes or races with partially updated options."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Reorder lock release in `osnoise_options_write()` to fix unsafe lock handling when updating osnoise options.",
+        "what": "The call to `cpus_read_unlock()` was moved to occur after `mutex_unlock(&interface_lock)` instead of before it in `osnoise_options_write()`.",
+        "how": "This changes the lock release order so the mutex is dropped while the CPU hotplug read-side lock is still held, which avoids a potentially unsafe lock ordering window during the option update path before optionally restarting the per-CPU kthreads."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix the lock ordering in `osnoise_cpus_write()` to prevent deadlock with CPU hotplug operations.",
+        "what": "The lock acquisition order was changed in `osnoise_cpus_write()`: `cpus_read_lock()` is now taken before `mutex_lock(&interface_lock)`, and the corresponding unlock order was reversed so `mutex_unlock(&interface_lock)` happens before `cpus_read_unlock()`.",
+        "how": "This changes the runtime locking hierarchy used while copying `osnoise_cpumask`, ensuring the CPU hotplug read-side lock is held before the interface mutex. That avoids an unsafe lock ordering that could lead to deadlock or lock dependency issues when CPU hotplug paths and this write path interact."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Reorder lock release in `osnoise_options_write()` to fix unsafe lock handling when updating osnoise options."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix the lock ordering in `osnoise_cpus_write()` to prevent deadlock with CPU hotplug operations."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "REJECT",
+        "core_intent": "Fix unsafe lock handling in osnoise configuration paths by correcting lock acquisition/release ordering around option updates and hotplug synchronization.",
+        "outliers": [],
+        "reason": "All hunks share the same synchronization bug-fix theme; however, the proposed representative intent is too narrow compared with the full coherent subset, which also includes hotplug/interface locking in osnoise_hotplug_workfn()."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix unsafe lock ordering and release in osnoise-related code to correctly synchronize option updates and hotplug handling.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly fixes the reported lock-order inversion in osnoise code by reordering interface_lock and cpus_read_lock acquisition/release in hotplug and options paths, which matches the deadlock root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the reported lock-order inversion in osnoise_cpus_write(), which matches the deadlock root cause involving interface_lock and cpus_read_lock/cpus_write_lock during CPU hotplug."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/trace/trace_osnoise.c",
+            "lineno": 2240,
+            "content": "mutex_lock(&interface_lock);",
+            "rationale": "This acquires interface_lock before cpus_read_lock(), which matches the root cause lock-order inversion that can deadlock against CPU hotplug paths taking cpus_write_lock() first."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/trace/trace_osnoise.c",
+            "lineno": 2240,
+            "content": "mutex_lock(&interface_lock);",
+            "rationale": "This is the pre-fix ordering that takes interface_lock before the CPU hotplug read lock, creating the same inversion with hotplug code that may wait on osnoise threads while holding cpus_write_lock()."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/trace/trace_osnoise.c",
+            "lineno": 2240,
+            "content": "mutex_lock(&interface_lock);",
+            "rationale": "In osnoise_cpus_write(), taking interface_lock before cpus_read_lock() is the direct unsafe ordering described in the root cause and can deadlock with CPU hotplug operations."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/trace/trace_osnoise.c",
+            "lineno": 2077,
+            "content": "guard(cpus_read_lock)();",
+            "rationale": "This statement shows the intended lock that was acquired after interface_lock in the buggy code, confirming the inverted order responsible for the deadlock."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/trace/trace_osnoise.c",
+            "lineno": 2244,
+            "content": "cpus_read_lock();",
+            "rationale": "The vulnerable code placed this CPU hotplug lock after interface_lock; the reversed acquisition order is the core issue causing deadlock risk."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/trace/trace_osnoise.c",
+            "stmt_text": "mutex_lock(&interface_lock);",
+            "location": "hunk",
+            "explanation": "This line acquires interface_lock before the CPU hotplug read lock in the buggy osnoise path, creating the lock-order inversion that can deadlock with CPU hotplug code taking cpus_write_lock() first."
+          },
+          {
+            "vuln_file": "kernel/trace/trace_osnoise.c",
+            "stmt_text": "cpus_read_lock();",
+            "location": "hunk",
+            "explanation": "This is the hotplug lock acquired after interface_lock in the vulnerable ordering, completing the inversion that underlies the deadlock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "50b35c9e50a8",
+          "anchor_file": "kernel/trace/trace_osnoise.c",
+          "anchor_lineno": 2240
+        },
+        "commit": "b179d48b6aab21f3999f5006685ea4254c0618a9",
+        "commit_short": "b179d48b6aab",
+        "commit_msg": "tracing/osnoise: Add osnoise/options file\n\nAdd the tracing/osnoise/options file to control\nosnoise/timerlat tracer featu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace_osnoise.c",
+        "display_lineno": 1990,
+        "code_snippet": "commit b179d48b6aab21f3999f5006685ea4254c0618a9\nAuthor: Daniel Bristot de Oliveira <bristot@kernel.org>\nDate:   Thu Nov 17 14:46:18 2022 +0100\n\n    tracing/osnoise: Add osnoise/options file\n    \n    Add the tracing/osnoise/options file to control\n    osnoise/timerlat tracer features. It is a single\n    file to contain multiple features, similar to\n    the sched/features file.\n    \n    Reading the file displays a list of options. Writing\n    the OPTION_NAME enables it, writing NO_OPTION_NAME disa",
+        "exists": true,
+        "reason": "Yes, the diff is sufficient to determine the lock ordering in this function. The write path takes locks in this order: `mutex_lock(&trace_types_lock);`, then `mutex_lock(&interface_lock);`, and only after that `cpus_read_lock();` with the comment `/* avoid CPU hotplug operations that might read options. */`. This matches the vulnerable construct described: acquiring `interface_lock` before `cpus_read_lock()` creates an inversion against CPU hotplug paths that take `cpus_write_lock()` first and may later wait on osnoise kthreads that need `interface_lock`. There is no evidence in this snippet of the later fix (reordering the locks or avoiding the inversion), so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "04aabc32fb67",
+          "anchor_file": "kernel/trace/trace_osnoise.c",
+          "anchor_lineno": 1990
+        },
+        "commit": "bce29ac9ce0bb0b0b146b687ab978378c21e9078",
+        "commit_short": "bce29ac9ce0b",
+        "commit_msg": "trace: Add osnoise tracer\n\nIn the context of high-performance computing (HPC), the Operating System\nNoise (*osnoise*) re",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace_osnoise.c",
+        "display_lineno": 1174,
+        "code_snippet": "commit bce29ac9ce0bb0b0b146b687ab978378c21e9078\nAuthor: Daniel Bristot de Oliveira <bristot@redhat.com>\nDate:   Tue Jun 22 16:42:27 2021 +0200\n\n    trace: Add osnoise tracer\n    \n    In the context of high-performance computing (HPC), the Operating System\n    Noise (*osnoise*) refers to the interference experienced by an application\n    due to activities inside the operating system. In the context of Linux,\n    NMIs, IRQs, SoftIRQs, and any other system thread can cause noise to the\n    system. ",
+        "exists": true,
+        "reason": "The snippet clearly shows the lock ordering that causes the deadlock. In `osnoise_main()` the code takes `interface_lock` after the sampling loop: `mutex_lock(&interface_lock); interval = osnoise_data.sample_period - osnoise_data.sample_runtime; mutex_unlock(&interface_lock);`. More importantly, the tracer start path creates the osnoise kthreads after initializing hooks, and the tracefs write path also takes `interface_lock` under `trace_types_lock`: `mutex_lock(&trace_types_lock); ... mutex_lock(&interface_lock); cpumask_copy(...); mutex_unlock(&interface_lock); ...`. The root cause described is that the osnoise tracer acquired `interface_lock` before `cpus_read_lock()`, creating an inversion with CPU hotplug paths that take `cpus_write_lock()` and then wait on osnoise kthreads that later try to lock `interface_lock`. In this commit version there is no visible `cpus_read_lock()` / `cpus_write_lock()` coordination around the interface lock at all, and no deadlock avoidance logic. Therefore the vulnerable construct is present and the fix is not present in this code."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "bce29ac9ce0bb0b0b146b687ab978378c21e9078",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "50b35c9e50a8",
+          "anchor_file": "kernel/trace/trace_osnoise.c",
+          "anchor_lineno": 2244
+        },
+        "commit": "b179d48b6aab21f3999f5006685ea4254c0618a9",
+        "commit_short": "b179d48b6aab",
+        "commit_msg": "tracing/osnoise: Add osnoise/options file\n\nAdd the tracing/osnoise/options file to control\nosnoise/timerlat tracer featu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace_osnoise.c",
+        "display_lineno": 1994,
+        "code_snippet": "commit b179d48b6aab21f3999f5006685ea4254c0618a9\nAuthor: Daniel Bristot de Oliveira <bristot@kernel.org>\nDate:   Thu Nov 17 14:46:18 2022 +0100\n\n    tracing/osnoise: Add osnoise/options file\n    \n    Add the tracing/osnoise/options file to control\n    osnoise/timerlat tracer features. It is a single\n    file to contain multiple features, similar to\n    the sched/features file.\n    \n    Reading the file displays a list of options. Writing\n    the OPTION_NAME enables it, writing NO_OPTION_NAME disa",
+        "exists": true,
+        "reason": "The snippet clearly shows the vulnerable lock ordering. In `osnoise_options_write()`, it does `mutex_lock(&interface_lock);` and only after that `cpus_read_lock();` with the comment `/* avoid CPU hotplug operations that might read options. */`. This matches the root cause: taking `interface_lock` before `cpus_read_lock()` can invert the order against CPU-hotplug paths that take `cpus_write_lock()` and later wait on osnoise threads that need `interface_lock`, creating a deadlock. There is no compensating fix or reordered locking here; the code still acquires `interface_lock` first, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "04aabc32fb67",
+          "anchor_file": "kernel/trace/trace_osnoise.c",
+          "anchor_lineno": 1994
+        },
+        "commit": "bce29ac9ce0bb0b0b146b687ab978378c21e9078",
+        "commit_short": "bce29ac9ce0b",
+        "commit_msg": "trace: Add osnoise tracer\n\nIn the context of high-performance computing (HPC), the Operating System\nNoise (*osnoise*) re",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace_osnoise.c",
+        "display_lineno": 1178,
+        "code_snippet": "commit bce29ac9ce0bb0b0b146b687ab978378c21e9078\nAuthor: Daniel Bristot de Oliveira <bristot@redhat.com>\nDate:   Tue Jun 22 16:42:27 2021 +0200\n\n    trace: Add osnoise tracer\n    \n    In the context of high-performance computing (HPC), the Operating System\n    Noise (*osnoise*) refers to the interference experienced by an application\n    due to activities inside the operating system. In the context of Linux,\n    NMIs, IRQs, SoftIRQs, and any other system thread can cause noise to the\n    system. ",
+        "exists": true,
+        "reason": "The snippet clearly shows the problematic lock order in the osnoise tracer implementation. In `osnoise_main()` the code takes `interface_lock` only after `run_osnoise()` and before sleeping: `mutex_lock(&interface_lock); interval = osnoise_data.sample_period - osnoise_data.sample_runtime; mutex_unlock(&interface_lock);`. More importantly, the tracefs write path also takes `trace_types_lock` and then `interface_lock` in `osnoise_cpus_write()`: `mutex_lock(&trace_types_lock); ... mutex_lock(&interface_lock); cpumask_copy(...); mutex_unlock(&interface_lock); ... mutex_unlock(&trace_types_lock);`. The root cause described is an inversion involving `interface_lock` and `cpus_read_lock()` / CPU hotplug paths, but this commit version does not show any avoidance of that inversion because there is no `cpus_read_lock()` around the relevant per-CPU thread startup/stop or CPU mask handling. The code also starts/stops per-CPU kthreads in `start_per_cpu_kthreads()` / `stop_per_cpu_kthreads()` without any hotplug read-side protection. Since the shown code contains the lock-based interface and per-CPU thread management that can participate in the deadlock, and there is no fix present in this version, this commit is bug-introducing for the described issue."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "bce29ac9ce0bb0b0b146b687ab978378c21e9078",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "bce29ac9ce0bb0b0b146b687ab978378c21e9078": 2
+      },
+      "bic_candidates": [
+        "bce29ac9ce0bb0b0b146b687ab978378c21e9078"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

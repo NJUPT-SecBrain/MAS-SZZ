@@ -1,0 +1,403 @@
+{
+  "cveid": "CVE-2026-46056",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "85fa3512048793076eef658f66489112dcc91993"
+  ],
+  "ground_truth_bic": "92a25256f142d55e25f9959441cea6ddeabae57e",
+  "predicted_bic": [
+    "92a25256f142d55e25f9959441cea6ddeabae57e"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 29,
+  "llm_tokens": 26314,
+  "root_cause": {
+    "text": "In Bluetooth SSP event handlers `hci_user_passkey_notify_evt()` and `hci_keypress_notify_evt()`, the code looked up an `hci_conn` and accessed its fields without holding `hci_dev_lock`, allowing concurrent connection teardown to free the `hci_conn` and causing a use-after-free.",
+    "evidence": "The CVE/commit explicitly states that “hci_conn lookup and field access must be covered by hdev lock ... otherwise the connection can be freed concurrently,” and the patch fixes this by moving `hci_dev_lock(hdev)` before `hci_conn_hash_lookup_ba()` and keeping it held until all `conn` accesses and notifications are complete, with new `unlock:` paths replacing prior early `return`s.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/bluetooth/hci_event.c",
+      "lineno": 5498,
+      "content": "conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/bluetooth/hci_event.c",
+      "lineno": 5502,
+      "content": "conn->passkey_notify = __le32_to_cpu(ev->passkey);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/bluetooth/hci_event.c",
+      "lineno": 5506,
+      "content": "mgmt_user_passkey_notify(hdev, &conn->dst, conn->type,",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/bluetooth/hci_event.c",
+      "lineno": 5503,
+      "content": "conn->passkey_entered = 0;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In Bluetooth SSP event handlers `hci_user_passkey_notify_evt()` and `hci_keypress_notify_evt()`, the code looked up an `hci_conn` and accessed its fields without holding `hci_dev_lock`, allowing concurrent connection teardown to free the `hci_conn` and causing a use-after-free.",
+      "evidence_points": "The CVE/commit explicitly states that “hci_conn lookup and field access must be covered by hdev lock ... otherwise the connection can be freed concurrently,” and the patch fixes this by moving `hci_dev_lock(hdev)` before `hci_conn_hash_lookup_ba()` and keeping it held until all `conn` accesses and notifications are complete, with new `unlock:` paths replacing prior early `return`s."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/bluetooth/hci_event.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/bluetooth/hci_event.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/bluetooth/hci_event.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/bluetooth/hci_event.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect passkey notification connection handling with the device lock and ensure the no-connection path exits via unlock.",
+        "what": "A call to hci_dev_lock(hdev) was added before looking up the ACL connection, and the early return on a failed hci_conn_hash_lookup_ba() was changed to jump to an unlock path instead of returning immediately.",
+        "how": "This makes the connection lookup and subsequent state update execute under the device lock, preventing unsynchronized access to hdev connection state, and avoids exiting through the no-connection path without releasing the lock by routing control flow to the unlock label."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a shared unlock target in `hci_user_passkey_notify_evt()` so all relevant execution paths can reliably release the device lock.",
+        "what": "A new label `unlock:` was added immediately before the existing `hci_dev_unlock(hdev);` call at the end of `hci_user_passkey_notify_evt()`.",
+        "how": "This enables control flow within the function to jump to a common unlock path, ensuring the device lock can be released from additional code paths without duplicating the unlock call."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect keypress notification connection handling with the device lock and route early exits through unlock cleanup.",
+        "what": "The change adds a call to hci_dev_lock(hdev) at the start of hci_keypress_notify_evt(), changes the early return when no connection is found to jump to an unlock path, and replaces the return in the HCI_KEYPRESS_STARTED case with a jump to the same unlock path.",
+        "how": "This makes the handler execute while holding the device lock and ensures early-exit paths release that lock via a shared unlock label, preventing unlocked access to connection state and avoiding lock leaks or inconsistent state when processing keypress notification events."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix hci_keypress_notify_evt() to always unlock hdev by routing the completed keypress path through a common unlock exit.",
+        "what": "In hci_keypress_notify_evt(), the HCI_KEYPRESS_COMPLETED case was changed from returning immediately to jumping to a new unlock label, and a call to hci_dev_unlock(hdev) was added at that label at the end of the function.",
+        "how": "This ensures the device lock is released even when the keypress notification type is HCI_KEYPRESS_COMPLETED, preventing an early-exit path from leaving hdev locked and avoiding potential deadlocks or stuck behavior in later code."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Fix hci_keypress_notify_evt() to always unlock hdev by routing the completed keypress path through a common unlock exit."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure HCI passkey and keypress notification event handlers correctly hold and always release the device lock by routing all exit paths through shared unlock cleanup.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: they add hci_dev_lock protection around hci_conn lookup/use in the passkey and keypress SSP event handlers and ensure all paths release the lock safely, preventing the concurrent teardown use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/bluetooth/hci_event.c",
+            "lineno": 5498,
+            "content": "conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);",
+            "rationale": "This obtains the hci_conn pointer in the event handler without the device lock held. The root cause is that the looked-up connection could be concurrently torn down and freed before later dereferences, making this unlocked lookup the start of the UAF window."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/bluetooth/hci_event.c",
+            "lineno": 5502,
+            "content": "conn->passkey_notify = __le32_to_cpu(ev->passkey);",
+            "rationale": "This dereferences the looked-up hci_conn without holding hci_dev_lock. If the connection was concurrently freed after lookup, this write becomes a use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/bluetooth/hci_event.c",
+            "lineno": 5506,
+            "content": "mgmt_user_passkey_notify(hdev, &conn->dst, conn->type,",
+            "rationale": "This accesses multiple fields from conn after the unlocked lookup. Those field reads can hit freed memory if teardown races with the handler."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/bluetooth/hci_event.c",
+            "lineno": 5498,
+            "content": "conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);",
+            "rationale": "As in the passkey handler, this performs an unlocked lookup of hci_conn in the keypress handler, allowing concurrent teardown to invalidate the returned pointer before use."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/bluetooth/hci_event.c",
+            "lineno": 5503,
+            "content": "conn->passkey_entered = 0;",
+            "rationale": "This writes through the hci_conn pointer without holding hci_dev_lock. If conn was freed by concurrent teardown, this is a direct use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/bluetooth/hci_event.c",
+            "stmt_text": "conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);",
+            "location": "hunk",
+            "explanation": "This unlocked lookup returns an hci_conn pointer that can be concurrently torn down and freed before subsequent accesses in the SSP event handlers, creating the use-after-free window described in the root cause."
+          },
+          {
+            "vuln_file": "net/bluetooth/hci_event.c",
+            "stmt_text": "conn->passkey_notify = __le32_to_cpu(ev->passkey);",
+            "location": "hunk",
+            "explanation": "This dereferences and writes through the looked-up hci_conn without holding hci_dev_lock, so if teardown races after the lookup, this becomes a use-after-free."
+          },
+          {
+            "vuln_file": "net/bluetooth/hci_event.c",
+            "stmt_text": "mgmt_user_passkey_notify(hdev, &conn->dst, conn->type,",
+            "location": "hunk",
+            "explanation": "This call reads multiple fields from conn after the unlocked lookup, so it can access freed memory if the connection is concurrently destroyed."
+          },
+          {
+            "vuln_file": "net/bluetooth/hci_event.c",
+            "stmt_text": "conn->passkey_entered = 0;",
+            "location": "hunk",
+            "explanation": "This write in the keypress notification handler uses the hci_conn pointer without the required device lock, making it a use-after-free if the connection was freed after lookup."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0cff16d0f6e",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 5498
+        },
+        "commit": "92a25256f142d55e25f9959441cea6ddeabae57e",
+        "commit_short": "92a25256f142",
+        "commit_msg": "Bluetooth: mgmt: Implement support for passkey notification\n\nThis patch adds support for Secure Simple Pairing with devi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 3274,
+        "code_snippet": "commit 92a25256f142d55e25f9959441cea6ddeabae57e\nAuthor: Johan Hedberg <johan.hedberg@intel.com>\nDate:   Thu Sep 6 18:39:26 2012 +0300\n\n    Bluetooth: mgmt: Implement support for passkey notification\n    \n    This patch adds support for Secure Simple Pairing with devices that have\n    KeyboardOnly as their IO capability. Such devices will cause a passkey\n    notification on our side and optionally also keypress notifications.\n    Without this patch some keyboards cannot be paired using the mgmt\n ",
+        "exists": true,
+        "reason": "The diff shows the full bodies of the two relevant event handlers, which is sufficient to assess the race/UAF condition. In both newly added functions, the code performs `conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);` and then directly accesses fields of `conn` (`conn->passkey_notify`, `conn->passkey_entered`, `conn->dst`, `conn->type`, `conn->dst_type`) without any visible `hci_dev_lock`/unlock protection. Specifically, `hci_user_passkey_notify_evt()` does the lookup, then writes `conn->passkey_notify = __le32_to_cpu(ev->passkey);` and `conn->passkey_entered = 0;`, then calls `mgmt_user_passkey_notify(hdev, &conn->dst, conn->type, conn->dst_type, ...)`. Likewise, `hci_keypress_notify_evt()` looks up `conn`, mutates `conn->passkey_entered` in the switch, and then calls `mgmt_user_passkey_notify(...)` using `conn` fields. This matches the stated root cause: lookup and dereference of `hci_conn` without holding `hci_dev_lock`, allowing concurrent teardown and use-after-free. No fix is present here because there is no locking around the lookup/access sequence."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5ad777958621",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 3274
+        },
+        "commit": "0493684ed2397e111574f343534d8e4ec440dfa5",
+        "commit_short": "0493684ed239",
+        "commit_msg": "[Bluetooth] Disable disconnect timer during Simple Pairing\n\nDuring the Simple Pairing process the HCI disconnect timer m",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 1490,
+        "code_snippet": "commit 0493684ed2397e111574f343534d8e4ec440dfa5\nAuthor: Marcel Holtmann <marcel@holtmann.org>\nDate:   Mon Jul 14 20:13:48 2008 +0200\n\n    [Bluetooth] Disable disconnect timer during Simple Pairing\n    \n    During the Simple Pairing process the HCI disconnect timer must be\n    disabled. The way to do this is by holding a reference count of the\n    HCI connection. The Simple Pairing process on both sides starts with\n    an IO Capabilities Request and ends with Simple Pairing Complete.\n    \n    Sig",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the full function body and, critically, the locking around the connection lookup and access. The root cause was looking up an `hci_conn` and accessing it without holding `hci_dev_lock`, which could race with teardown and lead to use-after-free. Here, the function explicitly acquires the device lock before the lookup: `hci_dev_lock(hdev);` (line 1490), then performs `conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);` (line 1492), and only accesses the returned connection while still under the lock: `if (conn) hci_conn_put(conn);` (lines 1493-1494), followed by `hci_dev_unlock(hdev);` (line 1496). Since the relevant operation is protected by `hci_dev_lock`, the vulnerable construct described in the root cause is absent in this function body, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "92a25256f142d55e25f9959441cea6ddeabae57e",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0cff16d0f6e",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 5502
+        },
+        "commit": "92a25256f142d55e25f9959441cea6ddeabae57e",
+        "commit_short": "92a25256f142",
+        "commit_msg": "Bluetooth: mgmt: Implement support for passkey notification\n\nThis patch adds support for Secure Simple Pairing with devi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 3278,
+        "code_snippet": "commit 92a25256f142d55e25f9959441cea6ddeabae57e\nAuthor: Johan Hedberg <johan.hedberg@intel.com>\nDate:   Thu Sep 6 18:39:26 2012 +0300\n\n    Bluetooth: mgmt: Implement support for passkey notification\n    \n    This patch adds support for Secure Simple Pairing with devices that have\n    KeyboardOnly as their IO capability. Such devices will cause a passkey\n    notification on our side and optionally also keypress notifications.\n    Without this patch some keyboards cannot be paired using the mgmt\n ",
+        "exists": true,
+        "reason": "The snippet fully shows the newly added handlers and their locking behavior, which is sufficient to assess the reported root cause. In both added functions, the code looks up a connection with `conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);` and then immediately dereferences `conn` fields without any visible `hci_dev_lock(hdev)` / `hci_dev_unlock(hdev)` protection. In `hci_user_passkey_notify_evt()`, it writes `conn->passkey_notify`, `conn->passkey_entered`, and passes `&conn->dst`, `conn->type`, and `conn->dst_type` to `mgmt_user_passkey_notify()`. In `hci_keypress_notify_evt()`, it updates `conn->passkey_entered` in the switch and again passes `&conn->dst`, `conn->type`, `conn->dst_type`, `conn->passkey_notify`, and `conn->passkey_entered` to `mgmt_user_passkey_notify()`. This matches the root cause: lookup and field access on `hci_conn` without holding `hci_dev_lock`, allowing concurrent teardown and potential use-after-free. No fix is present in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5ad777958621",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 3278
+        },
+        "commit": "2a61169209c72317d4933f8d22f749a6a61a3d36",
+        "commit_short": "2a61169209c7",
+        "commit_msg": "Bluetooth: Add mgmt_auth_failed event\n\nTo properly track bonding completion an event to indicate authentication\nfailure ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 2424,
+        "code_snippet": "commit 2a61169209c72317d4933f8d22f749a6a61a3d36\nAuthor: Johan Hedberg <johan.hedberg@nokia.com>\nDate:   Sat Feb 19 12:06:00 2011 -0300\n\n    Bluetooth: Add mgmt_auth_failed event\n    \n    To properly track bonding completion an event to indicate authentication\n    failure is needed. This event will be sent whenever an authentication\n    complete HCI event with a non-zero status comes. It will also be sent\n    when we're acting in acceptor role for SSP authentication in which case\n    the controll",
+        "exists": false,
+        "reason": "The function body is sufficient because it shows the lookup, locking, field access, and unlock sequence directly. The root cause was accessing an hci_conn returned from lookup without holding hci_dev_lock, allowing concurrent teardown/use-after-free. In this snippet, the device lock is explicitly taken before the lookup at line 2420: \"hci_dev_lock(hdev);\", the connection is looked up while the lock is held at line 2422, and conn fields are accessed while still under that lock at lines 2431-2432 (checking \"&conn->pend\" and using \"&conn->dst\"). The lock is only released at line 2437 after the accesses, and the connection reference is dropped at line 2434 before unlocking. Therefore the vulnerable construct described in the root cause is absent here, and the correct locking-based fix is already present."
+      }
+    },
+    {
+      "bic_found": "92a25256f142d55e25f9959441cea6ddeabae57e",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0cff16d0f6e",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 5506
+        },
+        "commit": "92a25256f142d55e25f9959441cea6ddeabae57e",
+        "commit_short": "92a25256f142",
+        "commit_msg": "Bluetooth: mgmt: Implement support for passkey notification\n\nThis patch adds support for Secure Simple Pairing with devi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 3282,
+        "code_snippet": "commit 92a25256f142d55e25f9959441cea6ddeabae57e\nAuthor: Johan Hedberg <johan.hedberg@intel.com>\nDate:   Thu Sep 6 18:39:26 2012 +0300\n\n    Bluetooth: mgmt: Implement support for passkey notification\n    \n    This patch adds support for Secure Simple Pairing with devices that have\n    KeyboardOnly as their IO capability. Such devices will cause a passkey\n    notification on our side and optionally also keypress notifications.\n    Without this patch some keyboards cannot be paired using the mgmt\n ",
+        "exists": true,
+        "reason": "The diff shows the complete bodies of the newly introduced handlers `hci_user_passkey_notify_evt()` and `hci_keypress_notify_evt()`, which is sufficient to evaluate the locking behavior. In both functions, the code does `conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);` and then immediately dereferences `conn` fields such as `conn->passkey_notify`, `conn->passkey_entered`, `conn->dst`, `conn->type`, and `conn->dst_type` without any visible `hci_dev_lock(hdev)` / `hci_dev_unlock(hdev)` protection. Specifically, `hci_user_passkey_notify_evt()` assigns `conn->passkey_notify = __le32_to_cpu(ev->passkey);`, `conn->passkey_entered = 0;`, and calls `mgmt_user_passkey_notify(hdev, &conn->dst, conn->type, conn->dst_type, ...)`. Likewise, `hci_keypress_notify_evt()` updates `conn->passkey_entered` in the switch and then calls `mgmt_user_passkey_notify(hdev, &conn->dst, conn->type, conn->dst_type, ...)`. This matches the stated root cause: lookup and field access on `hci_conn` occur without holding `hci_dev_lock`, allowing concurrent teardown and use-after-free. No fix is present in this version because there is no locking around the lookup and subsequent dereferences."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5ad777958621",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 3282
+        },
+        "commit": "2a61169209c72317d4933f8d22f749a6a61a3d36",
+        "commit_short": "2a61169209c7",
+        "commit_msg": "Bluetooth: Add mgmt_auth_failed event\n\nTo properly track bonding completion an event to indicate authentication\nfailure ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 2428,
+        "code_snippet": "commit 2a61169209c72317d4933f8d22f749a6a61a3d36\nAuthor: Johan Hedberg <johan.hedberg@nokia.com>\nDate:   Sat Feb 19 12:06:00 2011 -0300\n\n    Bluetooth: Add mgmt_auth_failed event\n    \n    To properly track bonding completion an event to indicate authentication\n    failure is needed. This event will be sent whenever an authentication\n    complete HCI event with a non-zero status comes. It will also be sent\n    when we're acting in acceptor role for SSP authentication in which case\n    the controll",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the full lookup-and-use sequence around the connection object. The reported root cause is accessing an `hci_conn` found by lookup without holding `hci_dev_lock`, which could allow concurrent teardown and use-after-free. In this function, that vulnerable pattern is not present: the code explicitly acquires the device lock at line 2420 (`hci_dev_lock(hdev);`) before looking up the connection at line 2422 (`conn = hci_conn_hash_lookup_ba(...)`), checks for null, then accesses `conn->pend` and `conn->dst` at lines 2431-2432 while still under the lock, and only releases the lock at line 2437 after `hci_conn_put(conn)`. Therefore the specific vulnerable construct described in the root cause is absent here, so `has_bug` is false. However, this function is `hci_simple_pair_complete_evt`, not one of the specifically affected SSP handlers `hci_user_passkey_notify_evt()` or `hci_keypress_notify_evt()`, so there is no evidence in this snippet of the later fix for those handlers; thus `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "92a25256f142d55e25f9959441cea6ddeabae57e",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0cff16d0f6e",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 5503
+        },
+        "commit": "92a25256f142d55e25f9959441cea6ddeabae57e",
+        "commit_short": "92a25256f142",
+        "commit_msg": "Bluetooth: mgmt: Implement support for passkey notification\n\nThis patch adds support for Secure Simple Pairing with devi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 3279,
+        "code_snippet": "commit 92a25256f142d55e25f9959441cea6ddeabae57e\nAuthor: Johan Hedberg <johan.hedberg@intel.com>\nDate:   Thu Sep 6 18:39:26 2012 +0300\n\n    Bluetooth: mgmt: Implement support for passkey notification\n    \n    This patch adds support for Secure Simple Pairing with devices that have\n    KeyboardOnly as their IO capability. Such devices will cause a passkey\n    notification on our side and optionally also keypress notifications.\n    Without this patch some keyboards cannot be paired using the mgmt\n ",
+        "exists": true,
+        "reason": "The diff shows the full bodies of the newly introduced handlers `hci_user_passkey_notify_evt()` and `hci_keypress_notify_evt()`, which is sufficient to assess the race/UAF root cause. In both functions, the code looks up a connection with `conn = hci_conn_hash_lookup_ba(hdev, ACL_LINK, &ev->bdaddr);` and then directly dereferences and updates `conn` fields (`conn->passkey_notify`, `conn->passkey_entered`, `conn->dst`, `conn->type`, `conn->dst_type`) without any visible `hci_dev_lock(hdev)` / `hci_dev_unlock(hdev)` protection. Specifically, `hci_user_passkey_notify_evt()` assigns `conn->passkey_notify = __le32_to_cpu(ev->passkey);`, `conn->passkey_entered = 0;` and passes `&conn->dst` and other fields to `mgmt_user_passkey_notify(...)`. Likewise, `hci_keypress_notify_evt()` updates `conn->passkey_entered` in the switch and then uses `&conn->dst`, `conn->type`, `conn->dst_type`, and `conn->passkey_notify` in `mgmt_user_passkey_notify(...)`. This matches the stated root cause: lookup and access of `hci_conn` fields without holding `hci_dev_lock`, allowing concurrent teardown and use-after-free. No fix is present in this commit version."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5ad777958621",
+          "anchor_file": "net/bluetooth/hci_event.c",
+          "anchor_lineno": 3279
+        },
+        "commit": "2a61169209c72317d4933f8d22f749a6a61a3d36",
+        "commit_short": "2a61169209c7",
+        "commit_msg": "Bluetooth: Add mgmt_auth_failed event\n\nTo properly track bonding completion an event to indicate authentication\nfailure ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/hci_event.c",
+        "display_lineno": 2425,
+        "code_snippet": "commit 2a61169209c72317d4933f8d22f749a6a61a3d36\nAuthor: Johan Hedberg <johan.hedberg@nokia.com>\nDate:   Sat Feb 19 12:06:00 2011 -0300\n\n    Bluetooth: Add mgmt_auth_failed event\n    \n    To properly track bonding completion an event to indicate authentication\n    failure is needed. This event will be sent whenever an authentication\n    complete HCI event with a non-zero status comes. It will also be sent\n    when we're acting in acceptor role for SSP authentication in which case\n    the controll",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the full lookup/use/unlock sequence for the connection object. The root cause described is accessing an `hci_conn` found by lookup without holding `hci_dev_lock`, which could allow concurrent teardown and use-after-free. In this function, the device lock is explicitly taken before the lookup with `hci_dev_lock(hdev);` at line 2420, the connection is looked up while locked at line 2422, and the connection fields are accessed while still under that lock at lines 2431-2432 (`&conn->pend`, `&conn->dst`). The lock is only released at line 2437 after `hci_conn_put(conn);` and after all accesses are complete. Therefore the vulnerable construct is not present here, and the function already contains the correct locking that prevents the UAF condition."
+      }
+    },
+    {
+      "bic_found": "92a25256f142d55e25f9959441cea6ddeabae57e",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "92a25256f142d55e25f9959441cea6ddeabae57e": 4
+      },
+      "bic_candidates": [
+        "92a25256f142d55e25f9959441cea6ddeabae57e"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

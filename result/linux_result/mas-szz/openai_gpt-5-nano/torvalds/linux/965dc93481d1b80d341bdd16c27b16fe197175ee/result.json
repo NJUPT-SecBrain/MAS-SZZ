@@ -1,0 +1,391 @@
+{
+  "cveid": "CVE-2026-53005",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "965dc93481d1b80d341bdd16c27b16fe197175ee"
+  ],
+  "ground_truth_bic": "77462de14a43f4d98dbd8de0f5743a4e02450b1d",
+  "predicted_bic": [
+    "2b514574f7e88c8498027ee366fd6e7aae5aa4b5",
+    "29df44fa52b70c330d8f2a3871e028a3522b8494"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 31,
+  "llm_tokens": 67833,
+  "root_cause": {
+    "text": "AF_UNIX allowed SKBs carrying SCM file-descriptor metadata to be redirected into SOCKMAP psock queues, but the SOCKMAP path neither exposes those queued SCM references to AF_UNIX garbage collection nor preserves its lifetime/accounting assumptions, causing hidden inflight FDs, incorrect SCM accounting, and a possible use-after-free in unix GC.",
+    "evidence": "The commit message explicitly states that “SOCKMAP can hide inflight fd from AF_UNIX GC,” that “neither the old nor the new GC can inspect the psock queue,” and that SOCKMAP redirect “breaks the Tarjan-based GC's assumption that unix_edge.successor is always alive,” while the patch fixes this by dropping/orphaning SCM attributes before handing SKBs to the SOCKMAP layer via unix_orphan_scm() and changed skb destructors.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 2691,
+      "content": "return recv_actor(sk, skb);",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 2687,
+      "content": "mutex_unlock(&u->iolock);",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "AF_UNIX allowed SKBs carrying SCM file-descriptor metadata to be redirected into SOCKMAP psock queues, but the SOCKMAP path neither exposes those queued SCM references to AF_UNIX garbage collection nor preserves its lifetime/accounting assumptions, causing hidden inflight FDs, incorrect SCM accounting, and a possible use-after-free in unix GC.",
+      "evidence_points": "The commit message explicitly states that “SOCKMAP can hide inflight fd from AF_UNIX GC,” that “neither the old nor the new GC can inspect the psock queue,” and that SOCKMAP redirect “breaks the Tarjan-based GC's assumption that unix_edge.successor is always alive,” while the patch fixes this by dropping/orphaning SCM attributes before handing SKBs to the SOCKMAP layer via unix_orphan_scm() and changed skb destructors."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Move SCM pid state out of the skb during destruction and add a wrapper that performs SCM cleanup before freeing the socket buffer.",
+        "what": "The local variable in unix_destruct_scm() was changed from an uninitialized struct followed by memset() to a zero-initialized declaration, the assignment scm.pid = UNIXCB(skb).pid was replaced with swap(scm.pid, UNIXCB(skb).pid), two comments before scm_destroy() were removed, and a new helper unix_wfree() was added that calls unix_destruct_scm(skb) and then sock_wfree(skb).",
+        "how": "The scm_cookie is still initialized before cleanup, but the skb's stored pid is now moved into the local scm_cookie while clearing UNIXCB(skb).pid at the same time, which helps avoid leaving stale ownership state in the skb after SCM destruction. The new unix_wfree() wrapper ensures SCM cleanup happens before the skb is released through sock_wfree()."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Use unix_wfree as the sk_buff destructor in unix_scm_to_skb() so these buffers follow the correct cleanup path when released.",
+        "what": "The assignment of the socket buffer destructor in unix_scm_to_skb() was changed from unix_destruct_scm to unix_wfree.",
+        "how": "At runtime, sk_buffs created through this path will now invoke unix_wfree when freed instead of unix_destruct_scm, changing the cleanup logic used for these buffers and ensuring the release path uses the write-free handler rather than the SCM-specific destructor."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a helper to properly orphan AF_UNIX skb SCM state by cleaning up SCM data and resetting the skb destructor.",
+        "what": "A new static helper function named unix_orphan_scm(struct sock *sk, struct sk_buff *skb) was added, which calls scm_stat_del(sk, skb), then unix_destruct_scm(skb), and finally assigns skb->destructor = sock_wfree.",
+        "how": "This introduces a reusable cleanup path for AF_UNIX skb control-message state that removes SCM accounting, destroys SCM data attached to the skb, and restores the skb destructor to the normal socket write-free handler, enabling proper orphaning/cleanup of such buffers at runtime."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Hold the UNIX socket I/O lock until SCM state is orphaned on a received skb, fixing missing pre-processing before passing the packet to the receive actor.",
+        "what": "The function unix_read_skb() was changed so that mutex_unlock(&u->iolock) is no longer called immediately after skb_recv_datagram(). Instead, when skb_recv_datagram() returns NULL, the code now unlocks and returns inside a new conditional block, and when an skb is returned, a new call to unix_orphan_scm(sk, skb) is executed before releasing the mutex and calling recv_actor(sk, skb).",
+        "how": "At runtime, the socket lock is now held while unix_orphan_scm(sk, skb) runs on the received skb, ensuring SCM-related state is detached or cleaned up before other code can access the socket concurrently. The early-return path still unlocks correctly when no skb is available. This changes behavior by performing required skb SCM orphaning under lock before handing the packet to the receive actor."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Orphan SCM state from received UNIX stream skbs before completing the read path to fix incorrect ancillary-data ownership handling.",
+        "what": "A call to unix_orphan_scm(sk, skb); was inserted after spin_unlock(&queue->lock); and before mutex_unlock(&u->iolock); in unix_stream_read_skb().",
+        "how": "At runtime, the read path now explicitly detaches or cleans up SCM-related ownership/state for the skb before releasing the I/O mutex and handing the skb to recv_actor(), preventing the skb from retaining stale UNIX socket ancillary data association during stream receive processing."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 5,
+          "intent": "Orphan SCM state from received UNIX stream skbs before completing the read path to fix incorrect ancillary-data ownership handling."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix AF_UNIX/UNIX stream skb ancillary-data ownership by ensuring SCM state is properly orphaned and cleaned up with the correct destructor before or during receive/read completion.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly target AF_UNIX skb SCM metadata lifetime/ownership and ensure proper orphaning, cleanup, and destructor handling on receive/free paths. That matches the root cause involving hidden/incorrectly accounted SCM file-descriptor references and unsafe lifetime handling leading to unix GC issues and possible use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2687,
+            "content": "mutex_unlock(&u->iolock);",
+            "rationale": "The fix intent says the I/O lock must be held until SCM state is orphaned on the received skb. Unlocking here before further receive processing allows AF_UNIX skb SCM metadata to remain attached while the skb is handed off, enabling the bad ownership/lifetime transition into paths like SOCKMAP."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2691,
+            "content": "return recv_actor(sk, skb);",
+            "rationale": "This passes a received skb onward without first orphaning/cleaning its SCM state. That directly matches the root cause: skb carrying SCM FD metadata can be redirected/consumed by another path without AF_UNIX GC-visible ownership and accounting."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2687,
+            "content": "mutex_unlock(&u->iolock);",
+            "rationale": "As in the datagram receive path, releasing the AF_UNIX I/O lock before SCM state is orphaned breaks the required lifetime/ownership ordering for ancillary data on the skb."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2691,
+            "content": "return recv_actor(sk, skb);",
+            "rationale": "The stream receive path returns the skb to the receive actor while AF_UNIX SCM metadata is still attached. This is the direct vulnerable behavior fixed by orphaning SCM state before completing the read path."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 1996,
+            "content": "skb->destructor = unix_destruct_scm;",
+            "rationale": "Before the fix, AF_UNIX relied on this destructor-based cleanup for SCM state. When such skbs were redirected into SOCKMAP queues, that ownership model was no longer valid or visible to AF_UNIX GC, contributing to hidden inflight FDs and lifetime/accounting mismatch."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "return recv_actor(sk, skb);",
+            "location": "hunk 3 | net/unix/af_unix.c:2691",
+            "explanation": "This hands the received skb to the generic receive actor while SCM metadata is still attached, enabling AF_UNIX skbs carrying file-descriptor references to escape into paths such as SOCKMAP without being orphaned first. That directly causes the hidden inflight FD/accounting and unix GC lifetime issues described in the root cause."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "mutex_unlock(&u->iolock);",
+            "location": "hunk 3 | net/unix/af_unix.c:2687",
+            "explanation": "Unlocking the AF_UNIX I/O lock before SCM state is orphaned breaks the required ordering that protects ancillary-data ownership during receive processing. This premature unlock permits the subsequent handoff of an skb still carrying SCM references into unsafe paths."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2691
+        },
+        "commit": "78fa0d61d97a728d306b0c23d353c0e340756437",
+        "commit_short": "78fa0d61d97a",
+        "commit_msg": "bpf, sockmap: Pass skb ownership through read_skb\n\nThe read_skb hook calls consume_skb() now, but this means that if the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2564,
+        "code_snippet": "commit 78fa0d61d97a728d306b0c23d353c0e340756437\nAuthor: John Fastabend <john.fastabend@gmail.com>\nDate:   Mon May 22 19:56:05 2023 -0700\n\n    bpf, sockmap: Pass skb ownership through read_skb\n    \n    The read_skb hook calls consume_skb() now, but this means that if the\n    recv_actor program wants to use the skb it needs to inc the ref cnt\n    so that the consume_skb() doesn't kfree the sk_buff.\n    \n    This is problematic because in some error cases under memory pressure\n    we may need to li",
+        "exists": true,
+        "reason": "The function clearly shows the relevant ownership transfer bug. After receiving an skb via `skb = skb_recv_datagram(sk, MSG_DONTWAIT, &err);`, it directly passes that skb to the callback with `return recv_actor(sk, skb);` on line 2564. The root cause involves handing AF_UNIX skbs, potentially carrying SCM file-descriptor metadata, into another path (`read_skb`/sockmap) without preserving the required ownership/lifetime handling. In the fixed design, the callback path must account for the fact that `read_skb` consumes the skb and any user of it must take a reference or otherwise preserve ownership semantics. This version shows no such protection, no reference increment, no SCM-specific guard, and no accounting/ownership handling before forwarding the skb to `recv_actor`. Therefore the vulnerable construct is present and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "b34ffb0c6d23",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2564
+        },
+        "commit": "d6e3b27cbd2df555ff0736796ad2f9a17e74be8b",
+        "commit_short": "d6e3b27cbd2d",
+        "commit_msg": "af_unix: Refactor unix_read_skb()\n\nSimilar to udp_read_skb(), delete the unnecessary while loop in\nunix_read_skb() for r",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2549,
+        "code_snippet": "commit d6e3b27cbd2df555ff0736796ad2f9a17e74be8b\nAuthor: Peilin Ye <peilin.ye@bytedance.com>\nDate:   Thu Sep 22 21:59:26 2022 -0700\n\n    af_unix: Refactor unix_read_skb()\n    \n    Similar to udp_read_skb(), delete the unnecessary while loop in\n    unix_read_skb() for readability.  Since recv_actor() cannot return a\n    value greater than skb->len (see sk_psock_verdict_recv()), remove the\n    redundant check.\n    \n    Suggested-by: Cong Wang <cong.wang@bytedance.com>\n    Signed-off-by: Peilin Ye <",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full body of the relevant function `unix_read_skb()`, which is the AF_UNIX read path being discussed. The vulnerability root cause is that AF_UNIX must not allow SKBs carrying SCM file-descriptor metadata to be redirected into SOCKMAP psock queues unless special handling exists to preserve SCM lifetime/accounting and GC visibility. In this function, the code simply dequeues an skb and passes it to the actor: `skb = skb_recv_datagram(sk, MSG_DONTWAIT, &err);` followed by `copied = recv_actor(sk, skb);` and then immediately `kfree_skb(skb);`. There is no check for SCM/fd-bearing skb metadata, no guard preventing such skb from entering a psock-related receive path, and no special accounting/GC handling. The commit message also says the refactor relies on `recv_actor()` behavior and references `sk_psock_verdict_recv()`, which is part of the SOCKMAP path, further confirming this function can feed skb data into that path. Because the function lacks any protection against SCM-carrying skbs being handled here, the vulnerable construct is present. The fix is not present, since there is no conditional rejection/sanitization for SCM-bearing skbs and no lifetime/accounting preservation logic before `recv_actor(sk, skb)` / `kfree_skb(skb)`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "31f1fbcb346c",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2549
+        },
+        "commit": "29df44fa52b70c330d8f2a3871e028a3522b8494",
+        "commit_short": "29df44fa52b7",
+        "commit_msg": "af_unix: Implement ->read_sock() for sockmap\n\nImplement ->read_sock() for AF_UNIX datagram socket, it is\npretty much sim",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2207,
+        "code_snippet": "commit 29df44fa52b70c330d8f2a3871e028a3522b8494\nAuthor: Cong Wang <cong.wang@bytedance.com>\nDate:   Sun Jul 4 12:02:44 2021 -0700\n\n    af_unix: Implement ->read_sock() for sockmap\n    \n    Implement ->read_sock() for AF_UNIX datagram socket, it is\n    pretty much similar to udp_read_sock().\n    \n    Signed-off-by: Cong Wang <cong.wang@bytedance.com>\n    Signed-off-by: Alexei Starovoitov <ast@kernel.org>\n    Link: https://lore.kernel.org/bpf/20210704190252.11866-4-xiyou.wangcong@gmail.com\n\ndiff -",
+        "exists": true,
+        "reason": "The added function `unix_read_sock()` is sufficient to assess the vulnerability because it shows the exact AF_UNIX sockmap read path introduced by this commit. The function dequeues datagram SKBs via `skb = skb_recv_datagram(sk, 0, 1, &err);`, passes them to the sockmap actor with `used = recv_actor(desc, skb, 0, skb->len);`, and then simply frees them with `kfree_skb(skb);`. There is no check for SCM/file-descriptor metadata on the skb, no rejection of SKBs carrying SCM rights, and no special lifetime/accounting handling before redirecting the skb into the sockmap read path. Since the root cause is that AF_UNIX allowed SKBs with SCM FD metadata to enter SOCKMAP psock queues without exposing them to unix GC or preserving SCM accounting assumptions, this newly introduced `->read_sock()` path contains the vulnerable construct: it blindly processes AF_UNIX datagram SKBs through sockmap-compatible read logic. The fix is not present here because there is no guard preventing SCM-carrying SKBs from using this path and no compensating GC/accounting handling."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "0c48eefae712",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2207
+        },
+        "commit": "2b514574f7e88c8498027ee366fd6e7aae5aa4b5",
+        "commit_short": "2b514574f7e8",
+        "commit_msg": "net: af_unix: implement splice for stream af_unix sockets\n\nunix_stream_recvmsg is refactored to unix_stream_read_generic",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 1975,
+        "code_snippet": "commit 2b514574f7e88c8498027ee366fd6e7aae5aa4b5\nAuthor: Hannes Frederic Sowa <hannes@stressinduktion.org>\nDate:   Thu May 21 17:00:01 2015 +0200\n\n    net: af_unix: implement splice for stream af_unix sockets\n    \n    unix_stream_recvmsg is refactored to unix_stream_read_generic in this\n    patch and enhanced to deal with pipe splicing. The refactoring is\n    inneglible, we mostly have to deal with a non-existing struct msghdr\n    argument.\n    \n    Signed-off-by: Hannes Frederic Sowa <hannes@str",
+        "exists": true,
+        "reason": "The snippet is sufficient because it explicitly introduces AF_UNIX stream splice support and shows how receive-side SKBs are handled for both normal recvmsg and splice paths. The vulnerable construct is present: `.splice_read = unix_stream_splice_read` is added to `unix_stream_ops`, and `unix_stream_splice_read()` routes reads through `unix_stream_read_generic()` with `recv_actor = unix_stream_splice_actor`. In `unix_stream_read_generic()`, SCM metadata is collected from SKBs via `scm_set_cred()` / `scm.fp = NULL` style handling and finalized with `if (state->msg) scm_recv(sock, state->msg, &scm, flags); else scm_destroy(&scm);`. For the splice path, `state->msg` is NULL, so any SCM state is not delivered through a msg interface; it is merely destroyed at the end. Meanwhile the actual payload transfer for splice is done by `unix_stream_splice_actor()` calling `skb_splice_bits(...)`, which can move data from AF_UNIX SKBs into a pipe without any visible special handling to reject SKBs carrying SCM file descriptors or preserve AF_UNIX GC/accounting semantics. There is no check anywhere in `unix_stream_splice_read()`, `unix_stream_read_generic()`, or `unix_stream_splice_actor()` to refuse splicing SKBs with SCM_RIGHTS / file-descriptor metadata before sending them into the pipe. That missing rejection is the root cause described. Therefore the buggy construct is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 4,
+        "blame_input": {
+          "anchor_commit": "a60e3cc7c929",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 1975
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 1651,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body is only a wait loop around the receive queue: it checks `skb_queue_len(&sk->sk_receive_queue)`, sleep conditions, and sets/clears `SOCK_ASYNC_WAITDATA`. The stated root cause concerns AF_UNIX allowing SKBs with SCM file-descriptor metadata to be redirected into SOCKMAP psock queues, and whether that path exposes SCM references to unix GC and preserves lifetime/accounting. None of that logic appears in this snippet: there is no SCM handling, no skb redirection, no sockmap/psock interaction, and no unix GC/accounting code. Therefore the shown code is not sufficient to determine the vulnerability status of the relevant construct, and the vulnerable construct is absent from this function body."
+      }
+    },
+    {
+      "bic_found": "2b514574f7e88c8498027ee366fd6e7aae5aa4b5",
+      "depth": 4
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2687
+        },
+        "commit": "d6e3b27cbd2df555ff0736796ad2f9a17e74be8b",
+        "commit_short": "d6e3b27cbd2d",
+        "commit_msg": "af_unix: Refactor unix_read_skb()\n\nSimilar to udp_read_skb(), delete the unnecessary while loop in\nunix_read_skb() for r",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2545,
+        "code_snippet": "commit d6e3b27cbd2df555ff0736796ad2f9a17e74be8b\nAuthor: Peilin Ye <peilin.ye@bytedance.com>\nDate:   Thu Sep 22 21:59:26 2022 -0700\n\n    af_unix: Refactor unix_read_skb()\n    \n    Similar to udp_read_skb(), delete the unnecessary while loop in\n    unix_read_skb() for readability.  Since recv_actor() cannot return a\n    value greater than skb->len (see sk_psock_verdict_recv()), remove the\n    redundant check.\n    \n    Suggested-by: Cong Wang <cong.wang@bytedance.com>\n    Signed-off-by: Peilin Ye <",
+        "exists": true,
+        "reason": "The function is sufficient to judge the relevant behavior because it fully shows how AF_UNIX dequeues an skb and passes it into the recv path. In this version, `unix_read_skb()` does `skb = skb_recv_datagram(sk, MSG_DONTWAIT, &err);` and then unconditionally passes that skb to `copied = recv_actor(sk, skb);` before `kfree_skb(skb);`. There is no check anywhere in this function for SCM/file-descriptor metadata on the skb, no rejection of such skb from the psock/SOCKMAP recv actor path, and no special lifetime/accounting handling for SCM-carrying skb. The vulnerability root cause is precisely that AF_UNIX skb with SCM fd metadata could be redirected into SOCKMAP psock queues without being visible to AF_UNIX GC/accounting. This function contains that vulnerable construct because it forwards any dequeued skb directly to `recv_actor()` with no SCM-related guard. The later fix for this bug was to prevent/handle SCM-bearing skb on this path; that protection is absent here. Therefore the buggy construct is present and the fix is not."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "31f1fbcb346c",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2545
+        },
+        "commit": "29df44fa52b70c330d8f2a3871e028a3522b8494",
+        "commit_short": "29df44fa52b7",
+        "commit_msg": "af_unix: Implement ->read_sock() for sockmap\n\nImplement ->read_sock() for AF_UNIX datagram socket, it is\npretty much sim",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2203,
+        "code_snippet": "commit 29df44fa52b70c330d8f2a3871e028a3522b8494\nAuthor: Cong Wang <cong.wang@bytedance.com>\nDate:   Sun Jul 4 12:02:44 2021 -0700\n\n    af_unix: Implement ->read_sock() for sockmap\n    \n    Implement ->read_sock() for AF_UNIX datagram socket, it is\n    pretty much similar to udp_read_sock().\n    \n    Signed-off-by: Cong Wang <cong.wang@bytedance.com>\n    Signed-off-by: Alexei Starovoitov <ast@kernel.org>\n    Link: https://lore.kernel.org/bpf/20210704190252.11866-4-xiyou.wangcong@gmail.com\n\ndiff -",
+        "exists": true,
+        "reason": "The added function `unix_read_sock()` is fully shown, and that is sufficient to assess the vulnerable behavior. This commit newly wires AF_UNIX datagram sockets into sockmap via `.read_sock = unix_read_sock` in `unix_dgram_ops`, and implements the callback path in `unix_read_sock()`. The function dequeues datagram SKBs with `skb = skb_recv_datagram(sk, 0, 1, &err);`, passes them to the sockmap reader via `used = recv_actor(desc, skb, 0, skb->len);`, and then simply frees them with `kfree_skb(skb);`. There is no check for SCM/file-descriptor metadata on the SKB, no rejection of SKBs carrying SCM rights, and no special handling to keep such queued SCM references visible to AF_UNIX garbage collection/accounting. That matches the root cause: AF_UNIX SKBs with SCM FD metadata can be redirected into psock/sockmap handling through `->read_sock()`, but this path does not preserve the AF_UNIX SCM lifetime/accounting assumptions. Because the function directly exposes dequeued AF_UNIX datagrams to `recv_actor` without any SCM-related guard or cleanup, the vulnerable construct is present. The fix is not present here because there is no logic preventing SCM-bearing SKBs from entering this path and no compensating SCM-aware handling."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "0c48eefae712",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2203
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 1642,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body only shows a wait loop on the AF_UNIX receive queue: it checks `skb_queue_len(&sk->sk_receive_queue)`, error/shutdown/signal conditions, sleeps, and returns `timeo`. The root cause concerns AF_UNIX SKBs carrying SCM file-descriptor metadata being redirected into SOCKMAP psock queues without proper GC/accounting integration. Nothing in this snippet shows SCM handling, SKB redirection, SOCKMAP/psock interaction, inflight FD accounting, or AF_UNIX GC exposure. Because the relevant vulnerable construct is not present in the shown code, `has_bug` is false for this function body; however, the snippet is not sufficient to assess the vulnerability itself in this commit, so `sufficient` is false. There is also no evidence of the later fix here."
+      }
+    },
+    {
+      "bic_found": "29df44fa52b70c330d8f2a3871e028a3522b8494",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "2b514574f7e88c8498027ee366fd6e7aae5aa4b5": 1,
+        "29df44fa52b70c330d8f2a3871e028a3522b8494": 1
+      },
+      "bic_candidates": [
+        "2b514574f7e88c8498027ee366fd6e7aae5aa4b5",
+        "29df44fa52b70c330d8f2a3871e028a3522b8494"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

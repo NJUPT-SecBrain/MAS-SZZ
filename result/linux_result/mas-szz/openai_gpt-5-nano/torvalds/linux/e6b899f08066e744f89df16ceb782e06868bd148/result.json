@@ -1,0 +1,341 @@
+{
+  "cveid": "CVE-2026-43403",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e6b899f08066e744f89df16ceb782e06868bd148"
+  ],
+  "ground_truth_bic": "a1d220d9dafa8d76ba60a784a1016c3134e6a1e8",
+  "predicted_bic": [
+    "7fd511f8c911ab6ffb49357d5cd8ef493f28c921",
+    "6786741dbf99e44fb0c0ed85a37582b8a26f1c3b"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 25,
+  "llm_tokens": 22424,
+  "root_cause": {
+    "text": "The nsfs namespace-iteration ioctls (NS_MNT_GET_NEXT/NS_MNT_GET_PREV) lacked a policy check restricting cross-namespace visibility, allowing merely privileged callers to enumerate other privileged services’ mount namespaces and leak information.",
+    "evidence": "The patch adds `may_use_nsfs_ioctl()` and rejects `NS_MNT_GET_NEXT`/`NS_MNT_GET_PREV` with `-EPERM` unless `may_see_all_namespaces()` is true, while the commit/CVE explicitly states the prior behavior let privileged services see other privileged services' namespaces and \"leak information to each other.\"",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/nsfs.c",
+      "lineno": 204,
+      "content": "switch (ioctl) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/nsfs.c",
+      "lineno": 218,
+      "content": "ns = get_proc_ns(file_inode(filp));",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/nsfs.c",
+      "lineno": 215,
+      "content": "if (!nsfs_ioctl_valid(ioctl))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The nsfs namespace-iteration ioctls (NS_MNT_GET_NEXT/NS_MNT_GET_PREV) lacked a policy check restricting cross-namespace visibility, allowing merely privileged callers to enumerate other privileged services’ mount namespaces and leak information.",
+      "evidence_points": "The patch adds `may_use_nsfs_ioctl()` and rejects `NS_MNT_GET_NEXT`/`NS_MNT_GET_PREV` with `-EPERM` unless `may_see_all_namespaces()` is true, while the commit/CVE explicitly states the prior behavior let privileged services see other privileged services' namespaces and \"leak information to each other.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/nsfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/nsfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "include/linux/ns_common.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/nscommon.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add an access check helper that restricts NS_MNT_GET_NEXT and NS_MNT_GET_PREV ioctls to callers permitted to see all namespaces.",
+        "what": "A new static helper function `may_use_nsfs_ioctl(unsigned int cmd)` was added. It switches on `_IOC_NR(cmd)`, returns `may_see_all_namespaces()` for `NS_MNT_GET_NEXT` and `NS_MNT_GET_PREV` using a fallthrough between the two cases, and returns `true` for all other ioctl numbers.",
+        "how": "This introduces a permission gate specifically for the namespace filesystem ioctls that iterate to the next or previous mount namespace, allowing those operations only when `may_see_all_namespaces()` is true while leaving other nsfs ioctls unaffected."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a permission gate in ns_ioctl() to reject unauthorized nsfs ioctls with -EPERM before processing them.",
+        "what": "A new permission check was added in ns_ioctl() immediately after validating the ioctl number: if may_use_nsfs_ioctl(ioctl) returns false, the function now returns -EPERM before obtaining the namespace and entering the switch statement.",
+        "how": "At runtime, valid nsfs ioctls are now additionally gated by may_use_nsfs_ioctl(), preventing disallowed ioctl operations from proceeding and causing them to fail early with a permission error instead of continuing into namespace handling."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "other",
+        "intent_summary": "Declare may_see_all_namespaces in the shared namespace header so other code can check whether all namespaces should be visible.",
+        "what": "A new function prototype, \"bool may_see_all_namespaces(void);\", was added to the header between the ns_common_free macro and the __ns_ref_active_read inline function.",
+        "how": "This makes the may_see_all_namespaces function available to other compilation units including this header, enabling callers to query whether the current context is permitted to see all namespaces at runtime."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Add a helper that centralizes the permission check for allowing a task to see all namespaces.",
+        "what": "A new function `may_see_all_namespaces()` was added after `__ns_ref_active_get()`. It returns a boolean expression that is true only when the current task's active PID namespace is `&init_pid_ns` and `ns_capable_noaudit(init_pid_ns.user_ns, CAP_SYS_ADMIN)` succeeds.",
+        "how": "This introduces a reusable runtime check for whether the current task is allowed to view all namespaces, requiring both execution in the initial PID namespace and possession of `CAP_SYS_ADMIN` in the initial user namespace. It enables other code to gate namespace visibility consistently through this helper."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Add a permission gate in ns_ioctl() to reject unauthorized nsfs ioctls with -EPERM before processing them."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 2,
+          "intent": "Add a helper that centralizes the permission check for allowing a task to see all namespaces."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add permission checks for nsfs namespace navigation ioctls so unauthorized callers are rejected with -EPERM before the operations proceed.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Introduce and expose a shared helper for checking whether a task is permitted to see all namespaces.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly adds the missing policy/permission checks for NS_MNT_GET_NEXT and NS_MNT_GET_PREV in nsfs, preventing unauthorized cross-namespace enumeration and returning -EPERM before proceeding, which matches the stated root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The vulnerability is caused by missing policy checks on namespace visibility. This group adds and exposes a shared helper that centralizes the check for whether a task may see all namespaces, which directly supports enforcing the missing cross-namespace visibility restriction."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/nsfs.c",
+            "lineno": 204,
+            "content": "switch (ioctl) {",
+            "rationale": "The ioctl dispatcher proceeds directly to handling namespace navigation requests without any preceding permission check, enabling unauthorized callers to reach NS_MNT_GET_NEXT/NS_MNT_GET_PREV logic."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/nsfs.c",
+            "lineno": 218,
+            "content": "ns = get_proc_ns(file_inode(filp));",
+            "rationale": "The namespace object is obtained and then used for ioctl processing before verifying whether the caller is allowed to inspect or iterate namespaces, contributing to the missing access control."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "fs/nsfs.c",
+            "lineno": 215,
+            "content": "if (!nsfs_ioctl_valid(ioctl))",
+            "rationale": "Only ioctl validity is checked here; there is no authorization check for sensitive namespace-iteration ioctls, which is the root cause of the information leak."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/nsfs.c",
+            "stmt_text": "switch (ioctl) {",
+            "location": "hunk",
+            "explanation": "This dispatches nsfs ioctls into namespace-handling logic without any prior policy/authorization check, allowing callers to reach NS_MNT_GET_NEXT/NS_MNT_GET_PREV and enumerate mount namespaces across visibility boundaries."
+          },
+          {
+            "vuln_file": "fs/nsfs.c",
+            "stmt_text": "ns = get_proc_ns(file_inode(filp));",
+            "location": "hunk",
+            "explanation": "This obtains the namespace object for subsequent ioctl processing before verifying whether the caller is permitted to inspect or iterate namespaces, reflecting the missing access-control check described in the root cause."
+          },
+          {
+            "vuln_file": "fs/nsfs.c",
+            "stmt_text": "if (!nsfs_ioctl_valid(ioctl))",
+            "location": "hunk",
+            "explanation": "This shows the function only checked ioctl validity, not caller authorization, so sensitive namespace-iteration ioctls were accepted as long as they were syntactically valid."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0b4c7a49137",
+          "anchor_file": "fs/nsfs.c",
+          "anchor_lineno": 204
+        },
+        "commit": "6786741dbf99e44fb0c0ed85a37582b8a26f1c3b",
+        "commit_short": "6786741dbf99",
+        "commit_msg": "nsfs: add ioctl to get an owning user namespace for ns file descriptor\n\nEach namespace has an owning user namespace and ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nsfs.c",
+        "display_lineno": 168,
+        "code_snippet": "commit 6786741dbf99e44fb0c0ed85a37582b8a26f1c3b\nAuthor: Andrey Vagin <avagin@openvz.org>\nDate:   Tue Sep 6 00:47:14 2016 -0700\n\n    nsfs: add ioctl to get an owning user namespace for ns file descriptor\n    \n    Each namespace has an owning user namespace and now there is not way\n    to discover these relationships.\n    \n    Understending namespaces relationships allows to answer the question:\n    what capability does process X have to perform operations on a resource\n    governed by namespace Y",
+        "exists": false,
+        "reason": "The shown function body and diff are sufficient to judge this commit with respect to the stated root cause. The vulnerability described concerns the namespace-iteration ioctls `NS_MNT_GET_NEXT/NS_MNT_GET_PREV` lacking a policy check restricting cross-namespace visibility. In this commit, the only ioctl added/handled is `NS_GET_USERNS`: `switch (ioctl) { case NS_GET_USERNS: return open_related_ns(ns, ns_get_owner); default: return -ENOTTY; }`. There is no implementation of `NS_MNT_GET_NEXT` or `NS_MNT_GET_PREV`, nor any iteration logic over mount namespaces. Therefore the vulnerable construct is absent from this function/code snippet, so `has_bug=false`. At the same time, the later fix for the iteration-visibility issue is also not present here: there is no policy check for mount-namespace iteration because those ioctls are not implemented in this code at all. The helper `open_related_ns()` and `ns_ioctl()` deal only with opening a related namespace (`NS_GET_USERNS`), not restricting cross-namespace enumeration via mount-namespace next/prev ioctls, so `is_fixed=false`."
+      }
+    },
+    {
+      "bic_found": "6786741dbf99e44fb0c0ed85a37582b8a26f1c3b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0b4c7a49137",
+          "anchor_file": "fs/nsfs.c",
+          "anchor_lineno": 218
+        },
+        "commit": "7fd511f8c911ab6ffb49357d5cd8ef493f28c921",
+        "commit_short": "7fd511f8c911",
+        "commit_msg": "nsfs: validate ioctls\n\nNsfs supports extensible and non-extensible ioctls. Validate both types\nto prevent confusion.\n\nLi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nsfs.c",
+        "display_lineno": 197,
+        "code_snippet": "commit 7fd511f8c911ab6ffb49357d5cd8ef493f28c921\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Wed Feb 19 17:40:28 2025 +0100\n\n    nsfs: validate ioctls\n    \n    Nsfs supports extensible and non-extensible ioctls. Validate both types\n    to prevent confusion.\n    \n    Link: https://lore.kernel.org/r/20250219-work-nsfs-v1-1-21128d73c5e8@kernel.org\n    Reviewed-by: Jeff Layton <jlayton@kernel.org>\n    Signed-off-by: Christian Brauner <brauner@kernel.org>\n\ndiff --git a/fs/nsfs.c b/fs/nsfs.c",
+        "exists": true,
+        "reason": "The function body is sufficient because it fully shows the handling of the namespace iteration ioctls `NS_MNT_GET_PREV` and `NS_MNT_GET_NEXT`. In the extensible ioctl switch, cases `_IOC_NR(NS_MNT_GET_PREV)` and `_IOC_NR(NS_MNT_GET_NEXT)` only check that `ns->ops->type != CLONE_NEWNS` and that `usize < MNT_NS_INFO_SIZE_VER0` before calling `mnt_ns = get_sequential_mnt_ns(to_mnt_ns(ns), previous);` (lines 301-307). After that, the code opens and returns a file descriptor for the adjacent mount namespace via `path_from_stashed(...)`, `dentry_open(...)`, and `fd_install(...)` (lines 311-338). There is no policy or permission check restricting cross-namespace visibility before iterating to the next/previous mount namespace. Since the root cause is the lack of a policy check on `NS_MNT_GET_NEXT/NS_MNT_GET_PREV`, this vulnerable construct is present here. The shown code does not contain any fix such as a visibility/access control validation before `get_sequential_mnt_ns()` or before exposing the resulting namespace, so the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2014c95afece",
+          "anchor_file": "fs/nsfs.c",
+          "anchor_lineno": 197
+        },
+        "commit": "ca567df74a28a9fb368c6b2d93e864113f73f5c2",
+        "commit_short": "ca567df74a28",
+        "commit_msg": "nsfs: add pid translation ioctls\n\nAdd ioctl()s to translate pids between pid namespaces.\n\nLXCFS is a tiny fuse filesyste",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nsfs.c",
+        "display_lineno": 151,
+        "code_snippet": "commit ca567df74a28a9fb368c6b2d93e864113f73f5c2\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Sun Jun 7 22:47:08 2020 +0200\n\n    nsfs: add pid translation ioctls\n    \n    Add ioctl()s to translate pids between pid namespaces.\n    \n    LXCFS is a tiny fuse filesystem used to virtualize various aspects of\n    procfs. LXCFS is run on the host. The files and directories it creates\n    can be bind-mounted by e.g. a container at startup and mounted over the\n    various procfs files the contai",
+        "exists": false,
+        "reason": "The shown function body is sufficient because it contains the full ioctl dispatch logic for `ns_ioctl()`. The root cause concerns the namespace-iteration ioctls `NS_MNT_GET_NEXT` / `NS_MNT_GET_PREV` lacking a policy check for cross-namespace visibility. In this snippet, those ioctls are completely absent. The function handles `NS_GET_USERNS`, `NS_GET_PARENT`, `NS_GET_OWNER_UID`, and newly added pid-translation ioctls: `NS_GET_PID_FROM_PIDNS`, `NS_GET_TGID_FROM_PIDNS`, `NS_GET_PID_IN_PIDNS`, and `NS_GET_TGID_IN_PIDNS`. Since the vulnerable mount-namespace iteration logic is not present here at all, this function does not contain the vulnerable construct. Likewise, there is no visible fix for the stated vulnerability in this function body, such as a policy check for `NS_MNT_GET_NEXT` / `NS_MNT_GET_PREV`; those cases are not implemented here."
+      }
+    },
+    {
+      "bic_found": "7fd511f8c911ab6ffb49357d5cd8ef493f28c921",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0b4c7a49137",
+          "anchor_file": "fs/nsfs.c",
+          "anchor_lineno": 215
+        },
+        "commit": "7fd511f8c911ab6ffb49357d5cd8ef493f28c921",
+        "commit_short": "7fd511f8c911",
+        "commit_msg": "nsfs: validate ioctls\n\nNsfs supports extensible and non-extensible ioctls. Validate both types\nto prevent confusion.\n\nLi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nsfs.c",
+        "display_lineno": 194,
+        "code_snippet": "commit 7fd511f8c911ab6ffb49357d5cd8ef493f28c921\nAuthor: Christian Brauner <brauner@kernel.org>\nDate:   Wed Feb 19 17:40:28 2025 +0100\n\n    nsfs: validate ioctls\n    \n    Nsfs supports extensible and non-extensible ioctls. Validate both types\n    to prevent confusion.\n    \n    Link: https://lore.kernel.org/r/20250219-work-nsfs-v1-1-21128d73c5e8@kernel.org\n    Reviewed-by: Jeff Layton <jlayton@kernel.org>\n    Signed-off-by: Christian Brauner <brauner@kernel.org>\n\ndiff --git a/fs/nsfs.c b/fs/nsfs.c",
+        "exists": true,
+        "reason": "The function body is sufficient because it contains the full handling of the namespace iteration ioctls `NS_MNT_GET_PREV` and `NS_MNT_GET_NEXT`. In the extensible ioctl switch, cases `_IOC_NR(NS_MNT_GET_PREV)` and `_IOC_NR(NS_MNT_GET_NEXT)` are handled at lines 291-339. The only checks performed before returning the next/previous mount namespace are type/size validation: `if (ns->ops->type != CLONE_NEWNS) return -EINVAL;` (lines 301-302) and `if (usize < MNT_NS_INFO_SIZE_VER0) return -EINVAL;` (lines 304-305). The code then directly does `mnt_ns = get_sequential_mnt_ns(to_mnt_ns(ns), previous);` (line 307), opens that namespace, optionally copies info, and returns an fd (lines 311-338). There is no policy or permission check restricting cross-namespace visibility before enumerating adjacent mount namespaces. Since the root cause is the lack of such a policy check for `NS_MNT_GET_NEXT/NS_MNT_GET_PREV`, the vulnerable construct is present. The commit message about validating ioctls corresponds to line 194 (`if (!nsfs_ioctl_valid(ioctl)) return -ENOIOCTLCMD;`), which only validates ioctl numbers and does not add the missing cross-namespace visibility restriction. Therefore this version still has the bug and does not contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2014c95afece",
+          "anchor_file": "fs/nsfs.c",
+          "anchor_lineno": 194
+        },
+        "commit": "e8e43a1fcc5c07575f37e40f8a2cd78aee46f9a0",
+        "commit_short": "e8e43a1fcc5c",
+        "commit_msg": "fs: add an ioctl to get the mnt ns id from nsfs\n\nIn order to utilize the listmount() and statmount() extensions that\nall",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nsfs.c",
+        "display_lineno": 158,
+        "code_snippet": "commit e8e43a1fcc5c07575f37e40f8a2cd78aee46f9a0\nAuthor: Josef Bacik <josef@toxicpanda.com>\nDate:   Mon Jun 24 11:49:50 2024 -0400\n\n    fs: add an ioctl to get the mnt ns id from nsfs\n    \n    In order to utilize the listmount() and statmount() extensions that\n    allow us to call them on different namespaces we need a way to get the\n    mnt namespace id from user space.  Add an ioctl to nsfs that will allow\n    us to extract the mnt namespace id in order to make these new extensions\n    usable.\n",
+        "exists": false,
+        "reason": "The shown function body is sufficient because it fully shows the newly added ioctl handling in `ns_ioctl()`. The root cause described concerns the namespace-iteration ioctls `NS_MNT_GET_NEXT/NS_MNT_GET_PREV` missing a policy check for cross-namespace visibility. In this snippet, those iteration ioctls are not present at all. Instead, the added code only handles `case NS_GET_MNTNS_ID`, checks `if (ns->ops->type != CLONE_NEWNS) return -EINVAL;`, then reads `mnt_ns->seq` and returns it with `put_user(id, idp)`. Since the vulnerable iteration logic (`NS_MNT_GET_NEXT/NS_MNT_GET_PREV`) is completely absent from the provided function body, the vulnerable construct is not present here, so `has_bug` is false. There is also no visible fix for the stated root cause, such as a policy check restricting cross-namespace visibility for namespace iteration, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "7fd511f8c911ab6ffb49357d5cd8ef493f28c921",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "6786741dbf99e44fb0c0ed85a37582b8a26f1c3b": 1,
+        "7fd511f8c911ab6ffb49357d5cd8ef493f28c921": 2
+      },
+      "bic_candidates": [
+        "7fd511f8c911ab6ffb49357d5cd8ef493f28c921",
+        "6786741dbf99e44fb0c0ed85a37582b8a26f1c3b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,354 @@
+{
+  "cveid": "CVE-2026-23437",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "0f9ea7141f365b4f27226898e62220fb98ef8dc6"
+  ],
+  "ground_truth_bic": "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+  "predicted_bic": [
+    "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+    "93954b40f6a4fc43226c01a15b02732f884500f1"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 29341,
+  "root_cause": {
+    "text": "The net/shaper read path dereferenced a netdev’s `net_shaper_hierarchy` after only holding a device reference from Netlink prep, without rechecking netdev liveness under RCU, allowing access to hierarchy state after the netdev had been unregistered and flushed.",
+    "evidence": "The commit message explicitly says “a conversion from a ref to a locked netdev must include a liveness check” because “netdev may have been unregistered and flushed,” and the patch adds `net_shaper_hierarchy_rcu()` to check `READ_ONCE(binding->netdev->reg_state) <= NETREG_REGISTERED` before returning `binding->netdev->net_shaper_hierarchy`, replacing prior direct `net_shaper_hierarchy()` use in `net_shaper_lookup()` and `net_shaper_nl_get_dumpit()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/shaper/shaper.c",
+      "lineno": 254,
+      "content": "struct net_shaper_hierarchy *hierarchy = net_shaper_hierarchy(binding);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/shaper/shaper.c",
+      "lineno": 254,
+      "content": "hierarchy = net_shaper_hierarchy(binding);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/shaper/shaper.c",
+      "lineno": 257,
+      "content": "if (!hierarchy || xa_get_mark(&hierarchy->shapers, index,",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/shaper/shaper.c",
+      "lineno": 786,
+      "content": "for (; (shaper = xa_find(&hierarchy->shapers, &ctx->start_index,",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The net/shaper read path dereferenced a netdev’s `net_shaper_hierarchy` after only holding a device reference from Netlink prep, without rechecking netdev liveness under RCU, allowing access to hierarchy state after the netdev had been unregistered and flushed.",
+      "evidence_points": "The commit message explicitly says “a conversion from a ref to a locked netdev must include a liveness check” because “netdev may have been unregistered and flushed,” and the patch adds `net_shaper_hierarchy_rcu()` to check `READ_ONCE(binding->netdev->reg_state) <= NETREG_REGISTERED` before returning `binding->netdev->net_shaper_hierarchy`, replacing prior direct `net_shaper_hierarchy()` use in `net_shaper_lookup()` and `net_shaper_nl_get_dumpit()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/shaper/shaper.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/shaper/shaper.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/shaper/shaper.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add an RCU-safe guarded net shaper hierarchy lookup that avoids returning hierarchy data from an unregistered netdev.",
+        "what": "A new static helper function, net_shaper_hierarchy_rcu(struct net_shaper_binding *binding), was added. It checks whether the binding type is NET_SHAPER_BINDING_TYPE_NETDEV and whether binding->netdev->reg_state is less than or equal to NETREG_REGISTERED using READ_ONCE(), and if so returns binding->netdev->net_shaper_hierarchy via READ_ONCE(); otherwise it returns NULL. The function also includes comments explaining that the READ_ONCE() accesses pair with WRITE_ONCE() in net_shaper_hierarchy_setup and that no other binding type is supported yet.",
+        "how": "At runtime, this provides an RCU-safe way to retrieve a net shaper hierarchy for netdev bindings by reading the device registration state and hierarchy pointer atomically enough to avoid using a netdev that may have been unregistered and flushed before the later RCU lock is taken. It prevents readers from returning a hierarchy pointer from an already unregistered device and falls back to NULL for unsupported or unsafe cases."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the RCU-safe hierarchy accessor in net_shaper_lookup() to make concurrent shaper lookups safe and correct.",
+        "what": "The function net_shaper_lookup() was changed to stop initializing the hierarchy variable with net_shaper_hierarchy(binding) at declaration time, instead declaring struct net_shaper_hierarchy *hierarchy separately and assigning it later with net_shaper_hierarchy_rcu(binding) before the validity check.",
+        "how": "At runtime, the lookup now retrieves the net_shaper_hierarchy pointer through the RCU-aware accessor, which makes the hierarchy fetch consistent with RCU-protected access patterns and avoids using a potentially unsafe or stale non-RCU retrieval during concurrent lookups."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fetch the shaper hierarchy under RCU protection and exit safely when it is absent during dump processing.",
+        "what": "The code removes the pre-RCU assignment and null check using `net_shaper_hierarchy(binding)` and instead acquires `rcu_read_lock()` before fetching the hierarchy with `net_shaper_hierarchy_rcu(binding)`. It adds a null check inside the RCU critical section and, if no hierarchy is present, jumps to a new `out_unlock` label before calling `rcu_read_unlock()` and returning.",
+        "how": "At runtime, the hierarchy pointer is now obtained under RCU protection using the RCU-safe accessor, ensuring the dump operation reads the hierarchy consistently and safely. If the hierarchy does not exist, the function exits cleanly after unlocking rather than accessing it outside the protected section."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add an RCU-safe guarded net shaper hierarchy lookup that avoids returning hierarchy data from an unregistered netdev."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fetch the shaper hierarchy under RCU protection and exit safely when it is absent during dump processing."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Make shaper hierarchy lookups and dump processing RCU-safe by using the protected hierarchy accessor and handling absent hierarchies safely.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by adding an RCU-safe guard around net shaper hierarchy lookup and preventing access to hierarchy data when the netdev has been unregistered, which matches the missing liveness recheck described in the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by rechecking/accessing the netdev shaper hierarchy under RCU, using the protected accessor, and safely handling missing hierarchies during lookup/dump after possible netdev unregistration."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/shaper/shaper.c",
+            "lineno": 254,
+            "content": "struct net_shaper_hierarchy *hierarchy = net_shaper_hierarchy(binding);",
+            "rationale": "This directly performs the unsafe hierarchy lookup from the binding without rechecking netdev liveness under RCU, matching the root cause of dereferencing hierarchy state after unregister/flush."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/shaper/shaper.c",
+            "lineno": 254,
+            "content": "hierarchy = net_shaper_hierarchy(binding);",
+            "rationale": "This dump-path lookup retrieves the hierarchy before entering RCU protection, so it can observe and later use hierarchy state from an unregistered netdev."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/shaper/shaper.c",
+            "lineno": 786,
+            "content": "for (; (shaper = xa_find(&hierarchy->shapers, &ctx->start_index,",
+            "rationale": "This dereferences the previously fetched hierarchy's shapers xarray; if the hierarchy came from an unregistered/flushed netdev, this access is the concrete unsafe use-after-liveness-loss."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/shaper/shaper.c",
+            "lineno": 257,
+            "content": "if (!hierarchy || xa_get_mark(&hierarchy->shapers, index,",
+            "rationale": "This uses hierarchy->shapers immediately after the unsafe hierarchy lookup, embodying the vulnerable dereference path when the hierarchy pointer is stale."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/shaper/shaper.c",
+            "stmt_text": "struct net_shaper_hierarchy *hierarchy = net_shaper_hierarchy(binding);",
+            "location": "hunk",
+            "explanation": "This is the root unsafe fetch of the netdev's shaper hierarchy from the binding without rechecking netdev liveness under RCU. It matches the described bug mechanism: obtaining a hierarchy pointer that may already have been invalidated by netdev unregister/flush."
+          },
+          {
+            "vuln_file": "net/shaper/shaper.c",
+            "stmt_text": "hierarchy = net_shaper_hierarchy(binding);",
+            "location": "hunk",
+            "explanation": "This dump-path hierarchy lookup similarly occurs before the later protected traversal and without an RCU-safe liveness recheck. It can therefore obtain hierarchy state from an unregistered netdev, enabling subsequent unsafe dereferences."
+          },
+          {
+            "vuln_file": "net/shaper/shaper.c",
+            "stmt_text": "if (!hierarchy || xa_get_mark(&hierarchy->shapers, index,",
+            "location": "hunk",
+            "explanation": "This statement directly dereferences hierarchy->shapers immediately after the unsafe hierarchy fetch. If the earlier lookup returned hierarchy state from a netdev that lost liveness, this is the concrete vulnerable dereference path."
+          },
+          {
+            "vuln_file": "net/shaper/shaper.c",
+            "stmt_text": "for (; (shaper = xa_find(&hierarchy->shapers, &ctx->start_index,",
+            "location": "hunk",
+            "explanation": "This statement dereferences the xarray inside the previously fetched hierarchy during dump traversal. When hierarchy was obtained without a proper RCU-safe liveness check, this loop can access flushed hierarchy state after unregister."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8a63baadf084",
+          "anchor_file": "net/shaper/shaper.c",
+          "anchor_lineno": 254
+        },
+        "commit": "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+        "commit_short": "4b623f9f0f59",
+        "commit_msg": "net-shapers: implement NL get operation\n\nIntroduce the basic infrastructure to implement the net-shaper\ncore functionali",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/shaper/shaper.c",
+        "display_lineno": 177,
+        "code_snippet": "commit 4b623f9f0f59652ea71fcb27d60b4c3b65126dbb\nAuthor: Paolo Abeni <pabeni@redhat.com>\nDate:   Wed Oct 9 10:09:49 2024 +0200\n\n    net-shapers: implement NL get operation\n    \n    Introduce the basic infrastructure to implement the net-shaper\n    core functionality. Each network devices carries a net-shaper cache,\n    the NL get() operation fetches the data from such cache.\n    \n    The cache is initially empty, will be fill by the set()/group()\n    operation implemented later and is destroyed a",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full read-side paths (`net_shaper_nl_get_doit`, `net_shaper_nl_get_dumpit`), the hierarchy accessor (`net_shaper_hierarchy`), context setup/teardown, and the flush path (`net_shaper_flush_netdev`). The vulnerable construct is present: `net_shaper_ctx_setup()` only acquires a device reference via `netdev_get_by_index(...)` and stores `ctx->binding.netdev = dev`, but there is no recheck of netdev liveness under RCU before dereferencing `binding->netdev->net_shaper_hierarchy`. In particular, `net_shaper_hierarchy()` does `return READ_ONCE(binding->netdev->net_shaper_hierarchy);` based only on the binding's netdev pointer. Then `net_shaper_nl_get_doit()` enters `rcu_read_lock(); shaper = net_shaper_lookup(binding, &handle);`, where `net_shaper_lookup()` calls `net_shaper_hierarchy(binding)` and then dereferences the returned hierarchy with `xa_load(&hierarchy->shapers, index)`. Likewise, `net_shaper_nl_get_dumpit()` gets `hierarchy = net_shaper_hierarchy(binding);` and then iterates `xa_find(&hierarchy->shapers, ...)`. The flush/destruction path is also shown: `net_shaper_flush_netdev()` -> `net_shaper_flush()` erases entries and finally `kfree(hierarchy);`. There is no check such as validating the device is still live/registered under RCU before accessing `net_shaper_hierarchy`, which matches the root cause. Therefore the bug is present and the fix is not yet in this version."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8a63baadf084",
+          "anchor_file": "net/shaper/shaper.c",
+          "anchor_lineno": 254
+        },
+        "commit": "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+        "commit_short": "4b623f9f0f59",
+        "commit_msg": "net-shapers: implement NL get operation\n\nIntroduce the basic infrastructure to implement the net-shaper\ncore functionali",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/shaper/shaper.c",
+        "display_lineno": 177,
+        "code_snippet": "commit 4b623f9f0f59652ea71fcb27d60b4c3b65126dbb\nAuthor: Paolo Abeni <pabeni@redhat.com>\nDate:   Wed Oct 9 10:09:49 2024 +0200\n\n    net-shapers: implement NL get operation\n    \n    Introduce the basic infrastructure to implement the net-shaper\n    core functionality. Each network devices carries a net-shaper cache,\n    the NL get() operation fetches the data from such cache.\n    \n    The cache is initially empty, will be fill by the set()/group()\n    operation implemented later and is destroyed a",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full netlink read paths (`net_shaper_nl_get_doit()` and `net_shaper_nl_get_dumpit()`), the hierarchy accessor (`net_shaper_hierarchy()`), context setup/teardown, and flush logic. The vulnerable construct is present: `net_shaper_ctx_setup()` only acquires a device reference via `netdev_get_by_index(...)` and stores `ctx->binding.netdev = dev;`, but the later read paths dereference `binding->netdev->net_shaper_hierarchy` without any revalidation of netdev liveness under RCU. Specifically, `net_shaper_hierarchy()` does `return READ_ONCE(binding->netdev->net_shaper_hierarchy);` based only on `binding->netdev`. Then `net_shaper_nl_get_doit()` enters `rcu_read_lock(); shaper = net_shaper_lookup(binding, &handle);` and `net_shaper_lookup()` calls `net_shaper_hierarchy(binding)` and then `xa_load(&hierarchy->shapers, index)`. Likewise `net_shaper_nl_get_dumpit()` obtains `hierarchy = net_shaper_hierarchy(binding);` and iterates it. There is no check analogous to verifying the netdev is still live / not unregistered before using the hierarchy. The cleanup side shows the risk: `net_shaper_flush_netdev()` calls `net_shaper_flush(&binding)`, and `net_shaper_flush()` frees all xarray entries and then `kfree(hierarchy);`. Since the read side can reach the hierarchy via the cached `binding->netdev` after only taking a device ref in prep, this matches the root cause: dereferencing hierarchy state after the netdev may have been unregistered and flushed. No fix is present in this commit snippet: there is no recheck of netdev registration state under RCU, no `dev_hold`/liveness guard tied to RCU visibility, and no protected re-fetch that would prevent use-after-flush."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8a63baadf084",
+          "anchor_file": "net/shaper/shaper.c",
+          "anchor_lineno": 257
+        },
+        "commit": "93954b40f6a4fc43226c01a15b02732f884500f1",
+        "commit_short": "93954b40f6a4",
+        "commit_msg": "net-shapers: implement NL set and delete operations\n\nBoth NL operations directly map on the homonymous device shaper\ncal",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/shaper/shaper.c",
+        "display_lineno": 239,
+        "code_snippet": "commit 93954b40f6a4fc43226c01a15b02732f884500f1\nAuthor: Paolo Abeni <pabeni@redhat.com>\nDate:   Wed Oct 9 10:09:50 2024 +0200\n\n    net-shapers: implement NL set and delete operations\n    \n    Both NL operations directly map on the homonymous device shaper\n    callbacks, update accordingly the shapers cache and are serialized\n    via a per device lock.\n    Implement the cache modification helpers to additionally deal with\n    NODE scope shaper. That will be needed by the group() operation\n    imp",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the relevant net/shaper access pattern to the per-netdev hierarchy and the new NL set/delete paths. The root cause is missing liveness revalidation of the netdev under RCU before dereferencing `net_shaper_hierarchy`. In this commit, `net_shaper_hierarchy(struct net_shaper_binding *binding)` returns the hierarchy for a NETDEV binding by directly reading `binding->netdev->net_shaper_hierarchy` (the diff explicitly references this through the setup path comment: `/* Pairs with READ_ONCE in net_shaper_hierarchy. */ WRITE_ONCE(binding->netdev->net_shaper_hierarchy, hierarchy);`). There is no check in the shown set/delete/read-side helper paths that the netdev is still alive/registered under RCU before using that pointer.\n\nThe vulnerable construct is present because multiple helpers dereference the hierarchy obtained from the bound netdev without any netdev liveness recheck: `net_shaper_lookup()` does `struct net_shaper_hierarchy *hierarchy = net_shaper_hierarchy(binding);` and then accesses `hierarchy->shapers`; `net_shaper_hierarchy_setup()` fetches/installs `binding->netdev->net_shaper_hierarchy`; `__net_shaper_delete()` and `net_shaper_flush()` also use the hierarchy derived from the binding. The locking added here (`net_shaper_lock()` / `net_shaper_unlock()` using `binding->netdev->lock`) serializes device shaper operations, but it is not an RCU-protected netdev liveness revalidation and therefore does not address the described use-after-unregister/flush condition.\n\nThere is no visible fix for the stated bug. The fix would require rechecking netdev liveness under RCU before dereferencing hierarchy state on the netlink access path. No such pattern appears here: there is no `rcu_read_lock()`, no `dev_isalive()`/equivalent liveness validation, and no guarded re-fetch of the hierarchy under RCU before use. Therefore this version still contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "4b623f9f0f59",
+          "anchor_file": "net/shaper/shaper.c",
+          "anchor_lineno": 239
+        },
+        "commit": "04e65df94b3112a1b319b6deb5bab83fd740bc7d",
+        "commit_short": "04e65df94b31",
+        "commit_msg": "netlink: spec: add shaper YAML spec\n\nDefine the user-space visible interface to query, configure and delete\nnetwork shap",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/shaper/shaper.c",
+        "display_lineno": 15,
+        "code_snippet": "commit 04e65df94b3112a1b319b6deb5bab83fd740bc7d\nAuthor: Paolo Abeni <pabeni@redhat.com>\nDate:   Wed Oct 9 10:09:48 2024 +0200\n\n    netlink: spec: add shaper YAML spec\n    \n    Define the user-space visible interface to query, configure and delete\n    network shapers via yaml definition.\n    \n    Add dummy implementations for the relevant NL callbacks.\n    \n    set() and delete() operations touch a single shaper creating/updating or\n    deleting it.\n    The group() operation creates a shaper's gr",
+        "exists": false,
+        "reason": "The shown file only adds stub netlink handlers that all immediately return `-EOPNOTSUPP` and do not access any `net_device`, RCU state, or `net_shaper_hierarchy`. For example, `net_shaper_nl_pre_doit()` is just `return -EOPNOTSUPP;`, `net_shaper_nl_get_doit()` is just `return -EOPNOTSUPP;`, and `net_shaper_nl_get_dumpit()` is just `return -EOPNOTSUPP;`. The root cause requires a read path that dereferences a netdev's `net_shaper_hierarchy` after insufficient liveness validation, but no such dereference or read-path logic exists in this commit. Because the vulnerable construct is absent, `has_bug` is false. There is also no implemented fix logic here (such as rechecking netdev liveness under RCU before dereferencing hierarchy state); the functionality is simply not implemented yet, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "93954b40f6a4fc43226c01a15b02732f884500f1",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8a63baadf084",
+          "anchor_file": "net/shaper/shaper.c",
+          "anchor_lineno": 786
+        },
+        "commit": "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+        "commit_short": "4b623f9f0f59",
+        "commit_msg": "net-shapers: implement NL get operation\n\nIntroduce the basic infrastructure to implement the net-shaper\ncore functionali",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/shaper/shaper.c",
+        "display_lineno": 322,
+        "code_snippet": "commit 4b623f9f0f59652ea71fcb27d60b4c3b65126dbb\nAuthor: Paolo Abeni <pabeni@redhat.com>\nDate:   Wed Oct 9 10:09:49 2024 +0200\n\n    net-shapers: implement NL get operation\n    \n    Introduce the basic infrastructure to implement the net-shaper\n    core functionality. Each network devices carries a net-shaper cache,\n    the NL get() operation fetches the data from such cache.\n    \n    The cache is initially empty, will be fill by the set()/group()\n    operation implemented later and is destroyed a",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the netlink pre/setup path, the read-side get/dump handlers, the hierarchy accessor, and the flush path. The vulnerable construct is present: `net_shaper_ctx_setup()` only acquires a device reference via `netdev_get_by_index(...)` and stores `ctx->binding.netdev = dev;`, but there is no revalidation of netdev liveness under RCU before dereferencing `netdev->net_shaper_hierarchy`. The read path does `rcu_read_lock(); shaper = net_shaper_lookup(binding, &handle);` in `net_shaper_nl_get_doit()`, and `net_shaper_lookup()` calls `net_shaper_hierarchy(binding)`, which directly does `return READ_ONCE(binding->netdev->net_shaper_hierarchy);`. Likewise dumpit does `hierarchy = net_shaper_hierarchy(binding);` and then iterates it. There is no check such as ensuring the netdev is still live/registered while under RCU before accessing the hierarchy pointer. The teardown side shows why this is unsafe: `net_shaper_flush_netdev()` builds a binding from the raw `dev` and calls `net_shaper_flush()`, which fetches the hierarchy, erases/free elements, and finally `kfree(hierarchy);`. Thus the code can access hierarchy state after unregister/flush if only relying on the held device reference from netlink prep. No fix is present in this version: there is no liveness recheck under RCU in `net_shaper_nl_get_doit()`, `net_shaper_nl_get_dumpit()`, `net_shaper_lookup()`, or `net_shaper_hierarchy()`."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb": 3,
+        "93954b40f6a4fc43226c01a15b02732f884500f1": 1
+      },
+      "bic_candidates": [
+        "4b623f9f0f59652ea71fcb27d60b4c3b65126dbb",
+        "93954b40f6a4fc43226c01a15b02732f884500f1"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,309 @@
+{
+  "cveid": "CVE-2026-31541",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "07183aac4a6828e474f00b37c9d795d0d99e18a7"
+  ],
+  "ground_truth_bic": "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86",
+  "predicted_bic": [
+    "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86",
+    "205506228b69be4efbb3809957a69420f26a8d9f"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 28326,
+  "root_cause": {
+    "text": "In the tracing instance teardown path, __remove_instance() cleared trace_flags before calling update_marker_trace(), so the COPY_MARKER state check falsely reported no change and skipped the required RCU synchronization after removing trace_array from the RCU-protected marker_copies list, enabling a use-after-free.",
+    "evidence": "The commit message states “since the flag was already cleared, the state does not change and the synchronization is never called, leaving a possible UAF bug,” and the patch fixes this by moving the flag-clearing loop below update_marker_trace()/synchronize_rcu(), changing update_marker_trace() to test tr->trace_flags instead of list_empty(), and using list_del_rcu() for removal.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/trace/trace.c",
+      "lineno": 9767,
+      "content": "set_tracer_flag(tr, 1ULL << i, 0);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/trace/trace.c",
+      "lineno": 566,
+      "content": "if (list_empty(&tr->marker_list))",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/trace/trace.c",
+      "lineno": 569,
+      "content": "list_del_init(&tr->marker_list);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the tracing instance teardown path, __remove_instance() cleared trace_flags before calling update_marker_trace(), so the COPY_MARKER state check falsely reported no change and skipped the required RCU synchronization after removing trace_array from the RCU-protected marker_copies list, enabling a use-after-free.",
+      "evidence_points": "The commit message states “since the flag was already cleared, the state does not change and the synchronization is never called, leaving a possible UAF bug,” and the patch fixes this by moving the flag-clearing loop below update_marker_trace()/synchronize_rcu(), changing update_marker_trace() to test tr->trace_flags instead of list_empty(), and using list_del_rcu() for removal."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/trace/trace.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/trace/trace.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/trace/trace.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the COPY_MARKER trace flag rather than marker_list emptiness to detect whether marker tracing is already enabled.",
+        "what": "The condition guarding the early return in update_marker_trace() was changed from checking whether tr->marker_list is non-empty via list_empty() to checking whether the TRACE_ITER(COPY_MARKER) bit is set in tr->trace_flags.",
+        "how": "At runtime, enabling marker tracing now depends on the trace array's COPY_MARKER flag instead of the list linkage state, preventing the function from treating list membership as the source of truth and making duplicate-enable detection follow the configured tracing flag."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix marker trace disablement by keying state off the COPY_MARKER flag and using RCU-safe list deletion for concurrent access.",
+        "what": "The condition before disabling marker tracing was changed from checking whether tr->marker_list is empty to checking whether the TRACE_ITER(COPY_MARKER) bit is not set in tr->trace_flags, and the list removal call was changed from list_del_init(&tr->marker_list) to list_del_rcu(&tr->marker_list).",
+        "how": "At runtime, the function now decides whether marker tracing is currently enabled based on the trace flag rather than list emptiness, avoiding a potentially incorrect early return when the list state does not reflect the enabled state. It also removes the marker list entry using the RCU-safe deletion primitive, which preserves correctness for concurrent readers instead of immediately reinitializing the list node."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Reorder trace instance removal so marker trace cleanup happens before clearing tracer flags, preventing incorrect shutdown behavior.",
+        "what": "The code moves the loop that clears tracer flags for bits in ZEROED_TRACE_FLAGS from before the printk_trace and update_marker_trace handling to after the update_marker_trace(tr, 0) call, and adds a comment stating that update_marker_trace must be done before disabling all the flags.",
+        "how": "At runtime, marker trace shutdown now occurs while the relevant tracer flags are still intact, and only afterward are those flags cleared; this prevents update_marker_trace from running after state it depends on has already been disabled."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Reorder trace instance removal so marker trace cleanup happens before clearing tracer flags, preventing incorrect shutdown behavior."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix marker tracing state management and shutdown behavior by relying on the COPY_MARKER flag and performing safe, correctly ordered marker cleanup during disablement and trace instance removal.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly match the root cause: they switch marker state checks to the COPY_MARKER flag, use RCU-safe marker list removal, and reorder instance teardown so marker cleanup occurs before trace_flags are cleared, ensuring the required synchronization is not skipped and preventing the use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 9767,
+            "content": "set_tracer_flag(tr, 1ULL << i, 0);",
+            "rationale": "This clears trace flags during instance teardown before update_marker_trace(tr, 0) is called. Because update_marker_trace's state check depended on the COPY_MARKER-related state, clearing flags first caused it to falsely conclude no marker state change occurred, skipping the needed RCU grace period and enabling use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 566,
+            "content": "if (list_empty(&tr->marker_list))",
+            "rationale": "This disable-path state check used marker_list emptiness instead of the COPY_MARKER flag. During teardown, after flags were cleared, this stale/incorrect predicate could make update_marker_trace report no change, preventing synchronize_rcu() after removal from the RCU-protected list."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 558,
+            "content": "if (!list_empty(&tr->marker_list))",
+            "rationale": "This enable-path state test shows the function was keyed off marker_list state rather than the COPY_MARKER flag. The root cause states marker tracing state management was wrong, and relying on list state instead of the flag contributed to incorrect change detection in teardown."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/trace/trace.c",
+            "lineno": 569,
+            "content": "list_del_init(&tr->marker_list);",
+            "rationale": "This removes the trace_array from the RCU-protected marker_copies list. If update_marker_trace incorrectly returns false due to bad state detection, the caller skips synchronize_rcu(), making this deletion directly relevant to the ensuing use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/trace/trace.c",
+            "stmt_text": "set_tracer_flag(tr, 1ULL << i, 0);",
+            "location": "hunk",
+            "explanation": "This statement cleared the trace flags during __remove_instance() before update_marker_trace(tr, 0) executed. Because teardown state detection depended on the COPY_MARKER-related state, clearing flags first made the later check think no marker state change occurred, so the required RCU synchronization after marker list removal was skipped, leading to use-after-free."
+          },
+          {
+            "vuln_file": "kernel/trace/trace.c",
+            "stmt_text": "if (list_empty(&tr->marker_list))",
+            "location": "hunk",
+            "explanation": "This disable-path predicate used marker_list emptiness rather than the COPY_MARKER flag to decide whether marker tracing state changed. In teardown, this incorrect state check could report no change after the instance had been removed from the RCU-protected list, preventing the caller from performing synchronize_rcu()."
+          },
+          {
+            "vuln_file": "kernel/trace/trace.c",
+            "stmt_text": "list_del_init(&tr->marker_list);",
+            "location": "hunk",
+            "explanation": "This statement removed the trace_array from the marker_copies list. Because the surrounding state logic could incorrectly indicate that marker tracing had not changed, the necessary RCU grace period after this removal was skipped, making this removal part of the use-after-free condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "edca33a56297",
+          "anchor_file": "kernel/trace/trace.c",
+          "anchor_lineno": 9767
+        },
+        "commit": "bbec8e28cac5928c20052c489cb2e345e6bd4271",
+        "commit_short": "bbec8e28cac5",
+        "commit_msg": "tracing: Allow tracer to add more than 32 options\n\nSince enum trace_iterator_flags is 32bit, the max number of the\noptio",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace.c",
+        "display_lineno": 10187,
+        "code_snippet": "commit bbec8e28cac5928c20052c489cb2e345e6bd4271\nAuthor: Masami Hiramatsu (Google) <mhiramat@kernel.org>\nDate:   Fri Oct 31 11:46:11 2025 +0900\n\n    tracing: Allow tracer to add more than 32 options\n    \n    Since enum trace_iterator_flags is 32bit, the max number of the\n    option flags is limited to 32 and it is fully used now. To add\n    a new option, we need to expand it.\n    \n    So replace the TRACE_ITER_##flag with TRACE_ITER(flag) macro which\n    is 64bit bitmask.\n    \n    Link: https://l",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes both `update_marker_trace()` and `__remove_instance()`, which are the relevant pieces for the described teardown bug. In `update_marker_trace()`, disabling copy-marker returns false when the flag is already clear: `if (!(tr->trace_flags & TRACE_ITER(COPY_MARKER))) return false;` and otherwise removes from the RCU list with `list_del_init(&tr->marker_list); tr->trace_flags &= ~TRACE_ITER(COPY_MARKER); return true;`. The root cause says `__remove_instance()` cleared `trace_flags` before calling `update_marker_trace()`, causing this state check to think nothing changed and skip needed RCU sync. In this commit, `__remove_instance()` still disables flags first via `for (i = 0; i < TRACE_FLAGS_MAX_SIZE; i++) { if ((1 << i) & ZEROED_TRACE_FLAGS) set_tracer_flag(tr, 1ULL << i, 0); }`. `ZEROED_TRACE_FLAGS` includes `TRACE_ITER(COPY_MARKER)`, so teardown still calls `set_tracer_flag(..., TRACE_ITER(COPY_MARKER), 0)`. Inside `set_tracer_flag()`, for that mask it does `update_marker_trace(tr, enabled);` and then, because `enabled` is 0, also does `tr->trace_flags &= ~mask;`. There is no visible fix here to preserve the old state before clearing or to force synchronization based on actual list removal during instance teardown. Thus the vulnerable construct is present and the fix is not shown."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "dcb6fa37fd7b",
+          "anchor_file": "kernel/trace/trace.c",
+          "anchor_lineno": 10187
+        },
+        "commit": "205506228b69be4efbb3809957a69420f26a8d9f",
+        "commit_short": "205506228b69",
+        "commit_msg": "tracing: Do not inherit event-fork option for instances\n\nAs the event-fork option requires doing work when enabled and d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace.c",
+        "display_lineno": 6794,
+        "code_snippet": "commit 205506228b69be4efbb3809957a69420f26a8d9f\nAuthor: Steven Rostedt (Red Hat) <rostedt@goodmis.org>\nDate:   Mon Apr 25 22:40:12 2016 -0400\n\n    tracing: Do not inherit event-fork option for instances\n    \n    As the event-fork option requires doing work when enabled and disabled, it\n    can not be passed down to created instances. The instance must clear this\n    flag when it is created, and must clear it when its removed.\n    \n    As more options may be created with this need, a macro ZEROED",
+        "exists": true,
+        "reason": "The shown diff is sufficient because it includes the teardown path in `instance_rmdir()` where the problematic flag clearing occurs. The root cause says teardown became vulnerable when flags were cleared before the logic that would trigger marker-copy cleanup synchronization. In this commit, `instance_rmdir()` newly adds: `for (i = 0; i < TRACE_FLAGS_MAX_SIZE; i++) { if ((1 << i) & ZEROED_TRACE_FLAGS) set_tracer_flag(tr, 1 << i, 0); }` immediately after `list_del(&tr->list);` and before later teardown calls such as `tracing_set_nop(tr);`, `event_trace_del_tracer(tr);`, and `ftrace_destroy_function_files(tr);`. Since `ZEROED_TRACE_FLAGS` is defined as `TRACE_ITER_EVENT_FORK`, this commit explicitly clears trace flags during instance removal. That matches the vulnerable construct described: clearing `trace_flags` in the teardown path before the later update/cleanup logic can observe the prior state. There is no indication here of the actual fix for the vulnerability—namely preserving the old flags or otherwise ensuring `update_marker_trace()` still sees the COPY_MARKER state transition and performs the required RCU synchronization after removal from the RCU-protected list. Therefore the vulnerable construct is present, and the fix is not present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "d50c744ecde7",
+          "anchor_file": "kernel/trace/trace.c",
+          "anchor_lineno": 6794
+        },
+        "commit": "37aea98b84c0ce2ac638510fefeed9f8f920bd34",
+        "commit_short": "37aea98b84c0",
+        "commit_msg": "tracing: Add trace options for tracer options to instances\n\nAdd the tracer options to instances options directory as wel",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace.c",
+        "display_lineno": 6696,
+        "code_snippet": "commit 37aea98b84c0ce2ac638510fefeed9f8f920bd34\nAuthor: Steven Rostedt (Red Hat) <rostedt@goodmis.org>\nDate:   Wed Sep 30 14:27:31 2015 -0400\n\n    tracing: Add trace options for tracer options to instances\n    \n    Add the tracer options to instances options directory as well. Only add the\n    options for tracers that are allowed to be enabled by an instance. But note,\n    that tracer options are global. That is, tracer options enabled in an\n    instance, also take affect at the top level and in",
+        "exists": false,
+        "reason": "The provided function body is not sufficient to determine the specific vulnerability. The root cause is about the instance teardown path in __remove_instance() clearing trace_flags before calling update_marker_trace(), which causes the COPY_MARKER state check to miss a change and skip the required RCU synchronization after removing the trace_array from the RCU-protected marker_copies list. In the shown function, we only see instance removal steps such as `list_del(&tr->list);`, `tracing_set_nop(tr);`, `event_trace_del_tracer(tr);`, `debugfs_remove_recursive(tr->dir);`, `free_trace_buffers(tr);`, and final `kfree(tr);`. There is no visible call to `update_marker_trace()`, no manipulation of `trace_flags`, no check of COPY_MARKER state, and no RCU synchronization logic. Because the vulnerable construct described in the root cause is absent from this snippet and the relevant teardown/helper logic is not shown, a determination about whether this commit contains or fixes that specific bug cannot be made from this function body alone."
+      }
+    },
+    {
+      "bic_found": "205506228b69be4efbb3809957a69420f26a8d9f",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "edca33a56297",
+          "anchor_file": "kernel/trace/trace.c",
+          "anchor_lineno": 566
+        },
+        "commit": "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86",
+        "commit_short": "7b382efd5e8a",
+        "commit_msg": "tracing: Allow the top level trace_marker to write into another instances\n\nThere are applications that have it hard code",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace.c",
+        "display_lineno": 556,
+        "code_snippet": "commit 7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86\nAuthor: Steven Rostedt <rostedt@goodmis.org>\nDate:   Thu May 8 09:56:39 2025 -0400\n\n    tracing: Allow the top level trace_marker to write into another instances\n    \n    There are applications that have it hard coded to write into the top level\n    trace_marker instance (/sys/kernel/tracing/trace_marker). This can be\n    annoying if a profiler is using that instance for other work, or if it\n    needs all writes to go into a new instance.\n    \n    ",
+        "exists": false,
+        "reason": "The root cause is that in the teardown path, `__remove_instance()` cleared `trace_flags` before calling `update_marker_trace()`, causing the COPY_MARKER state check to think nothing changed and thus skip the needed `synchronize_rcu()` after removal from the RCU-protected `marker_copies` list. In this commit's shown code, `__remove_instance()` explicitly performs `if (update_marker_trace(tr, 0)) synchronize_rcu();` before the instance is torn down. The helper `update_marker_trace()` does not rely on `tr->trace_flags` to decide whether removal happened; instead it checks the actual list state: `if (list_empty(&tr->marker_list)) return false;` and on removal does `list_del_init(&tr->marker_list); tr->trace_flags &= ~TRACE_ITER_COPY_MARKER; return true;`. That means the removal is detected based on membership in `marker_copies`, and when removal occurs, `synchronize_rcu()` is issued immediately afterward. This is the correct handling for the RCU-protected iteration sites introduced here: `list_for_each_entry_rcu(tr, &marker_copies, marker_list)` in both `tracing_mark_write()` and `tracing_mark_raw_write()`. Therefore the vulnerable construct described in the root cause is not present in this function set, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "edca33a56297",
+          "anchor_file": "kernel/trace/trace.c",
+          "anchor_lineno": 569
+        },
+        "commit": "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86",
+        "commit_short": "7b382efd5e8a",
+        "commit_msg": "tracing: Allow the top level trace_marker to write into another instances\n\nThere are applications that have it hard code",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/trace/trace.c",
+        "display_lineno": 559,
+        "code_snippet": "commit 7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86\nAuthor: Steven Rostedt <rostedt@goodmis.org>\nDate:   Thu May 8 09:56:39 2025 -0400\n\n    tracing: Allow the top level trace_marker to write into another instances\n    \n    There are applications that have it hard coded to write into the top level\n    trace_marker instance (/sys/kernel/tracing/trace_marker). This can be\n    annoying if a profiler is using that instance for other work, or if it\n    needs all writes to go into a new instance.\n    \n    ",
+        "exists": false,
+        "reason": "The provided snippet is sufficient because it includes both the new marker-copy list management logic and the instance teardown path in `__remove_instance()`, which is exactly where the root-cause bug would appear.\n\nThe root cause says the vulnerability happens when `__remove_instance()` clears `trace_flags` before calling `update_marker_trace()`, causing the COPY_MARKER state check to think nothing changed and skip the needed RCU grace period after removal from the RCU-protected `marker_copies` list.\n\nIn this commit, the teardown code does the correct thing directly in `__remove_instance()`:\n- `if (update_marker_trace(tr, 0))`\n- `    synchronize_rcu();`\n\nThis means the code explicitly removes the instance from the marker-copy path first and performs `synchronize_rcu()` when removal actually happened.\n\nThe helper `update_marker_trace()` clearly shows the relevant state transition:\n- On disable, it checks `if (list_empty(&tr->marker_list)) return false;`\n- Otherwise it does `list_del_init(&tr->marker_list);`\n- Then clears the flag with `tr->trace_flags &= ~TRACE_ITER_COPY_MARKER;`\n- And returns `true`\n\nSo the decision to synchronize is based on actual list membership (`list_empty(&tr->marker_list)`), not on a pre-cleared `trace_flags` bit. That is the correct handling for an RCU-protected list removal. The write side also uses RCU traversal:\n- `list_for_each_entry_rcu(tr, &marker_copies, marker_list)`\nwhich confirms why the grace period matters and why this teardown logic is the fix.\n\nTherefore, the vulnerable construct described in the root cause is not present here, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "205506228b69be4efbb3809957a69420f26a8d9f": 1,
+        "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86": 2
+      },
+      "bic_candidates": [
+        "7b382efd5e8af4c0c67e70ad3fb599dcd2dc0b86",
+        "205506228b69be4efbb3809957a69420f26a8d9f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

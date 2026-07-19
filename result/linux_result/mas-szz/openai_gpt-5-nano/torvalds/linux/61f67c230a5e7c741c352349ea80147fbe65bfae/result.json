@@ -1,0 +1,401 @@
+{
+  "cveid": "CVE-2026-23077",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "61f67c230a5e7c741c352349ea80147fbe65bfae"
+  ],
+  "ground_truth_bic": "879bca0a2c4f40b08d09a95a2a0c3c6513060b5c",
+  "predicted_bic": [
+    "49b1b8d6f6831026cb105b0eafa18f13db612d86"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 90968,
+  "root_cause": {
+    "text": "The mm/vma merge logic for mremap()-copied VMAs failed to always propagate anon_vma state from the copied-from faulted VMA in new-range merges, because vma_expand() only duplicated anon_vma in the remove-next path and did not handle the copied-from source case.",
+    "evidence": "The commit message states that “vma_expand() only performs dup_anon_vma() if the target ... is not the next VMA” and that for mremap() “If we are copying from a VMA in a successful merge we must _always_ propagate anon_vma state”; the fix adds vmg->copied_from, routes copy_vma() through vma_merge_copied_range(), and makes vma_expand() call dup_anon_vma(target, vmg->copied_from, ...) unconditionally, with the bug previously causing unlink_anon_vmas() to free anon_vma while folios still referenced it, leading to UAF.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/vma.c",
+      "lineno": 1133,
+      "content": "if (next && (target != next) && (vmg->end == next->vm_end)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/vma.c",
+      "lineno": 1145,
+      "content": "ret = dup_anon_vma(target, next, &anon_dup);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/vma.c",
+      "lineno": 1834,
+      "content": "new_vma = vma_merge_new_range(&vmg);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The mm/vma merge logic for mremap()-copied VMAs failed to always propagate anon_vma state from the copied-from faulted VMA in new-range merges, because vma_expand() only duplicated anon_vma in the remove-next path and did not handle the copied-from source case.",
+      "evidence_points": "The commit message states that “vma_expand() only performs dup_anon_vma() if the target ... is not the next VMA” and that for mremap() “If we are copying from a VMA in a successful merge we must _always_ propagate anon_vma state”; the fix adds vmg->copied_from, routes copy_vma() through vma_merge_copied_range(), and makes vma_expand() call dup_anon_vma(target, vmg->copied_from, ...) unconditionally, with the bug previously causing unlink_anon_vmas() to free anon_vma while folios still referenced it, leading to UAF."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/vma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "mm/vma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "mm/vma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "mm/vma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "mm/vma.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a warning guard to catch invalid use of existing-range VMA merge logic from mremap paths.",
+        "what": "Two lines were added in vma_merge_existing_range(): a comment stating that an existing merge can never be used by mremap() logic, and a VM_WARN_ON_VMG(vmg->copied_from, vmg) assertion before setting vmg->state = VMA_MERGE_NOMERGE.",
+        "how": "At runtime this adds a debug-time warning if vma_merge_existing_range() is reached with vmg->copied_from set, helping detect an invalid mremap-related call path or unexpected merge state while leaving normal non-debug behavior otherwise unchanged."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a helper for mremap copied-range VMA merging that preserves the source VMA context and reuses new-range merge logic.",
+        "what": "A new static helper function, vma_merge_copied_range(struct vma_merge_struct *vmg), was added along with a descriptive comment block. The function warns if vmg->middle is missing via VM_WARN_ON_VMG(!vmg->middle, vmg), assigns vmg->copied_from = vmg->middle, clears vmg->middle = NULL, and then calls and returns vma_merge_new_range(vmg).",
+        "how": "This introduces a dedicated path for merging a VMA in the destination range of mremap() when the VMA is being copied. At runtime it preserves the source VMA in copied_from, removes it from middle so the existing new-range merge logic can be reused, and emits a warning if the expected copied-from VMA is absent. This enables correct handling of copied-range merges using the existing merge machinery."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Extend vma_expand() to correctly propagate anon_vma state from copied source VMAs and defer next-VMA removal setup until that succeeds.",
+        "what": "The change reorganizes vma_expand() by introducing an outer-scope int ret, moving and tightening validation comments/checks, computing remove_next before the warnings, delaying sticky_flags initialization until after the warnings, and extending anon_vma duplication logic: instead of only calling dup_anon_vma(target, next, &anon_dup) when fully removing next, it now also conditionally calls dup_anon_vma(target, vmg->copied_from, &anon_dup) when vmg->copied_from is set, with shared error handling before commit_merge(); vma_start_write(next) and setting vmg->__remove_next are also moved to occur only after successful anon_vma duplication.",
+        "how": "At runtime, vma_expand() now propagates anon_vma state not only when absorbing the next VMA but also when expanding from a source VMA referenced by copied_from, such as remap/copy-style operations. This preserves anonymous VMA linkage needed for correct memory management behavior, while also avoiding marking next writable or scheduling its removal until anon_vma duplication has succeeded."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the copied-range VMA merge path in `copy_vma()` so duplicated mappings are merged with the correct semantics.",
+        "what": "The code removes the assignment `vmg.middle = NULL; /* New VMA range. */` and changes the function call from `vma_merge_new_range(&vmg)` to `vma_merge_copied_range(&vmg)` in `copy_vma()`.",
+        "how": "At runtime, `copy_vma()` now uses a merge helper specialized for copied VMA ranges instead of treating the range as a generic new VMA range, which changes how the merge logic interprets the operation and avoids relying on explicitly setting `vmg.middle` to `NULL` for this case."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "other",
+        "intent_summary": "Add source-VMA tracking to vma_merge_struct so merge logic can handle copied or mremap-derived VMAs.",
+        "what": "A new field named copied_from of type struct vm_area_struct * was added to struct vma_merge_struct, along with a comment stating it refers to the source VMA when the mapping was copied, such as via mremap().",
+        "how": "This extends the merge context data structure so code using vma_merge_struct can carry and access the original source VMA for copied or remapped VMAs at runtime, enabling later logic to distinguish copy-origin cases such as mremap()-based operations."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a warning guard to catch invalid use of existing-range VMA merge logic from mremap paths."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Use the copied-range VMA merge path in `copy_vma()` so duplicated mappings are merged with the correct semantics."
+        },
+        {
+          "group_id": 2,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add source-VMA tracking to vma_merge_struct so merge logic can handle copied or mremap-derived VMAs."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix copied-range VMA merging during mremap/copy_vma by introducing and using the correct merge path while preserving source VMA and anon_vma semantics.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The added warning specifically guards against incorrect VMA merge logic being used from mremap paths, which is directly tied to the root cause in mremap-related VMA merging and anon_vma propagation."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly target mremap/copy_vma VMA merge behavior and specifically fix anon_vma propagation from the copied-from source VMA during new-range merges, which matches the stated root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The root cause is missing propagation of anon_vma state from the copied-from/source VMA during mremap-related merges. This group explicitly adds source-VMA tracking to vma_merge_struct so merge logic can recognize copied or mremap-derived VMAs, which directly supports fixing that missing source-case handling."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "mm/vma.c",
+            "lineno": 1834,
+            "content": "new_vma = vma_merge_new_range(&vmg);",
+            "rationale": "This routes mremap/copy_vma copied-range merging through the generic new-range merge path, which lacked source-VMA context and therefore could not ensure anon_vma propagation from the copied-from faulted VMA."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "mm/vma.c",
+            "lineno": 1145,
+            "content": "ret = dup_anon_vma(target, next, &anon_dup);",
+            "rationale": "anon_vma duplication was only performed for the remove-next merge case between target and next. This embodies the root cause because no corresponding propagation existed for the copied-from source VMA during mremap copy merges."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "mm/vma.c",
+            "lineno": 1133,
+            "content": "if (next && (target != next) && (vmg->end == next->vm_end)) {",
+            "rationale": "This condition gates the only anon_vma duplication path in vma_expand(), restricting it to remove-next scenarios and excluding copied-from source handling required for mremap-copied VMAs."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/vma.c",
+            "stmt_text": "if (next && (target != next) && (vmg->end == next->vm_end)) {",
+            "location": "hunk",
+            "explanation": "This condition restricts anon_vma duplication in vma_expand() to the remove-next merge case only. That omission is the core flaw: when merging a new range created by mremap()/copy_vma(), there was no equivalent path to propagate anon_vma state from the copied-from faulted VMA."
+          },
+          {
+            "vuln_file": "mm/vma.c",
+            "stmt_text": "ret = dup_anon_vma(target, next, &anon_dup);",
+            "location": "hunk",
+            "explanation": "This is the only anon_vma propagation performed in the shown pre-fix logic, and it duplicates state only from next into target. Because copied-from source VMA state was not handled here or elsewhere in this path, mremap()-copied VMA merges could miss required anon_vma propagation."
+          },
+          {
+            "vuln_file": "mm/vma.c",
+            "stmt_text": "new_vma = vma_merge_new_range(&vmg);",
+            "location": "hunk",
+            "explanation": "copy_vma() routed copied-range merging through the generic new-range merge path, but that path lacked copied-from source-VMA context needed to ensure anon_vma propagation. This call therefore exercised the flawed merge logic that triggered the vulnerability."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "590b13669b81",
+          "anchor_file": "mm/vma.c",
+          "anchor_lineno": 1133
+        },
+        "commit": "4535cb331cfbdbc73d42887330e46e87a4589e6d",
+        "commit_short": "4535cb331cfb",
+        "commit_msg": "mm/vma: use vmg->target to specify target VMA for new VMA merge\n\nIn commit 3a75ccba047b (\"mm: simplify vma merge structu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/vma.c",
+        "display_lineno": 1132,
+        "code_snippet": "commit 4535cb331cfbdbc73d42887330e46e87a4589e6d\nAuthor: Lorenzo Stoakes <ljs@kernel.org>\nDate:   Fri Jun 13 19:48:07 2025 +0100\n\n    mm/vma: use vmg->target to specify target VMA for new VMA merge\n    \n    In commit 3a75ccba047b (\"mm: simplify vma merge structure and expand\n    comments\") we introduced the vmg->target field to make the merging of\n    existing VMAs simpler - clarifying precisely which VMA would eventually\n    become the merged VMA once the merge operation was complete.\n    \n    N",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full relevant logic in both `vma_merge_new_range()` and `vma_expand()`. The root cause is that anon_vma propagation for mremap()-copied VMAs was missing in new-range merges unless the code happened to be in the remove-next path. That vulnerable pattern is still present here. In `vma_expand()`, anon_vma duplication is only done inside `if (next && (target != next) && (vmg->end == next->vm_end)) { ... ret = dup_anon_vma(target, next, &anon_dup); ... }`, i.e. only when `remove_next = true` and the merge absorbs `next`. There is no logic anywhere in this function to duplicate anon_vma from a copied-from source VMA for the non-remove-next new-range merge case. The rest of the function only performs checks like `VM_WARN_ON_VMG(...)` and assigns removal state; it does not add any source-based anon_vma propagation. The changes in this commit merely rename the merge target from `vmg->middle` to `vmg->target` in `vma_merge_new_range()` and `vma_expand()` (for example, `vmg->middle = next` becomes `vmg->target = next`, and `struct vm_area_struct *middle = vmg->middle;` becomes `struct vm_area_struct *target = vmg->target;`). That is a refactoring, not a fix for the described bug. Therefore the vulnerable construct remains: anon_vma duplication occurs only in the remove-next path, and the copied-from source case is still unhandled."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "9e82db9c0cda",
+          "anchor_file": "mm/vma.c",
+          "anchor_lineno": 1132
+        },
+        "commit": "49b1b8d6f6831026cb105b0eafa18f13db612d86",
+        "commit_short": "49b1b8d6f683",
+        "commit_msg": "mm: move internal core VMA manipulation functions to own file\n\nThis patch introduces vma.c and moves internal core VMA m",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/vma.c",
+        "display_lineno": 520,
+        "code_snippet": "commit 49b1b8d6f6831026cb105b0eafa18f13db612d86\nAuthor: Lorenzo Stoakes <ljs@kernel.org>\nDate:   Mon Jul 29 12:50:38 2024 +0100\n\n    mm: move internal core VMA manipulation functions to own file\n    \n    This patch introduces vma.c and moves internal core VMA manipulation\n    functions to this file from mmap.c.\n    \n    This allows us to isolate VMA functionality in a single place such that we\n    can create userspace testing code that invokes this functionality in an\n    environment where we ca",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in this snippet, especially in `vma_expand()` and `copy_vma()`. The root cause says anon_vma from the copied-from faulted VMA was not always propagated in new-range merges because `vma_expand()` only duplicated anon_vma in the remove-next path and did not handle the copied-from source case. That vulnerable construct is present here.\n\nIn `vma_expand()`, anon_vma duplication is only attempted under the condition `if (next && (vma != next) && (end == next->vm_end)) { ... ret = dup_anon_vma(vma, next, &anon_dup); ... }`. This means anon_vma propagation only happens when expanding over `next` and removing it (`remove_next = true`). There is no parameter for a copied-from/source VMA and no logic to copy anon_vma from such a source when expanding a VMA into a newly merged range.\n\nThe helper `dup_anon_vma()` itself would perform the necessary propagation when called: `if (src->anon_vma && !dst->anon_vma) { ... dst->anon_vma = src->anon_vma; ret = anon_vma_clone(dst, src); ... }`. But in `vma_expand()` it is only called with `src = next` in the remove-next case, never with a copied-from VMA.\n\n`copy_vma()` shows the mremap-copy context: it may call `new_vma = vma_merge_new_vma(&vmi, prev, vma, addr, addr + len, pgoff);`, where `vma` is the copied-from source. However, `vma_merge_new_vma()` just forwards to `vma_merge(...)`, and there is no fix here that ensures expansion logic receives or propagates anon_vma from that copied-from source in the new-range merge path.\n\nSo this commit version still contains the vulnerable condition: anon_vma propagation is limited to the remove-next merge path, and the copied-from source case is not handled. Therefore `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "49b1b8d6f6831026cb105b0eafa18f13db612d86",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "590b13669b81",
+          "anchor_file": "mm/vma.c",
+          "anchor_lineno": 1145
+        },
+        "commit": "4535cb331cfbdbc73d42887330e46e87a4589e6d",
+        "commit_short": "4535cb331cfb",
+        "commit_msg": "mm/vma: use vmg->target to specify target VMA for new VMA merge\n\nIn commit 3a75ccba047b (\"mm: simplify vma merge structu",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/vma.c",
+        "display_lineno": 1143,
+        "code_snippet": "commit 4535cb331cfbdbc73d42887330e46e87a4589e6d\nAuthor: Lorenzo Stoakes <ljs@kernel.org>\nDate:   Fri Jun 13 19:48:07 2025 +0100\n\n    mm/vma: use vmg->target to specify target VMA for new VMA merge\n    \n    In commit 3a75ccba047b (\"mm: simplify vma merge structure and expand\n    comments\") we introduced the vmg->target field to make the merging of\n    existing VMAs simpler - clarifying precisely which VMA would eventually\n    become the merged VMA once the merge operation was complete.\n    \n    N",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the relevant new-range merge path in `vma_merge_new_range()` and the beginning of `vma_expand()`, including the only anon_vma propagation logic present here. The root cause is that anon_vma state from the copied-from faulted VMA was not always propagated in new-range merges, because `vma_expand()` only duplicated anon_vma in the remove-next path and did not handle the copied-from source case. In this commit's `vma_expand()`, the only anon_vma duplication shown is inside `if (next && (target != next) && (vmg->end == next->vm_end)) { ... ret = dup_anon_vma(target, next, &anon_dup); ... }`, i.e. only when `remove_next = true` and merging over `next`. There is no logic shown to duplicate/propagate anon_vma from any copied-from source VMA for the new-range merge case when no `remove_next` happens. The changes in this commit are only a field rename/retargeting from `vmg->middle` to `vmg->target` (for example `vmg->middle = next;` -> `vmg->target = next;`, `if (vmg->middle && !vma_expand(vmg))` -> `if (vmg->target && !vma_expand(vmg))`, and local `middle` renamed to `target`). That does not add the missing copied-from anon_vma propagation. Therefore the vulnerable construct is still present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "9e82db9c0cda",
+          "anchor_file": "mm/vma.c",
+          "anchor_lineno": 1143
+        },
+        "commit": "49b1b8d6f6831026cb105b0eafa18f13db612d86",
+        "commit_short": "49b1b8d6f683",
+        "commit_msg": "mm: move internal core VMA manipulation functions to own file\n\nThis patch introduces vma.c and moves internal core VMA m",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/vma.c",
+        "display_lineno": 525,
+        "code_snippet": "commit 49b1b8d6f6831026cb105b0eafa18f13db612d86\nAuthor: Lorenzo Stoakes <ljs@kernel.org>\nDate:   Mon Jul 29 12:50:38 2024 +0100\n\n    mm: move internal core VMA manipulation functions to own file\n    \n    This patch introduces vma.c and moves internal core VMA manipulation\n    functions to this file from mmap.c.\n    \n    This allows us to isolate VMA functionality in a single place such that we\n    can create userspace testing code that invokes this functionality in an\n    environment where we ca",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in the snippet, especially in `vma_expand()` and `copy_vma()`. The root cause says anon_vma state from the copied-from faulted VMA is not always propagated in mremap()-copy merge cases because `vma_expand()` only duplicates anon_vma in the remove-next path and does not handle the copied-from source case.\n\nIn `vma_expand()`, anon_vma duplication is only performed under the condition `if (next && (vma != next) && (end == next->vm_end))`, followed by `ret = dup_anon_vma(vma, next, &anon_dup);`. This means anon_vma is copied only from `next` when `remove_next = true` (the remove-next merge path). There is no parameter for a copied-from source VMA and no logic that duplicates anon_vma from such a source in other expansion cases.\n\nThe mremap copy context is shown by `copy_vma()`, which calls `new_vma = vma_merge_new_vma(&vmi, prev, vma, addr, addr + len, pgoff);`, where the original/source VMA is passed as `vma` into merge logic. However, when merge succeeds, the merge path eventually relies on expansion/merge helpers that only duplicate anon_vma from adjacent VMAs being removed/adjusted, not explicitly from the copied-from source VMA unless that source happens to be the remove target. That matches the described vulnerability.\n\nThere is no visible fix that would pass a source VMA into `vma_expand()` or otherwise ensure anon_vma propagation from the copied-from faulted VMA for new-range merges. Therefore the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "49b1b8d6f6831026cb105b0eafa18f13db612d86",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "590b13669b81",
+          "anchor_file": "mm/vma.c",
+          "anchor_lineno": 1834
+        },
+        "commit": "cacded5e42b9609b07b22d80c10f0076d439f7d1",
+        "commit_short": "cacded5e42b9",
+        "commit_msg": "mm: avoid using vma_merge() for new VMAs\n\nAbstract vma_merge_new_vma() to use vma_merge_struct and rename the\nresultant ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/vma.c",
+        "display_lineno": 1596,
+        "code_snippet": "commit cacded5e42b9609b07b22d80c10f0076d439f7d1\nAuthor: Lorenzo Stoakes <ljs@kernel.org>\nDate:   Fri Aug 30 19:10:18 2024 +0100\n\n    mm: avoid using vma_merge() for new VMAs\n    \n    Abstract vma_merge_new_vma() to use vma_merge_struct and rename the\n    resultant function vma_merge_new_range() to be clear what the purpose of\n    this function is - a new VMA is desired in the specified range, and we\n    wish to see if it is possible to 'merge' surrounding VMAs into this range\n    rather than hav",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full new-range merge path used by copy_vma(), namely copy_vma() -> vma_merge_new_range() -> vma_expand(), and the root cause is specifically about anon_vma propagation in this path. In copy_vma(), the copied-from VMA is passed only as metadata in the merge struct: `VMG_VMA_STATE(vmg, &vmi, NULL, vma, addr, addr + len);` and later `vmg.vma = NULL; /* New VMA range. */ ... new_vma = vma_merge_new_range(&vmg);`. In `vma_merge_new_range()`, when a merge is possible it selects either `next` or `prev` as the VMA to expand: `if (can_merge_right) { vmg->end = next->vm_end; vmg->vma = next; ... }` and/or `if (can_merge_left) { vmg->start = prev->vm_start; vmg->vma = prev; ... }`, then calls `if (vmg->vma && !vma_expand(vmg)) ...`. There is no logic here to propagate anon_vma state from the copied-from source VMA (`vma` supplied in VMG_VMA_STATE) into the expanded merge target for this new-range merge case. The root cause states that `vma_expand()` only duplicated anon_vma in the remove-next path and did not handle the copied-from source case. The shown `vma_expand()` still only has special handling when removing `next`: `if (next && (vma != next) && (vmg->end == next->vm_end)) { ... }`, which is the remove-next path. There is no additional handling for a copied-from faulted source VMA passed through `vmg` from `copy_vma()`. Therefore the vulnerable construct is present: copy_vma() can use the new-range merge path without ensuring anon_vma from the copied-from faulted VMA is propagated. No fix for that source-anon_vma propagation is shown in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "fc21959f74bc",
+          "anchor_file": "mm/vma.c",
+          "anchor_lineno": 1596
+        },
+        "commit": "49b1b8d6f6831026cb105b0eafa18f13db612d86",
+        "commit_short": "49b1b8d6f683",
+        "commit_msg": "mm: move internal core VMA manipulation functions to own file\n\nThis patch introduces vma.c and moves internal core VMA m",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/vma.c",
+        "display_lineno": 1473,
+        "code_snippet": "commit 49b1b8d6f6831026cb105b0eafa18f13db612d86\nAuthor: Lorenzo Stoakes <ljs@kernel.org>\nDate:   Mon Jul 29 12:50:38 2024 +0100\n\n    mm: move internal core VMA manipulation functions to own file\n    \n    This patch introduces vma.c and moves internal core VMA manipulation\n    functions to this file from mmap.c.\n    \n    This allows us to isolate VMA functionality in a single place such that we\n    can create userspace testing code that invokes this functionality in an\n    environment where we ca",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in this snippet, especially `vma_expand()` and `copy_vma()`, so the code is sufficient to judge. The root cause says anon_vma state from the copied-from faulted VMA is not always propagated during mremap()-copy new-range merges because `vma_expand()` only duplicates anon_vma in the remove-next path and does not handle the copied-from source case. In `vma_expand()`, anon_vma propagation occurs only inside `if (next && (vma != next) && (end == next->vm_end)) { ... ret = dup_anon_vma(vma, next, &anon_dup); ... }`, i.e. only when merging over/removing `next`. There is no parameter for a copied-from source VMA and no logic that duplicates anon_vma from such a source in the non-remove-next expansion case. `copy_vma()` shows this is relevant to mremap-copy semantics: it may call `vma_merge_new_vma(&vmi, prev, vma, addr, addr + len, pgoff);` where `vma` is the source/copied-from VMA, and merge paths rely on merge/expand behavior. Because the fix described would require handling the copied-from source anon_vma during new-range merge/expand, and this function lacks any such handling, the vulnerable construct is present. Therefore this version still has the bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "49b1b8d6f6831026cb105b0eafa18f13db612d86",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "49b1b8d6f6831026cb105b0eafa18f13db612d86": 3
+      },
+      "bic_candidates": [
+        "49b1b8d6f6831026cb105b0eafa18f13db612d86"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,253 @@
+{
+  "cveid": "CVE-2026-43254",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "d4f687fbbce45b5e88438e89b5e26c0c15847992"
+  ],
+  "ground_truth_bic": "11851cbd60ea1e5abbd97619d69845ead99303d6",
+  "predicted_bic": [
+    "11851cbd60ea1e5abbd97619d69845ead99303d6"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 30713,
+  "root_cause": {
+    "text": "The ovpn TCP receive path incorrectly reused/coarsely sliced coalesced cloned skbs with pskb_pull/pskb_trim in ovpn_tcp_rcv, so large stream offsets overflowed the u16 skb->network_header offset and packet starts could be left misaligned instead of creating a fresh skb per OpenVPN packet.",
+    "evidence": "The CVE/commit explicitly states that in ovpn_tcp_recv “large cloned skbs from __strp_rcv … may contain multiple coalesced packets” and that “Using pskb_pull with large offsets on coalesced skbs causes skb->data - skb->head to exceed the u16 storage of skb->network_header,” while the patch removes the pskb_pull/pskb_trim-based extraction and replaces it with allocation of a new skb plus skb_copy_bits for each packet.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ovpn/tcp.c",
+      "lineno": 82,
+      "content": "if (!pskb_pull(skb, off)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ovpn/tcp.c",
+      "lineno": 89,
+      "content": "if (pskb_trim(skb, pkt_len) != 0) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ovpn/tcp.c",
+      "lineno": 116,
+      "content": "skb_push(skb, 2);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The ovpn TCP receive path incorrectly reused/coarsely sliced coalesced cloned skbs with pskb_pull/pskb_trim in ovpn_tcp_rcv, so large stream offsets overflowed the u16 skb->network_header offset and packet starts could be left misaligned instead of creating a fresh skb per OpenVPN packet.",
+      "evidence_points": "The CVE/commit explicitly states that in ovpn_tcp_recv “large cloned skbs from __strp_rcv … may contain multiple coalesced packets” and that “Using pskb_pull with large offsets on coalesced skbs causes skb->data - skb->head to exceed the u16 storage of skb->network_header,” while the patch removes the pskb_pull/pskb_trim-based extraction and replaces it with allocation of a new skb plus skb_copy_bits for each packet."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ovpn/tcp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ovpn/tcp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix TCP packet handling by copying each parsed OpenVPN frame into a dedicated skb and validating packet length before opcode processing.",
+        "what": "The change extracts TCP packet slicing logic from ovpn_tcp_rcv() into a new helper, ovpn_tcp_skb_packet(), which allocates a new skb of pkt_len bytes, copies the original skb header, copies only the packet payload from orig_skb at msg->offset + 2 using skb_copy_bits(), consumes the original skb on success, and frees it on error. In ovpn_tcp_rcv(), the previous pskb_pull() and pskb_trim() based in-place manipulation was removed, pkt_len/off types were changed to int, the minimum-size check was changed from pskb_may_pull(skb, OVPN_OPCODE_SIZE) to an explicit pkt_len < OVPN_OPCODE_SIZE test, and the helper is now called before opcode parsing.",
+        "how": "At runtime, received TCP-framed OpenVPN packets are now isolated into a freshly allocated skb containing exactly the current packet instead of modifying the shared/input skb in place. This avoids dependence on pull/trim behavior and ensures opcode parsing and later handling operate on a dedicated skb with the expected packet boundaries. The explicit length check also rejects undersized packets before extraction, while failures during skb allocation or payload copying now cleanly drop the original skb."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Restore and populate the TCP packet length header before sending the skb to userspace so userspace receives a valid size-prefixed packet.",
+        "what": "The code replaces a plain `skb_push(skb, 2);` call with `*(__be16 *)__skb_push(skb, sizeof(u16)) = htons(pkt_len);`, so instead of only moving the skb data pointer back by two bytes, it now also writes the packet length header value into the restored space using a 16-bit big-endian encoding.",
+        "how": "At runtime, packets forwarded to userspace will now have the expected 2-byte size header actually restored with the correct length value, rather than merely reserving header space with undefined or stale contents. This fixes malformed packet delivery to userspace when the TCP packet size header had previously been stripped."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Restore and populate the TCP packet length header before sending the skb to userspace so userspace receives a valid size-prefixed packet."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix OpenVPN-over-TCP packet processing so parsed frames are validated and delivered to userspace as correctly size-prefixed packets.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly modify the OpenVPN TCP receive path to stop reusing/coarsely slicing parsed stream buffers and instead create a dedicated skb per parsed frame, with added length validation. This matches the root cause of misaligned packet starts and header offset overflow from manipulating cloned/coalesced skbs, and the restored length header ensures correctly formed packets are delivered onward."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ovpn/tcp.c",
+            "lineno": 82,
+            "content": "if (!pskb_pull(skb, off)) {",
+            "rationale": "This is the primary vulnerable operation: it advances skb->data by a potentially large stream offset on a coalesced/cloned skb, reusing the original skb instead of creating a fresh per-packet skb. The root cause specifically cites pskb_pull on coarsely sliced coalesced skbs leading to header offset overflow/misalignment."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ovpn/tcp.c",
+            "lineno": 89,
+            "content": "if (pskb_trim(skb, pkt_len) != 0) {",
+            "rationale": "This further mutates the reused coalesced skb in place to slice out one OpenVPN packet. Combined with pskb_pull, it embodies the flawed design of trimming shared/coalesced skbs rather than copying each parsed frame into a dedicated skb."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/ovpn/tcp.c",
+            "lineno": 116,
+            "content": "skb_push(skb, 2);",
+            "rationale": "After in-place pull/trim, this pushes back the length header on the same skb before userspace delivery. Reusing the mutated skb after offset manipulation can preserve misalignment caused earlier, making this part of the vulnerable packet handling sequence."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ovpn/tcp.c",
+            "stmt_text": "if (!pskb_pull(skb, off)) {",
+            "location": "hunk",
+            "explanation": "This statement is the core of the vulnerability: it advances the data pointer on a reused coalesced/cloned skb by a potentially large stream offset. The root cause states that such coarse slicing can overflow the u16 skb->network_header offset and leave packet starts misaligned instead of creating a fresh skb for each OpenVPN packet."
+          },
+          {
+            "vuln_file": "drivers/net/ovpn/tcp.c",
+            "stmt_text": "if (pskb_trim(skb, pkt_len) != 0) {",
+            "location": "hunk",
+            "explanation": "This statement completes the flawed in-place slicing approach by trimming the same reused skb down to one parsed packet. Together with pskb_pull, it embodies the vulnerable design of mutating shared/coalesced skbs rather than copying each frame into a dedicated skb."
+          },
+          {
+            "vuln_file": "drivers/net/ovpn/tcp.c",
+            "stmt_text": "skb_push(skb, 2);",
+            "location": "hunk",
+            "explanation": "This statement continues using the same skb after the unsafe pull/trim operations by pushing the size header back onto the mutated skb. If earlier in-place offset manipulation left the packet misaligned, this preserves and propagates that malformed skb state."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3f1af4853076",
+          "anchor_file": "drivers/net/ovpn/tcp.c",
+          "anchor_lineno": 82
+        },
+        "commit": "11851cbd60ea1e5abbd97619d69845ead99303d6",
+        "commit_short": "11851cbd60ea",
+        "commit_msg": "ovpn: implement TCP transport\n\nWith this change ovpn is allowed to communicate to peers also via TCP.\nParsing of incomin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ovpn/tcp.c",
+        "display_lineno": 82,
+        "code_snippet": "commit 11851cbd60ea1e5abbd97619d69845ead99303d6\nAuthor: Antonio Quartulli <antonio@openvpn.net>\nDate:   Tue Apr 15 13:17:28 2025 +0200\n\n    ovpn: implement TCP transport\n    \n    With this change ovpn is allowed to communicate to peers also via TCP.\n    Parsing of incoming messages is implemented through the strparser API.\n    \n    Note that ovpn redefines sk_prot and sk_socket->ops for the TCP socket\n    used to communicate with the peer.\n    For this reason it needs to access inet6_stream_ops,",
+        "exists": true,
+        "reason": "The vulnerable logic is clearly present in `ovpn_tcp_rcv()`, so the snippet is sufficient. The function explicitly reuses the incoming `skb` and reshapes it in place using `pskb_pull()` and `pskb_trim()` based on stream offsets: `size_t off = msg->offset + 2;` followed by `if (!pskb_pull(skb, off))` and then `if (pskb_trim(skb, pkt_len) != 0)`. This matches the root cause: coalesced/cloned skbs are being coarsely sliced in place rather than creating a fresh skb per OpenVPN packet. Because `off` is derived from `msg->offset`, large stream offsets can be applied directly to the skb via `pskb_pull()`, which is the problematic construct described. There is no code here that allocates or clones a new skb for the individual OpenVPN packet before handing it onward; instead the same skb is modified and then used for kernel handling (`ovpn_recv(peer, skb);`) or even pushed back for userspace (`skb_push(skb, 2); ovpn_tcp_to_userspace(...)`). Therefore the vulnerable construct is present, and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "11851cbd60ea1e5abbd97619d69845ead99303d6",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3f1af4853076",
+          "anchor_file": "drivers/net/ovpn/tcp.c",
+          "anchor_lineno": 89
+        },
+        "commit": "11851cbd60ea1e5abbd97619d69845ead99303d6",
+        "commit_short": "11851cbd60ea",
+        "commit_msg": "ovpn: implement TCP transport\n\nWith this change ovpn is allowed to communicate to peers also via TCP.\nParsing of incomin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ovpn/tcp.c",
+        "display_lineno": 89,
+        "code_snippet": "commit 11851cbd60ea1e5abbd97619d69845ead99303d6\nAuthor: Antonio Quartulli <antonio@openvpn.net>\nDate:   Tue Apr 15 13:17:28 2025 +0200\n\n    ovpn: implement TCP transport\n    \n    With this change ovpn is allowed to communicate to peers also via TCP.\n    Parsing of incoming messages is implemented through the strparser API.\n    \n    Note that ovpn redefines sk_prot and sk_socket->ops for the TCP socket\n    used to communicate with the peer.\n    For this reason it needs to access inet6_stream_ops,",
+        "exists": true,
+        "reason": "The vulnerable receive logic is clearly present in `ovpn_tcp_rcv()`, so the shown code is sufficient. The function directly reuses the incoming `skb` from strparser and adjusts it in place using coarse slicing operations: `if (!pskb_pull(skb, off))` with `off = msg->offset + 2;` and then `if (pskb_trim(skb, pkt_len) != 0)`. This matches the root cause: coalesced/cloned stream skbs are being reused and trimmed/pulled instead of creating a fresh skb per OpenVPN packet. Because `off` is derived from the stream parser offset and can become large on coalesced TCP streams, this in-place pull on the original skb is exactly the problematic construct that can overflow the 16-bit skb header offset bookkeeping and leave packet starts misaligned. There is no code here that allocates or clones a fresh packet skb for each parsed OpenVPN message before passing it onward; instead the same skb is modified and later even `skb_push(skb, 2)` is used to put the size header back for userspace. Therefore the vulnerable construct is present, and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "11851cbd60ea1e5abbd97619d69845ead99303d6",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3f1af4853076",
+          "anchor_file": "drivers/net/ovpn/tcp.c",
+          "anchor_lineno": 116
+        },
+        "commit": "11851cbd60ea1e5abbd97619d69845ead99303d6",
+        "commit_short": "11851cbd60ea",
+        "commit_msg": "ovpn: implement TCP transport\n\nWith this change ovpn is allowed to communicate to peers also via TCP.\nParsing of incomin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ovpn/tcp.c",
+        "display_lineno": 116,
+        "code_snippet": "commit 11851cbd60ea1e5abbd97619d69845ead99303d6\nAuthor: Antonio Quartulli <antonio@openvpn.net>\nDate:   Tue Apr 15 13:17:28 2025 +0200\n\n    ovpn: implement TCP transport\n    \n    With this change ovpn is allowed to communicate to peers also via TCP.\n    Parsing of incoming messages is implemented through the strparser API.\n    \n    Note that ovpn redefines sk_prot and sk_socket->ops for the TCP socket\n    used to communicate with the peer.\n    For this reason it needs to access inet6_stream_ops,",
+        "exists": true,
+        "reason": "The vulnerable receive logic is clearly present in `ovpn_tcp_rcv()`, so the snippet is sufficient. The root cause says the bug comes from reusing/coarsely slicing coalesced cloned skbs with `pskb_pull/pskb_trim` instead of creating a fresh skb per OpenVPN packet. This function does exactly that: it computes a potentially large stream offset with `size_t off = msg->offset + 2;`, then directly mutates the incoming skb with `if (!pskb_pull(skb, off))` to move `skb->data` to the packet start, followed by `if (pskb_trim(skb, pkt_len) != 0)` to cut it to packet length. There is no allocation/copy of a fresh skb for the parsed packet before further processing or userspace delivery; instead the same skb is reused and even later adjusted again with `skb_push(skb, 2)` for userspace. That matches the described vulnerable construct: coarse in-place slicing of a strparser/coalesced skb using pull/trim on possibly large offsets. The fix described in the root cause would require creating a fresh skb per OpenVPN packet to avoid offset/header misalignment and `u16 skb->network_header` overflow issues, but no such handling appears anywhere in this function. Therefore the bug is present and the fix is not."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "11851cbd60ea1e5abbd97619d69845ead99303d6",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "11851cbd60ea1e5abbd97619d69845ead99303d6": 3
+      },
+      "bic_candidates": [
+        "11851cbd60ea1e5abbd97619d69845ead99303d6"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

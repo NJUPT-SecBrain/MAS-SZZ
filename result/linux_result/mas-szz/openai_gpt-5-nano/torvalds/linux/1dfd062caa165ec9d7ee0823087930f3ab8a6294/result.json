@@ -1,0 +1,418 @@
+{
+  "cveid": "CVE-2026-43376",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "1dfd062caa165ec9d7ee0823087930f3ab8a6294"
+  ],
+  "ground_truth_bic": "18b4fac5ef17f77fed9417d22210ceafd6525fc7",
+  "predicted_bic": [
+    "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 31,
+  "llm_tokens": 17995,
+  "root_cause": {
+    "text": "ksmbd’s oplock subsystem freed `struct oplock_info` with immediate `kfree()` even though `fp->f_opinfo` was published and read under RCU, so readers in functions like `opinfo_get()` could dereference an `oplock_info` after it was freed because no RCU grace period was honored.",
+    "evidence": "The CVE/commit explicitly states `oplock_info` was “accessed under RCU read-side critical sections in places like opinfo_get() and proc_show_files()” and that “there is no RCU grace period delay between nullifying the pointer and freeing the memory”; the patch adds `struct rcu_head rcu`, replaces direct freeing with `call_rcu(&opinfo->rcu, free_opinfo_rcu)`, and notes the UAF in `opinfo_get()` when `atomic_inc_not_zero()` runs on freed memory.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 129,
+      "content": "kfree(opinfo);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1293,
+      "content": "free_opinfo(opinfo);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/smb/server/oplock.c",
+      "lineno": 1280,
+      "content": "rcu_assign_pointer(fp->f_opinfo, opinfo);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "ksmbd’s oplock subsystem freed `struct oplock_info` with immediate `kfree()` even though `fp->f_opinfo` was published and read under RCU, so readers in functions like `opinfo_get()` could dereference an `oplock_info` after it was freed because no RCU grace period was honored.",
+      "evidence_points": "The CVE/commit explicitly states `oplock_info` was “accessed under RCU read-side critical sections in places like opinfo_get() and proc_show_files()” and that “there is no RCU grace period delay between nullifying the pointer and freeing the memory”; the patch adds `struct rcu_head rcu`, replaces direct freeing with `call_rcu(&opinfo->rcu, free_opinfo_rcu)`, and notes the UAF in `opinfo_get()` when `atomic_inc_not_zero()` runs on freed memory."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/smb/server/oplock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "fs/smb/server/oplock.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Rename free_opinfo to __free_opinfo to clarify its role or reserve the original name for a wrapper without changing current behavior.",
+        "what": "The static function definition named free_opinfo was renamed to __free_opinfo, with no changes to its parameters or body.",
+        "how": "At runtime this does not change the function's internal behavior; it changes the symbol name used within the file, likely to distinguish this implementation from another function or prepare it to be wrapped or referenced differently elsewhere."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Defer oplock_info destruction through RCU so readers can safely finish before the structure is freed.",
+        "what": "The diff adds a new RCU callback function, free_opinfo_rcu(struct rcu_head *rcu), which retrieves struct oplock_info from its embedded rcu field using container_of() and calls __free_opinfo(opinfo). It also replaces the existing free_opinfo(struct oplock_info *opinfo) implementation so that it no longer directly frees the object and instead invokes call_rcu(&opinfo->rcu, free_opinfo_rcu).",
+        "how": "At runtime, freeing of struct oplock_info is deferred until after an RCU grace period rather than happening immediately. This allows concurrent RCU readers to finish accessing the object before its memory is released, preventing potential use-after-free races during oplock_info teardown."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use an explicit ksmbd_file argument when adding oplock info so the oplock entry is attached using the correct file inode context.",
+        "what": "The static function signature of opinfo_add was changed from taking only struct oplock_info *opinfo to taking an additional struct ksmbd_file *fp parameter, and the local ksmbd_inode lookup was updated from opinfo->o_fp->f_ci to fp->f_ci.",
+        "how": "At runtime, opinfo_add now uses the explicitly passed file pointer to select the inode whose oplock list is updated instead of implicitly dereferencing the file pointer stored inside opinfo. This allows the caller to control which file context is used when adding the oplock entry and avoids relying on opinfo->o_fp for that lookup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Defer linking oplock state to the file until setup succeeds and clean it up correctly on failure to avoid stale or freed opinfo references.",
+        "what": "The code moves `rcu_assign_pointer(fp->f_opinfo, opinfo);` and `opinfo->o_fp = fp;` from before the oplock bookkeeping and lease setup to just before the successful return, changes `opinfo_add(opinfo);` to `opinfo_add(opinfo, fp);`, and replaces `free_opinfo(opinfo);` with `__free_opinfo(opinfo);` in the error path.",
+        "how": "This delays attaching the new opinfo to the file pointer until after reference counting, list insertion, and lease global-list registration have succeeded, so a failed lease setup no longer leaves `fp->f_opinfo` or `opinfo->o_fp` pointing at an object that is about to be freed; the updated helper call also passes `fp` directly during opinfo addition, and the error path uses the lower-level free routine for cleanup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Add an rcu_head to oplock_info so it can be safely reclaimed with RCU while leaving existing behavior otherwise unchanged.",
+        "what": "The struct oplock_info definition was modified by reformatting the alignment of the existing wait_queue_head_t fields oplock_q and oplock_brk, and by adding a new field, struct rcu_head rcu, at the end of the struct.",
+        "how": "At runtime, this enables oplock_info instances to participate in RCU-based deferred reclamation or callbacks, allowing the structure to be safely freed or processed after an RCU grace period while preserving concurrent access safety; the spacing changes do not affect behavior."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Rename free_opinfo to __free_opinfo to clarify its role or reserve the original name for a wrapper without changing current behavior."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Defer linking oplock state to the file until setup succeeds and clean it up correctly on failure to avoid stale or freed opinfo references."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use an explicit ksmbd_file argument when adding oplock info so the oplock entry is attached using the correct file inode context."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add an rcu_head to oplock_info so it can be safely reclaimed with RCU while leaving existing behavior otherwise unchanged."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "REJECT",
+        "core_intent": "Safely manage oplock_info lifetime and attachment so readers never observe or use stale or freed oplock state during setup and teardown.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "REJECT",
+        "core_intent": "Make oplock state attachment and teardown safe by deferring publication to the file until setup succeeds and using RCU-aware cleanup to avoid readers observing freed opinfo.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Make oplock state lifetime and attachment to files safe by deferring publication until setup succeeds and deferring destruction so readers cannot observe freed state.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only renames free_opinfo to __free_opinfo for clarification/reserving a wrapper and explicitly does not change behavior, so it does not address the RCU use-after-free root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: `oplock_info` was published via `fp->f_opinfo` and read under RCU but freed immediately. Deferring destruction through RCU fixes the use-after-free window, and delaying attachment to the file until setup succeeds prevents readers from seeing stale or partially initialized oplock state."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "This change is about passing the correct ksmbd_file/inode context when attaching oplock info, not about the RCU lifetime bug where oplock_info was freed with kfree() before an RCU grace period. It does not address delayed reclamation or safe RCU dereference of fp->f_opinfo."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The root cause is premature freeing of oplock_info despite RCU-protected readers. Adding an rcu_head to oplock_info is a direct prerequisite for RCU-delayed reclamation, so this change directly addresses the use-after-free cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 129,
+            "content": "kfree(opinfo);",
+            "rationale": "This immediately frees oplock_info even though readers access fp->f_opinfo under RCU, violating the required grace period and enabling use-after-free."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1280,
+            "content": "rcu_assign_pointer(fp->f_opinfo, opinfo);",
+            "rationale": "This publishes opinfo through an RCU-protected pointer, so freeing the same object with plain kfree without RCU reclamation creates the stale-reader use-after-free condition."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "fs/smb/server/oplock.c",
+            "lineno": 1293,
+            "content": "free_opinfo(opinfo);",
+            "rationale": "On the error path, the already-published opinfo is freed, which is unsafe because fp->f_opinfo may still be visible to RCU readers."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "kfree(opinfo);",
+            "location": "hunk",
+            "explanation": "This is the direct vulnerable free. oplock_info was published via an RCU-protected pointer and could still be accessed by RCU readers, but this statement reclaims it immediately without waiting for an RCU grace period, causing the use-after-free."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "free_opinfo(opinfo);",
+            "location": "hunk",
+            "explanation": "This error-path free is vulnerable because the object had already been published through fp->f_opinfo, so freeing it here can leave RCU readers dereferencing freed memory."
+          },
+          {
+            "vuln_file": "fs/smb/server/oplock.c",
+            "stmt_text": "rcu_assign_pointer(fp->f_opinfo, opinfo);",
+            "location": "hunk",
+            "explanation": "This statement publishes oplock_info to RCU readers. Combined with immediate destruction on later paths, it creates the stale published reference that enables the use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "40955015fae4",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 129
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 125,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the complete destruction logic for `struct oplock_info`. The vulnerable construct is present: after optional lease cleanup (`if (opinfo->is_lease) free_lease(opinfo);`), the object is released with immediate `kfree(opinfo);` at line 125. Per the root cause, `fp->f_opinfo` is published/read under RCU, so freeing `struct oplock_info` with plain `kfree()` does not wait for an RCU grace period and allows readers such as `opinfo_get()` to race with reclamation. There is no RCU-safe freeing mechanism here (for example, no `call_rcu()`, `kfree_rcu()`, or equivalent deferred free), so the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "40955015fae4",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1293
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1220,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The snippet only shows the error path `err_out:` with `free_opinfo(opinfo);` and `return err;`, but it does not show the surrounding function logic, how `opinfo` relates to `fp->f_opinfo`, whether this object has been published to RCU readers before this free, or how `free_opinfo()` is implemented. The root cause specifically depends on freeing a published `struct oplock_info` with immediate `kfree()` instead of deferring via an RCU grace period. From this isolated tail snippet alone, we cannot determine whether the freed object is RCU-published or whether `free_opinfo()` already performs safe deferred freeing. Therefore critical context is missing."
+      }
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "40955015fae4",
+          "anchor_file": "fs/smb/server/oplock.c",
+          "anchor_lineno": 1280
+        },
+        "commit": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+        "commit_short": "e2f34481b24d",
+        "commit_msg": "cifsd: add server-side procedures for SMB3\n\nThis adds smb3 engine, NTLM/NTLMv2/Kerberos authentication, oplock/lease\ncac",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/smb/server/oplock.c",
+        "display_lineno": 1207,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The snippet only shows publication of the oplock pointer via `rcu_assign_pointer(fp->f_opinfo, opinfo);` followed by initialization/use (`opinfo->o_fp = fp;`, `opinfo_count_inc(fp);`, `opinfo_add(opinfo);`). The stated root cause is about the free path using immediate `kfree()` instead of an RCU-delayed free after `fp->f_opinfo` has been published and read under RCU. This snippet does not show any freeing logic (`kfree`, `kfree_rcu`, `call_rcu`, or similar), so the vulnerable construct described in the root cause is not visible here. While `rcu_assign_pointer` indicates the object is indeed RCU-published, determining whether this function itself contains the bug or fix requires the corresponding teardown/free path, which is not included."
+      }
+    },
+    {
+      "bic_found": "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9": 3
+      },
+      "bic_candidates": [
+        "e2f34481b24db2fd634b5edb0a5bd0e4d38cc6e9"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,411 @@
+{
+  "cveid": "CVE-2026-31473",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "bef4f4a88b73e4cc550d25f665b8a9952af22773"
+  ],
+  "ground_truth_bic": "6093d3002eabd7c2913d97f1d1f4ce34b072acf9",
+  "predicted_bic": [
+    "10905d70d78841a6fa191be5ec193e3c0d63555f",
+    "cc6eddcd37ce6be403b5820ffd84cb84b33b653f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 29,
+  "llm_tokens": 20287,
+  "root_cause": {
+    "text": "The media request subsystem and vb2 queue teardown paths in `mc-request.c`/`v4l2-ioctl.c` did not use a common lock, so `MEDIA_REQUEST_IOC_REINIT` could free/clean a request concurrently with `VIDIOC_REQBUFS(0)`-triggered queue cancellation, creating a use-after-free race on request objects.",
+    "evidence": "The patch explicitly says “MEDIA_REQUEST_IOC_REINIT can run concurrently with VIDIOC_REQBUFS(0) queue teardown paths” and fixes it by adding `mdev->req_queue_mutex` locking in `media_request_ioctl_reinit()` and extending the existing serialization in `__video_do_ioctl()` from only `VIDIOC_STREAMON/OFF` to also include `VIDIOC_REQBUFS`, showing the bug was missing synchronization between request cleanup and queue cancellation.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/media/mc/mc-request.c",
+      "lineno": 211,
+      "content": "req->state = MEDIA_REQUEST_STATE_CLEANING;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/media/mc/mc-request.c",
+      "lineno": 195,
+      "content": "spin_lock_irqsave(&req->lock, flags);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/media/mc/mc-request.c",
+      "lineno": 196,
+      "content": "if (req->state != MEDIA_REQUEST_STATE_IDLE &&",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/media/mc/mc-request.c",
+      "lineno": 197,
+      "content": "req->state != MEDIA_REQUEST_STATE_COMPLETE) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/media/v4l2-core/v4l2-ioctl.c",
+      "lineno": 3090,
+      "content": "if (v4l2_device_supports_requests(vfd->v4l2_dev) &&",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The media request subsystem and vb2 queue teardown paths in `mc-request.c`/`v4l2-ioctl.c` did not use a common lock, so `MEDIA_REQUEST_IOC_REINIT` could free/clean a request concurrently with `VIDIOC_REQBUFS(0)`-triggered queue cancellation, creating a use-after-free race on request objects.",
+      "evidence_points": "The patch explicitly says “MEDIA_REQUEST_IOC_REINIT can run concurrently with VIDIOC_REQBUFS(0) queue teardown paths” and fixes it by adding `mdev->req_queue_mutex` locking in `media_request_ioctl_reinit()` and extending the existing serialization in `__video_do_ioctl()` from only `VIDIOC_STREAMON/OFF` to also include `VIDIOC_REQBUFS`, showing the bug was missing synchronization between request cleanup and queue cancellation."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/media/mc/mc-request.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/media/mc/mc-request.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/media/mc/mc-request.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/media/mc/mc-request.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/media/v4l2-core/v4l2-ioctl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add mutex serialization to protect media request reinitialization from concurrent queue access races.",
+        "what": "A mutex lock on `mdev->req_queue_mutex` was added at the start of `media_request_ioctl_reinit()` before taking `req->lock` and checking `req->state`.",
+        "how": "This serializes request reinitialization against concurrent operations on the media request queue, preventing races while the request state is inspected and modified."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix unlock handling in the media request reinit error path to avoid leaving `req_queue_mutex` locked on `-EBUSY`.",
+        "what": "In the error path where `media_request_ioctl_reinit()` finds the request not in an idle or complete state, the code now calls `mutex_unlock(&mdev->req_queue_mutex);` before returning `-EBUSY`.",
+        "how": "This prevents the request queue mutex from remaining locked when reinitialization is rejected, avoiding a lock leak that could block subsequent operations on the media request queue."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix the busy-error path in media request reinitialization to release `req_queue_mutex` before returning `-EBUSY`.",
+        "what": "In `media_request_ioctl_reinit()`, a `mutex_unlock(&mdev->req_queue_mutex);` call was added immediately before returning `-EBUSY` in the branch where the request is currently being accessed.",
+        "how": "If reinitialization fails because the request is busy, the code now releases `mdev->req_queue_mutex` before exiting. This prevents the mutex from remaining locked on that error path, avoiding deadlock or blocking subsequent request-queue operations."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix an omission by unlocking `req_queue_mutex` after media request reinitialization completes.",
+        "what": "A call to `mutex_unlock(&mdev->req_queue_mutex);` was added immediately after the request state is reset to `MEDIA_REQUEST_STATE_IDLE` and the spinlock is released in `media_request_ioctl_reinit()`.",
+        "how": "This change releases the request queue mutex before returning from the reinit ioctl path, preventing the mutex from remaining locked after successful reinitialization and allowing other threads to access the request queue again."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Serialize VIDIOC_REQBUFS with request queueing to prevent races with stream state changes during request handling.",
+        "what": "The comment was updated to say streamon/off/reqbufs must be serialized with queueing new requests, and the conditional that selects request-queue locking was expanded to include VIDIOC_REQBUFS in addition to VIDIOC_STREAMON and VIDIOC_STREAMOFF.",
+        "how": "At runtime, VIDIOC_REQBUFS now acquires the same request-queue mutex as streamon/off when request support is enabled, preventing concurrent request queuing from racing with buffer allocation/setup operations that can affect streaming state."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Serialize VIDIOC_REQBUFS with request queueing to prevent races with stream state changes during request handling."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix unlock handling in the media request reinit error path to avoid leaving `req_queue_mutex` locked on `-EBUSY`."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Serialize media request reinitialization and VIDIOC_REQBUFS handling with request queue access to prevent concurrent race conditions and ensure proper mutex locking.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly match the reported race: they add shared mutex serialization between media request reinitialization and VIDIOC_REQBUFS handling, which prevents concurrent request cleanup/cancellation and the resulting use-after-free on request objects."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change only fixes a lock-unlock bug in the MEDIA_REQUEST_IOC_REINIT error path. It does not address the described race between request reinitialization and vb2 queue teardown, nor does it introduce a common lock to prevent the use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/media/mc/mc-request.c",
+            "lineno": 195,
+            "content": "spin_lock_irqsave(&req->lock, flags);",
+            "rationale": "This shows `MEDIA_REQUEST_IOC_REINIT` only taking the request's own lock, not the shared queue mutex, so it could race with vb2 queue teardown paths that also manipulate request lifetime without common serialization."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/media/mc/mc-request.c",
+            "lineno": 196,
+            "content": "if (req->state != MEDIA_REQUEST_STATE_IDLE &&",
+            "rationale": "The reinit path checks and later transitions request state under only `req->lock`, which is insufficient to prevent concurrent cancellation/freeing by queue teardown."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/media/mc/mc-request.c",
+            "lineno": 197,
+            "content": "req->state != MEDIA_REQUEST_STATE_COMPLETE) {",
+            "rationale": "This continuation of the state check is part of the vulnerable reinitialization flow that lacked the shared mutex needed to serialize against request cancellation."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/media/mc/mc-request.c",
+            "lineno": 211,
+            "content": "req->state = MEDIA_REQUEST_STATE_CLEANING;",
+            "rationale": "Changing the request to CLEANING without holding a common queue lock allowed concurrent teardown to observe or act on a request being reinitialized, enabling a use-after-free race."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/media/v4l2-core/v4l2-ioctl.c",
+            "lineno": 3090,
+            "content": "if (v4l2_device_supports_requests(vfd->v4l2_dev) &&",
+            "rationale": "This pre-fix condition shows the ioctl path was only selectively serializing request-related operations, leaving other request-canceling paths like `VIDIOC_REQBUFS(0)` unsynchronized with `MEDIA_REQUEST_IOC_REINIT`."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/media/mc/mc-request.c",
+            "stmt_text": "req->state = MEDIA_REQUEST_STATE_CLEANING;",
+            "location": "hunk",
+            "explanation": "This state transition occurs during MEDIA_REQUEST_IOC_REINIT while holding only the request lock. Because the request subsystem and vb2 queue teardown paths did not share a common lock, concurrent VIDIOC_REQBUFS(0)-triggered cancellation could race with this cleanup and access a request being freed or reinitialized."
+          },
+          {
+            "vuln_file": "drivers/media/mc/mc-request.c",
+            "stmt_text": "spin_lock_irqsave(&req->lock, flags);",
+            "location": "hunk",
+            "explanation": "This shows the reinit path synchronizing only with the request's private spinlock rather than the shared queue mutex. That insufficient locking is the core race that allowed concurrent queue teardown to free or clean the request during reinitialization."
+          },
+          {
+            "vuln_file": "drivers/media/mc/mc-request.c",
+            "stmt_text": "if (req->state != MEDIA_REQUEST_STATE_IDLE &&",
+            "location": "hunk",
+            "explanation": "This is part of the vulnerable reinit state check performed without common serialization against vb2 queue teardown. The decision to proceed is made while only holding req->lock, leaving a window for concurrent request cancellation."
+          },
+          {
+            "vuln_file": "drivers/media/mc/mc-request.c",
+            "stmt_text": "req->state != MEDIA_REQUEST_STATE_COMPLETE) {",
+            "location": "hunk",
+            "explanation": "This continuation of the vulnerable state check is also protected only by req->lock. It contributes to the race because request lifetime and state changes were not coordinated with the queue teardown path."
+          },
+          {
+            "vuln_file": "drivers/media/v4l2-core/v4l2-ioctl.c",
+            "stmt_text": "if (v4l2_device_supports_requests(vfd->v4l2_dev) &&",
+            "location": "hunk",
+            "explanation": "This condition indicates the ioctl path was only selectively handling request-related serialization. The lack of a common lock for VIDIOC_REQBUFS(0) and MEDIA_REQUEST_IOC_REINIT enabled the request use-after-free race described in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ac62a20035ec",
+          "anchor_file": "drivers/media/mc/mc-request.c",
+          "anchor_lineno": 211
+        },
+        "commit": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+        "commit_short": "10905d70d788",
+        "commit_msg": "media: media-request: implement media requests\n\nAdd initial media request support:\n\n1) Add MEDIA_IOC_REQUEST_ALLOC ioctl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/media/mc/mc-request.c",
+        "display_lineno": 201,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "The shown commit is the initial implementation of media requests, and this specific function body is not provided in the prompt. Based on the described commit/diff context alone, the vulnerable race requires later interaction between MEDIA_REQUEST_IOC_REINIT in mc-request.c and VIDIOC_REQBUFS(0)-triggered teardown in v4l2-ioctl.c using a missing common lock. That fix/problem is not shown here. Since the commit only \"add[s] initial media request support\" and the root cause depends on cross-file teardown concurrency not visible in this snippet, the vulnerable construct cannot be confirmed present in the provided code. Therefore has_bug is false and is_fixed is also false for this commit version."
+      }
+    },
+    {
+      "bic_found": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ac62a20035ec",
+          "anchor_file": "drivers/media/mc/mc-request.c",
+          "anchor_lineno": 195
+        },
+        "commit": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+        "commit_short": "10905d70d788",
+        "commit_msg": "media: media-request: implement media requests\n\nAdd initial media request support:\n\n1) Add MEDIA_IOC_REQUEST_ALLOC ioctl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/media/mc/mc-request.c",
+        "display_lineno": 192,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "{\n  \"sufficient\": true,\n  \"has_bug\": true,\n  \"is_fixed\": false,\n  \"reason\": \"The shown function is `MEDIA_REQUEST_IOC_REINIT` handling in `mc-request.c`, and it clearly performs the cleanup sequence t"
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ac62a20035ec",
+          "anchor_file": "drivers/media/mc/mc-request.c",
+          "anchor_lineno": 196
+        },
+        "commit": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+        "commit_short": "10905d70d788",
+        "commit_msg": "media: media-request: implement media requests\n\nAdd initial media request support:\n\n1) Add MEDIA_IOC_REQUEST_ALLOC ioctl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/media/mc/mc-request.c",
+        "display_lineno": 193,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The shown function is the MEDIA_REQUEST_IOC_REINIT path and clearly contains the vulnerable reinitialization/cleanup sequence. It checks only the request-local lock/state: `spin_lock_irqsave(&req->lock, flags);` followed by `if (req->state != MEDIA_REQUEST_STATE_IDLE && req->state != MEDIA_REQUEST_STATE_COMPLETE) ... return -EBUSY;` and then sets `req->state = MEDIA_REQUEST_STATE_CLEANING;` before unlocking and calling `media_request_clean(req);`. This matches the root cause because the code performs request cleanup without any common lock shared with vb2 queue teardown, so a concurrent `VIDIOC_REQBUFS(0)` cancellation can race with `media_request_clean(req)` and use the request after it has been freed/cleaned. There is no evidence here of the later fix (no common lock, no serialization with queue teardown, no refcount/rcu-style protection), so the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ac62a20035ec",
+          "anchor_file": "drivers/media/mc/mc-request.c",
+          "anchor_lineno": 197
+        },
+        "commit": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+        "commit_short": "10905d70d788",
+        "commit_msg": "media: media-request: implement media requests\n\nAdd initial media request support:\n\n1) Add MEDIA_IOC_REQUEST_ALLOC ioctl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/media/mc/mc-request.c",
+        "display_lineno": 194,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The snippet adds the initial media request implementation and does not show any synchronization with vb2 queue teardown. The root cause described is a missing common lock between request reinitialization and queue cancellation, and this commit introduces request objects without evidence of such protection. The commit message itself says: 'Add struct media_request to store request objects' and 'implement media requests', which is the vulnerable introduction point. Since no locking or teardown coordination is shown in this commit body, the vulnerable construct is present and the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "10905d70d78841a6fa191be5ec193e3c0d63555f",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "ac62a20035ec",
+          "anchor_file": "drivers/media/v4l2-core/v4l2-ioctl.c",
+          "anchor_lineno": 3090
+        },
+        "commit": "cc6eddcd37ce6be403b5820ffd84cb84b33b653f",
+        "commit_short": "cc6eddcd37ce",
+        "commit_msg": "media: v4l2-dev: lock req_queue_mutex\n\nWe need to serialize streamon/off with queueing new requests.\nThese ioctls may tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/media/v4l2-core/v4l2-ioctl.c",
+        "display_lineno": 2809,
+        "code_snippet": "commit cc6eddcd37ce6be403b5820ffd84cb84b33b653f\nAuthor: Hans Verkuil <hverkuil@kernel.org>\nDate:   Mon May 21 04:54:34 2018 -0400\n\n    media: v4l2-dev: lock req_queue_mutex\n    \n    We need to serialize streamon/off with queueing new requests.\n    These ioctls may trigger the cancellation of a streaming\n    operation, and that should not be mixed with queuing a new\n    request at the same time.\n    \n    Finally close() needs this lock since that too can trigger the\n    cancellation of a streamin",
+        "exists": false,
+        "reason": "The shown function already contains the added serialization fix: it explicitly locks `req_queue_mutex` for request-supporting devices when handling `VIDIOC_STREAMON`/`VIDIOC_STREAMOFF` (`if (v4l2_device_supports_requests(vfd->v4l2_dev) && (cmd == VIDIOC_STREAMON || cmd == VIDIOC_STREAMOFF)) { req_queue_lock = &vfd->v4l2_dev->mdev->req_queue_mutex; if (mutex_lock_interruptible(req_queue_lock)) return -ERESTARTSYS; }`). This matches the commit message about locking `req_queue_mutex` to serialize streamon/off with request queueing. The vulnerable construct described in the root cause—lack of a common lock leading to concurrent request cleanup/free during queue cancellation—is not present in this function body, because the added mutex acquisition and corresponding unlock (`mutex_unlock(req_queue_lock)`) are already present."
+      }
+    },
+    {
+      "bic_found": "cc6eddcd37ce6be403b5820ffd84cb84b33b653f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "10905d70d78841a6fa191be5ec193e3c0d63555f": 4,
+        "cc6eddcd37ce6be403b5820ffd84cb84b33b653f": 1
+      },
+      "bic_candidates": [
+        "10905d70d78841a6fa191be5ec193e3c0d63555f",
+        "cc6eddcd37ce6be403b5820ffd84cb84b33b653f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

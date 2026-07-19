@@ -1,0 +1,245 @@
+{
+  "cveid": "CVE-2026-43163",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "46ef85f854dfa9d5226b3c1c46493d79556c9589"
+  ],
+  "ground_truth_bic": "d60b479d177a5735b6b4db6ee5280ef6653f50e7",
+  "predicted_bic": [
+    "d60b479d177a5735b6b4db6ee5280ef6653f50e7"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 34721,
+  "root_cause": {
+    "text": "The bitmap daemon thread (`bitmap_daemon_work()`) iterates over `bitmap->storage.filemap` without holding `mddev->bitmap_info.mutex`, while the resize path (`__bitmap_resize()`) concurrently frees this storage via `md_bitmap_file_unmap()`, creating a use-after-free race that is not prevented by `quiesce()` since it does not stop the md daemon thread.",
+    "evidence": "The patch adds `mutex_lock(&bitmap->mddev->bitmap_info.mutex)` before calling `md_bitmap_file_unmap(&bitmap->storage)` and `mutex_unlock()` after the bitmap update completes. The CVE description explicitly states: \"The daemon iterates over `bitmap->storage.filemap` without locking, while the resize path frees that storage via `md_bitmap_file_unmap()`. `quiesce()` does not stop the md thread, allowing concurrent access to freed pages.\" This indicates the root cause is missing synchronization (mutex protection) between the daemon's read access and the resize path's destructive modification of shared bitmap storage.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/md/md-bitmap.c",
+      "lineno": 2457,
+      "content": "md_bitmap_file_unmap(&bitmap->storage);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/md/md-bitmap.c",
+      "lineno": 2458,
+      "content": "bitmap->storage = store;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The bitmap daemon thread (`bitmap_daemon_work()`) iterates over `bitmap->storage.filemap` without holding `mddev->bitmap_info.mutex`, while the resize path (`__bitmap_resize()`) concurrently frees this storage via `md_bitmap_file_unmap()`, creating a use-after-free race that is not prevented by `quiesce()` since it does not stop the md daemon thread.",
+      "evidence_points": "The patch adds `mutex_lock(&bitmap->mddev->bitmap_info.mutex)` before calling `md_bitmap_file_unmap(&bitmap->storage)` and `mutex_unlock()` after the bitmap update completes. The CVE description explicitly states: \"The daemon iterates over `bitmap->storage.filemap` without locking, while the resize path frees that storage via `md_bitmap_file_unmap()`. `quiesce()` does not stop the md thread, allowing concurrent access to freed pages.\" This indicates the root cause is missing synchronization (mutex protection) between the daemon's read access and the resize path's destructive modification of shared bitmap storage."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/md/md-bitmap.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/md/md-bitmap.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add mutex lock to protect bitmap metadata during resize operation and prevent concurrent access to bitmap_info.",
+        "what": "Added a mutex_lock(&bitmap->mddev->bitmap_info.mutex) call before the existing spin_lock_irq(&bitmap->counts.lock) in the __bitmap_resize function.",
+        "how": "This change serializes access to bitmap metadata by acquiring the bitmap_info mutex before proceeding with the storage swap and lock acquisition. It prevents concurrent modifications to bitmap->mddev->bitmap_info during the critical resize operation, ensuring that bitmap metadata remains consistent while the bitmap storage is being replaced."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add missing mutex_unlock to prevent lock leakage and potential deadlock in bitmap resize operation.",
+        "what": "Replaced an empty line with a mutex_unlock call for bitmap_info.mutex after spin_unlock_irq in the __bitmap_resize function.",
+        "how": "This change ensures that the bitmap_info.mutex lock acquired earlier in the function is properly released before proceeding with the unplug and quiesce operations. Without this unlock, the mutex would remain held, potentially causing deadlocks or preventing other code from acquiring the lock."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add mutex lock to protect bitmap metadata during resize operation and prevent concurrent access to bitmap_info."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add missing mutex_unlock to prevent lock leakage and potential deadlock in bitmap resize operation."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by adding mutex lock protection to bitmap metadata during resize operations. This prevents the race condition where bitmap_daemon_work() iterates over bitmap->storage.filemap without holding mddev->bitmap_info.mutex while __bitmap_resize() concurrently frees the storage. The mutex lock ensures mutual exclusion between the daemon thread and resize path, eliminating the use-after-free vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "This group addresses a lock leakage/deadlock issue by adding a missing mutex_unlock in the bitmap resize operation. However, the root cause vulnerability is a use-after-free race condition caused by unsynchronized access to bitmap->storage.filemap between the daemon thread and resize path. The missing unlock is a separate bug that does not directly address the core synchronization issue that allows concurrent access to freed memory."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/md-bitmap.c",
+            "lineno": 2457,
+            "content": "md_bitmap_file_unmap(&bitmap->storage);",
+            "rationale": "This line directly frees the bitmap storage without holding mddev->bitmap_info.mutex. The bitmap_daemon_work() thread can be iterating over bitmap->storage.filemap concurrently, causing a use-after-free when this unmap occurs. The root cause is that the resize path frees storage without synchronization against the daemon thread."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/md-bitmap.c",
+            "lineno": 2458,
+            "content": "bitmap->storage = store;",
+            "rationale": "This assignment replaces the bitmap storage pointer without holding the necessary mutex lock. Since bitmap_daemon_work() reads bitmap->storage without locking, this concurrent modification can cause the daemon to access freed memory or inconsistent state."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/md/md-bitmap.c",
+            "stmt_text": "md_bitmap_file_unmap(&bitmap->storage);",
+            "location": "hunk",
+            "explanation": "This statement frees the bitmap storage without holding mddev->bitmap_info.mutex. The bitmap_daemon_work() thread can be concurrently iterating over bitmap->storage.filemap, causing a use-after-free race condition. The root cause is that __bitmap_resize() frees storage without synchronization against the daemon thread that accesses it without locking."
+          },
+          {
+            "vuln_file": "drivers/md/md-bitmap.c",
+            "stmt_text": "bitmap->storage = store;",
+            "location": "hunk",
+            "explanation": "This statement modifies the bitmap->storage pointer without holding mddev->bitmap_info.mutex. Since bitmap_daemon_work() reads bitmap->storage without locking, this concurrent modification creates a race condition where the daemon may access freed memory or observe an inconsistent state during the storage replacement."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d119bd2e1643",
+          "anchor_file": "drivers/md/md-bitmap.c",
+          "anchor_lineno": 2457
+        },
+        "commit": "e64e4018d572710c44f42c923d4ac059f0a23320",
+        "commit_short": "e64e4018d572",
+        "commit_msg": "md: Avoid namespace collision with bitmap API\n\nbitmap API (include/linux/bitmap.h) has 'bitmap' prefix for its methods.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/md-bitmap.c",
+        "display_lineno": 2135,
+        "code_snippet": "commit e64e4018d572710c44f42c923d4ac059f0a23320\nAuthor: Andy Shevchenko <andriy.shevchenko@linux.intel.com>\nDate:   Wed Aug 1 15:20:50 2018 -0700\n\n    md: Avoid namespace collision with bitmap API\n    \n    bitmap API (include/linux/bitmap.h) has 'bitmap' prefix for its methods.\n    \n    On the other hand MD bitmap API is special case.\n    Adding 'md' prefix to it to avoid name space collision.\n    \n    No functional changes intended.\n    \n    Signed-off-by: Andy Shevchenko <andriy.shevchenko@lin",
+        "exists": true,
+        "reason": "The function shows the vulnerable pattern described in the root cause. At line 2135, `md_bitmap_file_unmap(&bitmap->storage)` is called to free the old bitmap storage. However, this occurs after `quiesce()` is called at line 2126, which is intended to pause I/O but does NOT stop the md daemon thread (bitmap_daemon_work). The vulnerability exists because: (1) The bitmap daemon thread iterates over `bitmap->storage.filemap` without holding `mddev->bitmap_info.mutex` (as stated in the root cause), (2) The `quiesce()` call at line 2126 does not prevent the daemon thread from running, (3) Between the quiesce and the actual unmapping at line 2135, or even after line 2136 where `bitmap->storage = store` reassigns the storage, the daemon thread could still be accessing the old freed storage, creating a use-after-free race condition. The code does not implement any mechanism to actually stop or synchronize with the bitmap daemon thread before freeing the storage."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5cc9cdf631da",
+          "anchor_file": "drivers/md/md-bitmap.c",
+          "anchor_lineno": 2135
+        },
+        "commit": "d60b479d177a5735b6b4db6ee5280ef6653f50e7",
+        "commit_short": "d60b479d177a",
+        "commit_msg": "md/bitmap: add bitmap_resize function to allow bitmap resizing.\n\nThis function will allocate the new data structures and",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/md-bitmap.c",
+        "display_lineno": 1863,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function contains the vulnerable construct. At line 1865, `bitmap_file_unmap(&bitmap->storage)` is called to free the old bitmap storage, but this occurs without holding `mddev->bitmap_info.mutex`. The quiesce mechanism at line 1856 (`bitmap->mddev->pers->quiesce(bitmap->mddev, 1)`) only pauses I/O operations and does not stop the md daemon thread (`bitmap_daemon_work()`), which can concurrently iterate over `bitmap->storage.filemap` without any synchronization. This creates a classic use-after-free race condition: the daemon thread may be accessing the filemap while it is being freed and replaced. The code lacks proper mutex protection around the storage swap (lines 1858-1866) and the subsequent unmap operation, which is the root cause of the vulnerability. No fix is present in this commit version."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "d60b479d177a5735b6b4db6ee5280ef6653f50e7",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d119bd2e1643",
+          "anchor_file": "drivers/md/md-bitmap.c",
+          "anchor_lineno": 2458
+        },
+        "commit": "d60b479d177a5735b6b4db6ee5280ef6653f50e7",
+        "commit_short": "d60b479d177a",
+        "commit_msg": "md/bitmap: add bitmap_resize function to allow bitmap resizing.\n\nThis function will allocate the new data structures and",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/md-bitmap.c",
+        "display_lineno": 1866,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function calls `bitmap_file_unmap(&bitmap->storage)` at line 1865 to free the old bitmap storage, then immediately assigns the new storage at line 1866 with `bitmap->storage = store`. However, the vulnerability exists because: (1) The `quiesce()` call at line 1856 does not stop the bitmap daemon thread (`bitmap_daemon_work()`), which continuously iterates over `bitmap->storage.filemap` without holding `mddev->bitmap_info.mutex`. (2) Between the `quiesce()` call and the actual storage replacement, there is a window where the daemon thread could still be accessing the old storage that is being freed. (3) More critically, after line 1865 frees the old storage and line 1866 assigns new storage, if the daemon thread is still running and accesses `bitmap->storage.filemap`, it will access freed memory. The code lacks proper synchronization (mutex protection) to prevent concurrent access to `bitmap->storage` by the daemon thread during the resize operation. The `quiesce()` mechanism is insufficient because it does not halt the md daemon thread, only pauses I/O operations."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "d60b479d177a5735b6b4db6ee5280ef6653f50e7",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "d60b479d177a5735b6b4db6ee5280ef6653f50e7": 2
+      },
+      "bic_candidates": [
+        "d60b479d177a5735b6b4db6ee5280ef6653f50e7"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

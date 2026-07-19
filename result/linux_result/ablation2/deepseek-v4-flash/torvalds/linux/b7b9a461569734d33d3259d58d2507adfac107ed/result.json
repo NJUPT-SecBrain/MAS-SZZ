@@ -1,0 +1,356 @@
+{
+  "cveid": "CVE-2026-46170",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "b7b9a461569734d33d3259d58d2507adfac107ed"
+  ],
+  "ground_truth_bic": "00cfd77b9063dcdf3628a7087faba60de85a9cc8",
+  "predicted_bic": [
+    "926bdeab5535856e3a164545630149f212d3482d"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 28,
+  "llm_tokens": 25978,
+  "root_cause": {
+    "text": "In the MPTCP path manager's ADD_ADDR retransmission timer handler, the socket reference is released using `__sock_put()` instead of `sock_put()`, which fails to free the socket when it becomes the last reference, causing a socket leak; additionally, using `sock_put()` would lead to a deadlock because the subsequent `sk_free()` calls `sk_stop_timer_sync()` on the currently executing timer, waiting indefinitely.",
+    "evidence": "The commit message states: \"If at that moment, it was the last reference being held, the sk would not be freed. sock_put() should then be called instead of __sock_put(). But that's not enough: if it is the last reference, sock_put() will call sk_free(), which will end up calling sk_stop_timer_sync() on the same timer, and waiting indefinitely to finish.\" The patch introduces a `timer_done` flag to avoid calling `sk_stop_timer_sync()` on the timer that is already running, and changes `__sock_put()` to `sock_put()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mptcp/pm.c",
+      "lineno": 374,
+      "content": "__sock_put(sk);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the MPTCP path manager's ADD_ADDR retransmission timer handler, the socket reference is released using `__sock_put()` instead of `sock_put()`, which fails to free the socket when it becomes the last reference, causing a socket leak; additionally, using `sock_put()` would lead to a deadlock because the subsequent `sk_free()` calls `sk_stop_timer_sync()` on the currently executing timer, waiting indefinitely.",
+      "evidence_points": "The commit message states: \"If at that moment, it was the last reference being held, the sk would not be freed. sock_put() should then be called instead of __sock_put(). But that's not enough: if it is the last reference, sock_put() will call sk_free(), which will end up calling sk_stop_timer_sync() on the same timer, and waiting indefinitely to finish.\" The patch introduces a `timer_done` flag to avoid calling `sk_stop_timer_sync()` on the timer that is already running, and changes `__sock_put()` to `sock_put()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "net/mptcp/pm.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a boolean flag to MPTCP path manager add entry to track timer completion, preventing race conditions or redundant timer operations.",
+        "what": "Added a new boolean field 'timer_done' to 'struct mptcp_pm_add_entry', placed after 'retrans_times' and before 'add_timer'.",
+        "how": "The field can be used to indicate whether the entry's timer has expired or been handled, enabling the code to avoid scheduling or processing the timer multiple times, or to properly manage the entry's lifecycle."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential deadlock by deferring timer reset after releasing socket lock.",
+        "what": "Move bh_lock_sock before TCP_CLOSE check, replace direct sk_reset_timer calls with setting timeout variable, change goto from 'exit' to 'out', and initialize timeout to 0.",
+        "how": "The function now acquires the socket lock earlier and instead of directly resetting the timer under lock, it defers the timer reset to after the lock is released by storing the timeout value. This avoids potential deadlock when the timer callback tries to acquire the same lock."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Guard the timeout variable to be always set (including a zero value) before possible use, separating timeout computation from the timer scheduling call.",
+        "what": "In the mptcp_pm_add_timer function, the if block that previously directly called sk_reset_timer with a computed timeout is replaced by separate if-else logic that modifies the timeout variable: if retrans_times is below max, timeout is left-shifted by retrans_times; otherwise, timeout is set to 0. The subsequent sk_reset_timer call (not shown in this hunk) would use the updated timeout.",
+        "how": "At runtime, when entry->retrans_times < ADD_ADDR_RETRANS_MAX, the timeout is adjusted by shifting left; when the limit is reached, timeout is set to 0. This ensures the timeout variable is always defined before being used in a potential later timer reset, but it also changes the behavior: previously the timer was not reset at all when the limit was reached; now the timer will be reset with a zero delay (or possibly skipped based on later logic not shown)."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential use-after-free by properly managing timer state before releasing socket reference.",
+        "what": "Replaced unconditional __sock_put(sk) with conditional timer reset or timer_done flag, then sock_put(sk). Removed exit label.",
+        "how": "If timeout is non-zero, resets the timer to fire again; otherwise sets entry->timer_done to true to prevent timer callback from accessing freed socket. Then releases socket reference with sock_put instead of __sock_put."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Reset the `timer_done` flag to false when resetting the announce timer to ensure proper timer state initialization and avoid stale flag semantics.",
+        "what": "Added assignment `add_entry->timer_done = false;` at the `reset_timer:` label, before adjusting the timeout and resetting the timer.",
+        "how": "Ensures that the `timer_done` flag is cleared to false whenever the announce timer is reset, preventing stale state from a previous timer expiration that could cause incorrect behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a guard to skip stopping the add_timer if it is already marked as done, fixing a potential race or incorrect timer management during MPTCP announce list freeing.",
+        "what": "Added a condition `if (!entry->timer_done)` before calling `sk_stop_timer_sync` on each entry's add_timer in the mptcp_pm_free_anno_list function.",
+        "how": "The change prevents stopping a timer that has already been completed or marked as done, avoiding potential double-stop or race conditions during list cleanup."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a boolean flag to MPTCP path manager add entry to track timer completion, preventing race conditions or redundant timer operations."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix potential deadlock by deferring timer reset after releasing socket lock."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Guard the timeout variable to be always set (including a zero value) before possible use, separating timeout computation from the timer scheduling call."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add a guard to skip stopping the add_timer if it is already marked as done, fixing a potential race or incorrect timer management during MPTCP announce list freeing."
+        },
+        {
+          "group_id": 4,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Reset the `timer_done` flag to false when resetting the announce timer to ensure proper timer state initialization and avoid stale flag semantics."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix improper timer management during socket release to prevent use-after-free or race conditions.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group's core intent is to add a boolean flag to track timer completion to prevent race conditions, which does not directly address the root cause of a socket leak due to using __sock_put() instead of sock_put() and the resulting deadlock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group's aim to fix a potential deadlock by deferring timer reset after releasing the socket lock directly addresses the deadlock scenario described in the vulnerability root cause, where using sock_put() leads to a synchronous timer stop that waits indefinitely."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group's changes focus on ensuring the timeout variable is always set before use, which is unrelated to the root cause of socket leak and deadlock due to incorrect socket reference handling in the ADD_ADDR retransmission timer."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "Group 3 changes address improper timer management during socket release, which is directly related to the vulnerability's root cause of incorrect socket reference handling in the ADD_ADDR retransmission timer handler."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": false,
+        "reason": "The group focuses on resetting a timer flag for proper state initialization, which does not address the socket reference leak or deadlock caused by using __sock_put() instead of sock_put() in the timer handler."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "net/mptcp/pm.c",
+            "lineno": 374,
+            "content": "__sock_put(sk);",
+            "rationale": "Uses __sock_put instead of sock_put, failing to release the last socket reference, causing a socket leak. Using sock_put would cause deadlock due to sk_stop_timer_sync in sk_free, so the proper fix requires a different approach."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mptcp/pm.c",
+            "stmt_text": "__sock_put(sk);",
+            "location": "hunk",
+            "explanation": "This statement uses __sock_put() instead of sock_put(), which fails to free the socket when it becomes the last reference, causing a socket leak. Using sock_put() would lead to a deadlock due to sk_stop_timer_sync() in sk_free() called from the timer context, so the proper fix requires a different approach."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9634cb35af17",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 374
+        },
+        "commit": "e4c28e3d5c09097b5ca7bc5690e01f48adb33811",
+        "commit_short": "e4c28e3d5c09",
+        "commit_msg": "mptcp: pm: move generic PM helpers to pm.c\n\nBefore this patch, the PM code was dispersed in different places:\n\n- pm.c ha",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 308
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bcc32640ada0",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 308
+        },
+        "commit": "5c4a824dcb589f3da2574dd99e761063e7d5529d",
+        "commit_short": "5c4a824dcb58",
+        "commit_msg": "mptcp: add rm_list in mptcp_options_received\n\nThis patch changed the member rm_id in struct mptcp_options_received as a\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 216
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "cbde27871896",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 216
+        },
+        "commit": "d0876b2284cf8b34dd214b2d0aa21071c345da59",
+        "commit_short": "d0876b2284cf",
+        "commit_msg": "mptcp: add the incoming RM_ADDR support\n\nThis patch added the RM_ADDR option parsing logic:\n\nWe parsed the incoming opti",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 158
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "5cb104ae55e9",
+          "anchor_file": "net/mptcp/pm.c",
+          "anchor_lineno": 158
+        },
+        "commit": "926bdeab5535856e3a164545630149f212d3482d",
+        "commit_short": "926bdeab5535",
+        "commit_msg": "mptcp: Implement path manager interface commands\n\nFill in more path manager functionality by adding a worker function an",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/pm.c",
+        "display_lineno": 158
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "926bdeab5535856e3a164545630149f212d3482d",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "926bdeab5535856e3a164545630149f212d3482d": 1
+      },
+      "bic_candidates": [
+        "926bdeab5535856e3a164545630149f212d3482d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

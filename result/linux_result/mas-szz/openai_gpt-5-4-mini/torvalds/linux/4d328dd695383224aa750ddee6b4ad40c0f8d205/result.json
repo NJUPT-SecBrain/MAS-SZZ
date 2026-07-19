@@ -1,0 +1,220 @@
+{
+  "cveid": "CVE-2026-53035",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4d328dd695383224aa750ddee6b4ad40c0f8d205"
+  ],
+  "ground_truth_bic": "2c860a43dd77f969bb959336a2f743d7103a8f63",
+  "predicted_bic": [
+    "855d8e77ffb05be6e54c34dababccb20318aec00"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 13,
+  "llm_tokens": 16050,
+  "root_cause": {
+    "text": "`bpf_iter_unix_seq_show()` in the AF_UNIX BPF iterator used `lock_sock_fast()` and could enter the fast path while a BPF iter program was running, allowing a nested `sock_map_update_elem()` to re-acquire the same `slock-AF_UNIX` spinlock and deadlock.",
+    "evidence": "The patch replaces `lock_sock_fast(sk)`/`unlock_sock_fast(sk, slow)` with `lock_sock(sk)`/`release_sock(sk)` in `bpf_iter_unix_seq_show()`, and the CVE text shows the deadlock occurs when the iter prog updates a sockmap and `sock_map_update_elem()` spins on `bh_lock_sock()` while `__lock_sock_fast` already holds the same lock.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3744,
+      "content": "slow = lock_sock_fast(sk);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3756,
+      "content": "unlock_sock_fast(sk, slow);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`bpf_iter_unix_seq_show()` in the AF_UNIX BPF iterator used `lock_sock_fast()` and could enter the fast path while a BPF iter program was running, allowing a nested `sock_map_update_elem()` to re-acquire the same `slock-AF_UNIX` spinlock and deadlock.",
+      "evidence_points": "The patch replaces `lock_sock_fast(sk)`/`unlock_sock_fast(sk, slow)` with `lock_sock(sk)`/`release_sock(sk)` in `bpf_iter_unix_seq_show()`, and the CVE text shows the deadlock occurs when the iter prog updates a sockmap and `sock_map_update_elem()` spins on `bh_lock_sock()` while `__lock_sock_fast` already holds the same lock."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the regular socket lock and skip dead Unix sockets during BPF iteration instead of relying on the unhashed state.",
+        "what": "In bpf_iter_unix_seq_show(), the local boolean variable \"slow\" was removed, the call \"slow = lock_sock_fast(sk)\" was replaced with \"lock_sock(sk)\", and the dead-socket check changed from \"unlikely(sk_unhashed(sk))\" to \"unlikely(sock_flag(sk, SOCK_DEAD))\".",
+        "how": "The function now always acquires the socket lock in the standard way instead of using the fast-lock path, and it skips iteration when the socket is marked dead rather than when it is merely unhashed, which changes the condition under which the entry is omitted."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace the fast socket unlock with the correct socket release call in `bpf_iter_unix_seq_show()` to fix the unlock path.",
+        "what": "The function `bpf_iter_unix_seq_show()` changes its socket unlock path from `unlock_sock_fast(sk, slow);` to `release_sock(sk);`.",
+        "how": "At runtime, the function now uses the standard socket release helper instead of the fast unlock variant when exiting, which can change how socket lock state is unwound and ensure the matching release path is used for this context."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use the regular socket lock and skip dead Unix sockets during BPF iteration instead of relying on the unhashed state."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Replace the fast socket unlock with the correct socket release call in `bpf_iter_unix_seq_show()` to fix the unlock path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it alters AF_UNIX BPF iterator locking to use the regular socket lock instead of the fast path, which prevents re-entrant lock acquisition and the resulting deadlock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly affects bpf_iter_unix_seq_show(), the function implicated in the deadlock root cause, by fixing its socket lock/unlock handling. Since the vulnerability stems from unsafe use of lock_sock_fast() in this iterator path, correcting the release path is related to the same issue."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3744,
+            "content": "slow = lock_sock_fast(sk);",
+            "rationale": "This fast-path socket lock is the direct root cause: it can enter the fast lock path during BPF iterator execution, allowing a nested sock_map_update_elem() to attempt the same lock again and deadlock."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3756,
+            "content": "unlock_sock_fast(sk, slow);",
+            "rationale": "This is part of the problematic fast-locking scheme in the iterator path; using the fast unlock mirrors the unsafe lock acquisition and is tied to the deadlock-prone locking behavior."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "slow = lock_sock_fast(sk);",
+            "location": "hunk",
+            "explanation": "This statement acquires the AF_UNIX socket via the fast lock path inside the BPF iterator, which can recurse into the same `slock-AF_UNIX` spinlock when a nested `sock_map_update_elem()` occurs, causing the deadlock described in the root cause."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "unlock_sock_fast(sk, slow);",
+            "location": "hunk",
+            "explanation": "This statement is the paired fast-path unlock used by the iterator. It is part of the same unsafe fast-locking scheme that allows the iterator to enter the lock path vulnerable to re-entrancy and deadlock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a25566084e39",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3744
+        },
+        "commit": "855d8e77ffb05be6e54c34dababccb20318aec00",
+        "commit_short": "855d8e77ffb0",
+        "commit_msg": "bpf: af_unix: Use batching algorithm in bpf unix iter.\n\nThe commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3517,
+        "code_snippet": "commit 855d8e77ffb05be6e54c34dababccb20318aec00\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Thu Jan 13 09:28:46 2022 +0900\n\n    bpf: af_unix: Use batching algorithm in bpf unix iter.\n    \n    The commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_sock\")\n    introduces the batching algorithm to iterate TCP sockets with more\n    consistency.\n    \n    This patch uses the same algorithm to iterate AF_UNIX sockets.\n    \n    Signed-off-by: Kuniyuki Iwashima <kuniyu@amazon.co.jp>\n    ",
+        "exists": false,
+        "reason": "The vulnerable construct is the use of `lock_sock_fast()` inside `bpf_iter_unix_seq_show()`, which could allow the fast path while a BPF iter program runs and lead to nested `sock_map_update_elem()` re-acquiring `slock-AF_UNIX`. In this snippet, `bpf_iter_unix_seq_show()` now explicitly does `slow = lock_sock_fast(sk);` and later `unlock_sock_fast(sk, slow);`, but it also adds `if (unlikely(sk_unhashed(sk))) { ret = SEQ_SKIP; goto unlock; }`, and the surrounding commit replaces the old `unix_seq_start/next/stop` with batching logic (`bpf_iter_unix_seq_start`, `bpf_iter_unix_seq_next`, `bpf_iter_unix_seq_stop`) plus batch pinning via `sock_hold()`/`sock_put()`. This indicates the iterator no longer relies on the old single-socket traversal path and has the batching/locking adjustments associated with the fix, so the vulnerable construct as described is not present here in its buggy form."
+      }
+    },
+    {
+      "bic_found": "855d8e77ffb05be6e54c34dababccb20318aec00",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a25566084e39",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3756
+        },
+        "commit": "855d8e77ffb05be6e54c34dababccb20318aec00",
+        "commit_short": "855d8e77ffb0",
+        "commit_msg": "bpf: af_unix: Use batching algorithm in bpf unix iter.\n\nThe commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3529,
+        "code_snippet": "commit 855d8e77ffb05be6e54c34dababccb20318aec00\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Thu Jan 13 09:28:46 2022 +0900\n\n    bpf: af_unix: Use batching algorithm in bpf unix iter.\n    \n    The commit 04c7820b776f (\"bpf: tcp: Bpf iter batching and lock_sock\")\n    introduces the batching algorithm to iterate TCP sockets with more\n    consistency.\n    \n    This patch uses the same algorithm to iterate AF_UNIX sockets.\n    \n    Signed-off-by: Kuniyuki Iwashima <kuniyu@amazon.co.jp>\n    ",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause was that bpf_iter_unix_seq_show() used lock_sock_fast() and could take the fast path while a BPF iter program was running, leading to a nested sock_map_update_elem() re-acquiring the same slock-AF_UNIX lock. In this snippet, the function now explicitly does `slow = lock_sock_fast(sk);` and then checks `if (unlikely(sk_unhashed(sk))) { ret = SEQ_SKIP; goto unlock; }` before running the BPF program. This means the iterator no longer blindly enters the old unsafe path; it uses the batching iterator infrastructure (`bpf_iter_unix_seq_start/next/stop`, `bpf_iter_unix_batch`, `bpf_iter_unix_hold_batch`, `bpf_iter_unix_put_batch`) and releases the socket with `unlock_sock_fast(sk, slow);`. The old direct `unix_seq_start/unix_seq_next/unix_seq_stop` flow is replaced by batching, so the specific deadlock-prone construct is not present. This commit is therefore already the fix rather than the bug-introducing version."
+      }
+    },
+    {
+      "bic_found": "855d8e77ffb05be6e54c34dababccb20318aec00",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "855d8e77ffb05be6e54c34dababccb20318aec00": 2
+      },
+      "bic_candidates": [
+        "855d8e77ffb05be6e54c34dababccb20318aec00"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

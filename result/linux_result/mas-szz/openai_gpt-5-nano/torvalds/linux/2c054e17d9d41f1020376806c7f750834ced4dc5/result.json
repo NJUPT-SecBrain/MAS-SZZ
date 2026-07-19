@@ -1,0 +1,554 @@
+{
+  "cveid": "CVE-2026-31700",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "2c054e17d9d41f1020376806c7f750834ced4dc5"
+  ],
+  "ground_truth_bic": "1d036d25e5609ba73fee6a88db01c306b140d512",
+  "predicted_bic": [
+    "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 35,
+  "llm_tokens": 149031,
+  "root_cause": {
+    "text": "tpacket_snd() in net/packet used a virtio_net_hdr pointer directly into the userspace-mmaped TX ring buffer, so the header was validated from shared memory and then re-read later by virtio_net_hdr_to_skb(), creating a TOCTOU race that let userspace change fields after validation.",
+    "evidence": "The CVE/commit states that “vnet_hdr points directly into the mmap'd TX ring buffer shared with userspace,” that the kernel “validates the header via __packet_snd_vnet_parse() but then re-reads all fields later in virtio_net_hdr_to_skb(),” and the patch fixes this by replacing `struct virtio_net_hdr *vnet_hdr` with a stack `struct virtio_net_hdr vnet_hdr`, `memcpy()`ing it from the ring buffer before both validation and use.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2822,
+      "content": "vnet_hdr = data;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2718,
+      "content": "if (virtio_net_hdr_to_skb(skb, vnet_hdr, vio_le())) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2718,
+      "content": "__packet_snd_vnet_parse(vnet_hdr, tp_len)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2873,
+      "content": "virtio_net_hdr_set_proto(skb, vnet_hdr);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2830,
+      "content": "copylen = __virtio16_to_cpu(vio_le(),",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "tpacket_snd() in net/packet used a virtio_net_hdr pointer directly into the userspace-mmaped TX ring buffer, so the header was validated from shared memory and then re-read later by virtio_net_hdr_to_skb(), creating a TOCTOU race that let userspace change fields after validation.",
+      "evidence_points": "The CVE/commit states that “vnet_hdr points directly into the mmap'd TX ring buffer shared with userspace,” that the kernel “validates the header via __packet_snd_vnet_parse() but then re-reads all fields later in virtio_net_hdr_to_skb(),” and the patch fixes this by replacing `struct virtio_net_hdr *vnet_hdr` with a stack `struct virtio_net_hdr vnet_hdr`, `memcpy()`ing it from the ring buffer before both validation and use."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/packet/af_packet.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/packet/af_packet.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/packet/af_packet.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace the optional virtio_net_hdr pointer with a stack object plus explicit presence flag to safely track header availability in tpacket_snd().",
+        "what": "The local variable declaration in tpacket_snd() was changed from a pointer `struct virtio_net_hdr *vnet_hdr = NULL;` to a stack-allocated `struct virtio_net_hdr vnet_hdr;`, and a new boolean flag `bool has_vnet_hdr = false;` was added.",
+        "how": "This changes the representation of the virtio network header from an optional pointer initialized to NULL to an in-scope struct value accompanied by an explicit presence flag, enabling later code to track whether a valid header exists without relying on pointer nullness and avoiding use of an uninitialized or invalid pointer."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix vnet header handling in tpacket_snd by validating length first, parsing from a local copied header, and marking successful header presence.",
+        "what": "The change removes direct use of a `vnet_hdr` pointer into `data`, splits the previous combined `tp_len < 0 || __packet_snd_vnet_parse(...)` check into a separate negative-length check that sets `tp_len = -EINVAL` and jumps to `tpacket_error`, copies the virtual network header bytes from `data - vnet_hdr_sz` into a local `vnet_hdr` object with `memcpy`, passes `&vnet_hdr` to `__packet_snd_vnet_parse`, updates `copylen` to read `vnet_hdr.hdr_len` instead of `vnet_hdr->hdr_len`, and sets `has_vnet_hdr = true` after successful parsing.",
+        "how": "At runtime, this makes the code validate the payload length before accessing the virtual network header, avoids parsing the header through a direct pointer into the packet buffer, and instead parses a local copied header structure. This prevents invalid memory access or misaligned access when `tp_len` is too small or when the header should not be referenced directly from the data buffer, while also recording that a valid vnet header is present."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix tpacket virtio header handling by checking header presence explicitly and passing the virtio header by address to skb helper functions.",
+        "what": "The condition guarding virtio network header processing was changed from checking `vnet_hdr_sz` to checking `has_vnet_hdr`, and the calls to `virtio_net_hdr_to_skb()` and `virtio_net_hdr_set_proto()` were updated to pass `&vnet_hdr` instead of `vnet_hdr`.",
+        "how": "At runtime, virtio header handling now occurs only when a virtio net header is actually present rather than when a header size value is nonzero, and the helper functions now receive the address of the local header object as expected. This prevents incorrect header processing and potential misuse of the header variable."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Fix tpacket virtio header handling by checking header presence explicitly and passing the virtio header by address to skb helper functions."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix tpacket_snd() virtio_net_hdr handling by explicitly tracking header presence, safely parsing/copying the header, and passing it correctly to skb helper functions.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the TOCTOU root cause in tpacket_snd() by no longer relying on a userspace-mapped virtio_net_hdr pointer, instead copying/parsing the header locally, tracking whether it is present, and passing the safe local header to skb helper functions."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2822,
+            "content": "vnet_hdr = data;",
+            "rationale": "This assigns the virtio_net_hdr pointer directly into the userspace-mapped TX ring buffer, which is the core of the TOCTOU bug because later code re-reads header fields from shared memory after validation."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2718,
+            "content": "__packet_snd_vnet_parse(vnet_hdr, tp_len)) {",
+            "rationale": "This validates the header via the shared-memory pointer. Because the same pointer is later reused, validation is performed on mutable userspace memory rather than on a stable kernel copy."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2718,
+            "content": "if (virtio_net_hdr_to_skb(skb, vnet_hdr, vio_le())) {",
+            "rationale": "This later consumes the virtio header again through the same userspace-backed pointer, creating the read-after-validate race that allows userspace to change fields between checks and use."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2873,
+            "content": "virtio_net_hdr_set_proto(skb, vnet_hdr);",
+            "rationale": "This also re-reads the virtio header from the shared-memory pointer after earlier validation, further embodying the unsafe use of mutable userspace data."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2830,
+            "content": "copylen = __virtio16_to_cpu(vio_le(),",
+            "rationale": "This begins another read of header fields from the shared-memory vnet_hdr after assignment from userspace memory, contributing to the vulnerability by deriving state from an unstable buffer."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "vnet_hdr = data;",
+            "location": "hunk",
+            "explanation": "This is the fundamental vulnerable assignment: it makes vnet_hdr point directly into the userspace-mmaped TX ring buffer, so subsequent validation and later consumption operate on mutable shared memory, enabling the TOCTOU race described in the root cause."
+          },
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "if (virtio_net_hdr_to_skb(skb, vnet_hdr, vio_le())) {",
+            "location": "hunk",
+            "explanation": "This use consumes the virtio header through the shared-memory-backed vnet_hdr pointer after prior validation, creating the time-of-check to time-of-use window where userspace can alter header fields."
+          },
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "__packet_snd_vnet_parse(vnet_hdr, tp_len)) {",
+            "location": "hunk",
+            "explanation": "This validation step checks the virtio header via the userspace-backed vnet_hdr pointer rather than a stable kernel copy, so the check is performed on mutable memory and can be invalidated before later use."
+          },
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "virtio_net_hdr_set_proto(skb, vnet_hdr);",
+            "location": "hunk",
+            "explanation": "This later re-reads virtio header contents through the same shared-memory pointer after earlier validation, further participating in the unsafe use of mutable userspace data."
+          },
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "copylen = __virtio16_to_cpu(vio_le(),",
+            "location": "hunk",
+            "explanation": "This statement begins deriving packet state from fields read through vnet_hdr after it was assigned to userspace-shared memory, contributing to the TOCTOU condition by using unstable header contents."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2822
+        },
+        "commit": "1d036d25e5609ba73fee6a88db01c306b140d512",
+        "commit_short": "1d036d25e560",
+        "commit_msg": "packet: tpacket_snd gso and checksum offload\n\nSupport socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n\nWhen ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2696,
+        "code_snippet": "commit 1d036d25e5609ba73fee6a88db01c306b140d512\nAuthor: Willem de Bruijn <willemb@google.com>\nDate:   Wed Feb 3 18:02:17 2016 -0500\n\n    packet: tpacket_snd gso and checksum offload\n    \n    Support socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n    \n    When enabled, a struct virtio_net_hdr is expected to precede the data\n    in the ring. The vnet option must be set before the ring is created.\n    \n    The implementation reuses the existing skb_copy_bits code that is used\n    when ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full new PACKET_VNET_HDR handling inside tpacket_snd() and how the virtio header pointer is later reused. The vulnerable construct is present: in tpacket_snd(), when `po->has_vnet_hdr` is set, the code does `vnet_hdr = data; data += sizeof(*vnet_hdr); tp_len -= sizeof(*vnet_hdr);` and immediately validates it with `__packet_snd_vnet_parse(vnet_hdr, tp_len)`. It also reads `copylen` from the same userspace-backed header via `vnet_hdr->hdr_len`. Later, after skb setup, it calls `packet_snd_vnet_gso(skb, vnet_hdr)`. This means `vnet_hdr` is not copied into kernel memory; it remains a pointer into the mmaped TX ring buffer, so the header is validated first and then reread later through the same shared-memory pointer, matching the TOCTOU root cause. There is no fix shown here that copies the `struct virtio_net_hdr` into a local/kernel buffer before validation and later use. Therefore the function contains the bug and is not yet fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8d39b4a6b83c",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2696
+        },
+        "commit": "ae641949df01b85117845bec45328eab6d6fada1",
+        "commit_short": "ae641949df01",
+        "commit_msg": "net: Remove all uses of LL_ALLOCATED_SPACE\n\nnet: Remove all uses of LL_ALLOCATED_SPACE\n\nThe macro LL_ALLOCATED_SPACE was",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2106,
+        "code_snippet": "commit ae641949df01b85117845bec45328eab6d6fada1\nAuthor: Herbert Xu <herbert@gondor.apana.org.au>\nDate:   Fri Nov 18 02:20:04 2011 +0000\n\n    net: Remove all uses of LL_ALLOCATED_SPACE\n    \n    net: Remove all uses of LL_ALLOCATED_SPACE\n    \n    The macro LL_ALLOCATED_SPACE was ill-conceived.  It applies the\n    alignment to the sum of needed_headroom and needed_tailroom.  As\n    the amount that is then reserved for head room is needed_headroom\n    with alignment, this means that the tail room le",
+        "exists": true,
+        "reason": "The provided snippet is sufficient because it includes the relevant parts of both tpacket_snd() and tpacket_fill_skb(). The root cause is a TOCTOU on the virtio_net_hdr pointer taken directly from the userspace-mapped TX ring, where the header is validated and later re-read instead of being copied to private kernel memory. In this commit, the shown changes only adjust skb head/tail room accounting: in tpacket_snd() it introduces `hlen = LL_RESERVED_SPACE(dev);` and `tlen = dev->needed_tailroom;`, changes allocation from `LL_ALLOCATED_SPACE(dev) + sizeof(struct sockaddr_ll)` to `hlen + tlen + sizeof(struct sockaddr_ll)`, and passes `hlen` into `tpacket_fill_skb()`. In tpacket_fill_skb(), `skb_reserve(skb, LL_RESERVED_SPACE(dev));` becomes `skb_reserve(skb, hlen);`. None of these changes copy a virtio_net_hdr out of the shared ring buffer or otherwise prevent later re-reading from shared memory. Therefore the vulnerable construct is still present in this version, and the fix for the TOCTOU race is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "a7ae1992248e",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2106
+        },
+        "commit": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+        "commit_short": "69e3c75f4d54",
+        "commit_msg": "net: TX_RING and packet mmap\n\nNew packet socket feature that makes packet socket more efficient for\ntransmission.\n\n- It ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 1010,
+        "code_snippet": "commit 69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1\nAuthor: Johann Baudy <johann.baudy@gnu-log.net>\nDate:   Mon May 18 22:11:22 2009 -0700\n\n    net: TX_RING and packet mmap\n    \n    New packet socket feature that makes packet socket more efficient for\n    transmission.\n    \n    - It reduces number of system call through a PACKET_TX_RING mechanism,\n      based on PACKET_RX_RING (Circular buffer allocated in kernel space\n      which is mmapped from user space).\n    \n    - It minimizes CPU copy using f",
+        "exists": true,
+        "reason": "The snippet includes the full newly introduced TX_RING transmit path, including `tpacket_snd()` and `tpacket_fill_skb()`, which is enough to assess the TOCTOU issue. The vulnerable construct is present because `tpacket_snd()` obtains `ph` directly from the userspace-mapped ring via `ph = packet_current_frame(po, &po->tx_ring, TP_STATUS_SEND_REQUEST);` and then passes that same shared-memory pointer into `tpacket_fill_skb(po, skb, ph, ...)`. Inside `tpacket_fill_skb()`, fields are read directly from that shared frame multiple times: first `tp_len = ph.h2->tp_len` / `ph.h1->tp_len`, then later `data = ph.raw + po->tp_hdrlen - sizeof(struct sockaddr_ll);`. The payload pages are also attached directly from the mmaped area using `page = virt_to_page(data);` and `skb_fill_page_desc(...)`. There is no copy of the virtio header or other header data into private kernel memory before validation/use. Since the root cause is that `tpacket_snd()` validated header data from shared mmap memory and later it was re-read by downstream code (e.g. `virtio_net_hdr_to_skb()`), this commit introduces exactly that unsafe pattern: direct use of shared TX ring memory after validation, enabling TOCTOU. No fix is present here—there is no local stack copy of the virtio header, no snapshotting of metadata before later consumers access it, and no mechanism preventing userspace from modifying the mapped frame between checks and later use."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "f67f34084914",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 1010
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 943,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body is not tpacket_snd() and contains only bind/address validation logic for a sockaddr_ll-based operation: it checks `addr_len`, `sll->sll_family`, optionally looks up `sll->sll_ifindex`, and calls `packet_do_bind(sk, dev, ...)`. The vulnerability root cause concerns `tpacket_snd()` using a `virtio_net_hdr` pointer directly into the userspace-mmaped TX ring buffer and later re-reading it, but no TX ring handling, `virtio_net_hdr`, validation/copying of headers, or `virtio_net_hdr_to_skb()` call is present in this snippet. Because the vulnerable construct is completely absent from the shown code, `has_bug` is false for this function body, and there is also no evidence of the fix here."
+      }
+    },
+    {
+      "bic_found": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+      "depth": 3
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2718
+        },
+        "commit": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+        "commit_short": "69e3c75f4d54",
+        "commit_msg": "net: TX_RING and packet mmap\n\nNew packet socket feature that makes packet socket more efficient for\ntransmission.\n\n- It ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 943,
+        "code_snippet": "commit 69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1\nAuthor: Johann Baudy <johann.baudy@gnu-log.net>\nDate:   Mon May 18 22:11:22 2009 -0700\n\n    net: TX_RING and packet mmap\n    \n    New packet socket feature that makes packet socket more efficient for\n    transmission.\n    \n    - It reduces number of system call through a PACKET_TX_RING mechanism,\n      based on PACKET_RX_RING (Circular buffer allocated in kernel space\n      which is mmapped from user space).\n    \n    - It minimizes CPU copy using f",
+        "exists": true,
+        "reason": "The snippet includes the full introduced TX_RING send path, including `tpacket_snd()` and `tpacket_fill_skb()`, which is enough to assess the TOCTOU issue. The vulnerable construct is present because `tpacket_snd()` obtains `ph = packet_current_frame(po, &po->tx_ring, TP_STATUS_SEND_REQUEST);` from the userspace-mmaped TX ring and passes that same shared-memory pointer into `tpacket_fill_skb(po, skb, ph, ...)`. Inside `tpacket_fill_skb()`, fields are read directly from that shared frame multiple times: first `tp_len = ph.h2->tp_len` or `ph.h1->tp_len`, then later `data = ph.raw + po->tp_hdrlen - sizeof(struct sockaddr_ll);`, and the packet payload/pages are attached from that same memory via `page = virt_to_page(data)` and `skb_fill_page_desc(...)`. There is no copy of the virtio/net header or other metadata into private kernel memory before later use. Thus validation and later consumption happen from the same userspace-accessible mmap backing, which matches the root cause pattern: shared ring memory is checked and then reused, allowing userspace to modify contents in between. The fix is not present because there is no defensive copy of the header from the TX ring into a kernel-local structure before subsequent processing; the code continues to rely on the mmaped frame pointer directly."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "f67f34084914",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 943
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 867,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body is not the vulnerable function described in the root cause. The vulnerability is specifically in `tpacket_snd()` in `net/packet`, involving use of a `virtio_net_hdr` pointer into a userspace-mmaped TX ring and later re-reading it. The shown code instead handles packet socket bind/hook registration (`po->prot_hook.type = protocol;`, `po->prot_hook.dev = dev;`, `dev_add_pack(&po->prot_hook);`) and contains no `tpacket_snd()` logic, no TX ring handling, no `virtio_net_hdr`, and no validation/re-read pattern. Because the vulnerable construct is completely absent from this snippet, `has_bug` is false. Since the relevant function is not shown, we also cannot say the fix is present here."
+      }
+    },
+    {
+      "bic_found": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2718
+        },
+        "commit": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+        "commit_short": "69e3c75f4d54",
+        "commit_msg": "net: TX_RING and packet mmap\n\nNew packet socket feature that makes packet socket more efficient for\ntransmission.\n\n- It ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 943,
+        "code_snippet": "commit 69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1\nAuthor: Johann Baudy <johann.baudy@gnu-log.net>\nDate:   Mon May 18 22:11:22 2009 -0700\n\n    net: TX_RING and packet mmap\n    \n    New packet socket feature that makes packet socket more efficient for\n    transmission.\n    \n    - It reduces number of system call through a PACKET_TX_RING mechanism,\n      based on PACKET_RX_RING (Circular buffer allocated in kernel space\n      which is mmapped from user space).\n    \n    - It minimizes CPU copy using f",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains the full introduction of TX_RING support, including `tpacket_snd()` and `tpacket_fill_skb()`, which are the relevant functions for the described TOCTOU issue. The vulnerable construct is present: `tpacket_snd()` obtains `ph = packet_current_frame(po, &po->tx_ring, TP_STATUS_SEND_REQUEST);` and then passes that frame pointer directly into `tpacket_fill_skb(po, skb, ph, ...)`. Inside `tpacket_fill_skb()`, the code reads header fields directly from the mmap-shared frame (`ph.raw = frame;`, then `tp_len = ph.h2->tp_len;` or `ph.h1->tp_len;`) and later uses the same shared-memory-backed pointer again as packet data (`data = ph.raw + po->tp_hdrlen - sizeof(struct sockaddr_ll);`, followed by page-based skb frag setup from that memory). There is no copy of the virtio/net header or any other synchronization that would prevent userspace from modifying the shared ring contents after validation but before later consumption. This matches the root cause: validation is performed on userspace-mmaped TX ring memory and the same shared memory is relied on again afterward, enabling TOCTOU. The fix is not present because the code never snapshots the header into kernel memory before subsequent use; it continues to use the mmap frame pointer directly throughout transmit preparation."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "f67f34084914",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 943
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 867,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body is not the vulnerable function described in the root cause. The vulnerability concerns `tpacket_snd()` in `net/packet` using a `virtio_net_hdr` pointer directly into a userspace-mapped TX ring buffer, causing a TOCTOU race between validation and later use. The shown code instead is a packet socket bind/setup routine: it manipulates `po->bind_lock`, `po->running`, `po->num`, `po->prot_hook`, and calls `dev_add_pack()` / `dev_remove_pack()`. There is no `tpacket_snd()`, no TX ring handling, no `virtio_net_hdr`, no validation, and no later reread of shared memory. Because the vulnerable construct is completely absent from this snippet, `has_bug` is false. Also, since the relevant logic is not shown at all, we cannot determine whether the fix is present in the actual vulnerable area, so `sufficient` is false and `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2873
+        },
+        "commit": "9d2f67e43b73e8af7438be219b66a5de0cfa8bd9",
+        "commit_short": "9d2f67e43b73",
+        "commit_msg": "net/packet: fix packet drop as of virtio gso\n\nWhen we use raw socket as the vhost backend, a packet from virito with\ngso",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2723,
+        "code_snippet": "commit 9d2f67e43b73e8af7438be219b66a5de0cfa8bd9\nAuthor: Jianfeng Tan <jianfeng.tan@linux.alibaba.com>\nDate:   Sat Sep 29 15:41:27 2018 +0000\n\n    net/packet: fix packet drop as of virtio gso\n    \n    When we use raw socket as the vhost backend, a packet from virito with\n    gso offloading information, cannot be sent out in later validaton at\n    xmit path, as we did not set correct skb->protocol which is further used\n    for looking up the gso function.\n    \n    To fix this, we set this field ac",
+        "exists": true,
+        "reason": "The shown function body is sufficient because it includes the relevant tpacket_snd() handling of the virtio_net header. The root cause is a TOCTOU race where tpacket_snd() uses a `virtio_net_hdr *` that points directly into the userspace-mmaped TX ring, validates it, and later re-reads it. In this diff, the code still passes the shared-memory pointer directly into `virtio_net_hdr_to_skb(skb, vnet_hdr, vio_le())` and then again into `virtio_net_hdr_set_proto(skb, vnet_hdr)`. That means the same userspace-backed header is read multiple times without first copying it into kernel memory, so userspace could modify fields between the validation/conversion and the later read. The added change only sets protocol via `virtio_net_hdr_set_proto(skb, vnet_hdr);`; it does not introduce a defensive copy of the virtio header before use. Therefore the vulnerable construct is present, and the fix for the TOCTOU issue is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ca8931948344",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2723
+        },
+        "commit": "1d036d25e5609ba73fee6a88db01c306b140d512",
+        "commit_short": "1d036d25e560",
+        "commit_msg": "packet: tpacket_snd gso and checksum offload\n\nSupport socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n\nWhen ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2752,
+        "code_snippet": "commit 1d036d25e5609ba73fee6a88db01c306b140d512\nAuthor: Willem de Bruijn <willemb@google.com>\nDate:   Wed Feb 3 18:02:17 2016 -0500\n\n    packet: tpacket_snd gso and checksum offload\n    \n    Support socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n    \n    When enabled, a struct virtio_net_hdr is expected to precede the data\n    in the ring. The vnet option must be set before the ring is created.\n    \n    The implementation reuses the existing skb_copy_bits code that is used\n    when ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full relevant logic in tpacket_snd() for handling PACKET_VNET_HDR and how the virtio_net_hdr pointer is used later. The vulnerable construct is present: in tpacket_snd(), when `po->has_vnet_hdr` is set, the code assigns `vnet_hdr = data;` and then advances `data += sizeof(*vnet_hdr);`. This means `vnet_hdr` points directly into the TX ring/user-mapped frame memory rather than to a private kernel copy. The header is first validated with `if (tp_len < 0 || __packet_snd_vnet_parse(vnet_hdr, tp_len))`, and fields are read again with `copylen = __virtio16_to_cpu(vio_le(), vnet_hdr->hdr_len);`. Later, after skb construction and filling, the same pointer is passed again to `packet_snd_vnet_gso(skb, vnet_hdr)`. That is exactly the TOCTOU pattern from the root cause: validate from shared memory, then re-read from the same shared memory later. There is no code here that copies the virtio header into a local stack/kernel buffer before validation and later use, so the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "8d39b4a6b83c",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2752
+        },
+        "commit": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+        "commit_short": "69e3c75f4d54",
+        "commit_msg": "net: TX_RING and packet mmap\n\nNew packet socket feature that makes packet socket more efficient for\ntransmission.\n\n- It ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 1042,
+        "code_snippet": "commit 69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1\nAuthor: Johann Baudy <johann.baudy@gnu-log.net>\nDate:   Mon May 18 22:11:22 2009 -0700\n\n    net: TX_RING and packet mmap\n    \n    New packet socket feature that makes packet socket more efficient for\n    transmission.\n    \n    - It reduces number of system call through a PACKET_TX_RING mechanism,\n      based on PACKET_RX_RING (Circular buffer allocated in kernel space\n      which is mmapped from user space).\n    \n    - It minimizes CPU copy using f",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full introduction of `tpacket_snd()` and its helper `tpacket_fill_skb()`, which are the relevant TX_RING transmit-path functions. The vulnerable construct is present: `tpacket_snd()` obtains `ph = packet_current_frame(po, &po->tx_ring, TP_STATUS_SEND_REQUEST);`, where `ph` points directly into the userspace-mmaped TX ring, and then passes that same pointer into `tpacket_fill_skb(po, skb, ph, ...)`. Inside `tpacket_fill_skb()`, fields are read directly from that shared frame multiple times: first `tp_len = ph.h2->tp_len` or `ph.h1->tp_len`, then later `data = ph.raw + po->tp_hdrlen - sizeof(struct sockaddr_ll);`, and the packet payload/header pages are attached from that same memory via `page = virt_to_page(data)` and `skb_fill_page_desc(...)`. There is no copy of the virtio/net header or other metadata into private kernel memory before later use. This matches the root cause pattern: validation/read of header fields from shared mmap memory followed by later reuse/re-read from the same mutable userspace-accessible buffer, enabling TOCTOU. The fix is not present because the code never snapshots the header into kernel memory before transmission; instead it keeps using `ph.raw` directly from the mmaped ring buffer throughout the send path."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "f67f34084914",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 1042
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 974,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body is not tpacket_snd() and does not show any TX ring or virtio_net_hdr handling. The snippet is the packet socket creation path: it checks capabilities and socket type (lines 974-981), allocates the socket (lines 985-988), initializes packet socket state (lines 995-1025), and returns. The root cause concerns tpacket_snd() using a virtio_net_hdr pointer directly into userspace-mmaped TX ring memory, validating it, and then later re-reading it, but none of that logic appears here. Because the vulnerable function/statement is completely absent from this snippet, has_bug=false. Since the relevant logic is missing, we also cannot determine whether the fix is present from this function, so sufficient=false and is_fixed=false."
+      }
+    },
+    {
+      "bic_found": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+      "depth": 3
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2830
+        },
+        "commit": "1d036d25e5609ba73fee6a88db01c306b140d512",
+        "commit_short": "1d036d25e560",
+        "commit_msg": "packet: tpacket_snd gso and checksum offload\n\nSupport socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n\nWhen ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2704,
+        "code_snippet": "commit 1d036d25e5609ba73fee6a88db01c306b140d512\nAuthor: Willem de Bruijn <willemb@google.com>\nDate:   Wed Feb 3 18:02:17 2016 -0500\n\n    packet: tpacket_snd gso and checksum offload\n    \n    Support socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n    \n    When enabled, a struct virtio_net_hdr is expected to precede the data\n    in the ring. The vnet option must be set before the ring is created.\n    \n    The implementation reuses the existing skb_copy_bits code that is used\n    when ",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full newly added PACKET_VNET_HDR handling inside tpacket_snd() and the later use of the same pointer. In tpacket_snd(), when `po->has_vnet_hdr` is set, the code assigns `vnet_hdr = data;` and then advances `data += sizeof(*vnet_hdr);`. This means `vnet_hdr` points directly into the TX ring frame, i.e. shared userspace-mapped memory. It then validates that header via `__packet_snd_vnet_parse(vnet_hdr, tp_len)`, and derives `copylen` from `vnet_hdr->hdr_len`. Later, after skb construction, it calls `packet_snd_vnet_gso(skb, vnet_hdr)`. This is exactly the vulnerable pattern: validate fields from `vnet_hdr` in shared memory and then re-read from the same userspace-backed pointer later, creating a TOCTOU window. There is no local copy of `struct virtio_net_hdr` made before validation/use. Therefore the vulnerable construct is present (`has_bug=true`) and the fix is not present (`is_fixed=false`)."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8d39b4a6b83c",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2704
+        },
+        "commit": "fbf33a2802f71dba06faa948af805884ff16a2ab",
+        "commit_short": "fbf33a2802f7",
+        "commit_msg": "af_packet / TX_RING not fully non-blocking (w/ MSG_DONTWAIT).\n\nThis patch fixes an issue where the send(MSG_DONTWAIT) ca",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2319,
+        "code_snippet": "commit fbf33a2802f71dba06faa948af805884ff16a2ab\nAuthor: Kretschmer, Mathias <mathias.kretschmer@fokus.fraunhofer.de>\nDate:   Fri May 8 15:44:37 2015 +0200\n\n    af_packet / TX_RING not fully non-blocking (w/ MSG_DONTWAIT).\n    \n    This patch fixes an issue where the send(MSG_DONTWAIT) call\n    on a TX_RING is not fully non-blocking in cases where the device's sndBuf is\n    full. We pass nonblock=true to sock_alloc_send_skb() and return any possibly\n    occuring error code (most likely EGAIN) to ",
+        "exists": true,
+        "reason": "The root cause is a TOCTOU in tpacket_snd() where a virtio_net_hdr pointer is used directly from the userspace-mapped TX ring, validated, and then later re-read. This diff shows code inside tpacket_snd(), but the only change here is unrelated non-blocking skb allocation: `sock_alloc_send_skb(..., !need_wait, &err);` and handling of `skb == NULL`. There is no indication in the shown snippet that the virtio_net_hdr is copied into kernel memory before validation/use, nor any added protection against re-reading shared ring memory. Since this commit predates or does not include the fix for the described TOCTOU, the vulnerable construct remains present in this version of tpacket_snd(). Therefore `has_bug=true` and `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "cd9c39977754",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2319
+        },
+        "commit": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+        "commit_short": "69e3c75f4d54",
+        "commit_msg": "net: TX_RING and packet mmap\n\nNew packet socket feature that makes packet socket more efficient for\ntransmission.\n\n- It ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 1016,
+        "code_snippet": "commit 69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1\nAuthor: Johann Baudy <johann.baudy@gnu-log.net>\nDate:   Mon May 18 22:11:22 2009 -0700\n\n    net: TX_RING and packet mmap\n    \n    New packet socket feature that makes packet socket more efficient for\n    transmission.\n    \n    - It reduces number of system call through a PACKET_TX_RING mechanism,\n      based on PACKET_RX_RING (Circular buffer allocated in kernel space\n      which is mmapped from user space).\n    \n    - It minimizes CPU copy using f",
+        "exists": true,
+        "reason": "The snippet includes the full newly introduced TX_RING send path, including `tpacket_snd()` and `tpacket_fill_skb()`, which is sufficient to assess the TOCTOU issue. The vulnerable construct is present because `tpacket_snd()` obtains `ph` as a direct pointer into the mmaped TX ring (`ph = packet_current_frame(po, &po->tx_ring, TP_STATUS_SEND_REQUEST);`) and passes that same shared-memory pointer into `tpacket_fill_skb(po, skb, ph, ...)`. Inside `tpacket_fill_skb()`, fields are read directly from `ph.raw` multiple times: first `tp_len = ph.h2->tp_len` or `ph.h1->tp_len`, then later `data = ph.raw + po->tp_hdrlen - sizeof(struct sockaddr_ll);`, and page fragments are built from that userspace-mmaped memory via `page = virt_to_page(data)` / `skb_fill_page_desc(...)`. There is no copy of the virtio or packet header into private kernel memory before validation/use; validation and later consumption both operate on the shared ring contents. That matches the root cause: header fields are validated from shared mmaped memory and can be changed by userspace before later use. No fix is present in this code: there is no local stack copy of the header, no immutable snapshot taken before validation, and no revalidation after copying. Therefore this commit introduces the vulnerable TX_RING logic and does not contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "f67f34084914",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 1016
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 949,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function body is not tpacket_snd() and does not contain any TX ring or virtio_net_hdr handling. It is a bind helper/path operating on struct sockaddr_ll, with logic such as checking \"sll->sll_family\", looking up a device via \"dev_get_by_index(sll->sll_ifindex)\", and calling \"packet_do_bind(...)\". The root cause concerns tpacket_snd() using a virtio_net_hdr pointer directly into a userspace-mmaped TX ring buffer and later re-reading it, but no such pointer, validation, or virtio_net_hdr_to_skb() interaction appears in this snippet. Therefore the shown code is insufficient to determine the vulnerability state of the relevant logic, and the vulnerable construct is absent from this function."
+      }
+    },
+    {
+      "bic_found": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+      "depth": 3
+    },
+    {
+      "bic_votes": {
+        "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1": 5
+      },
+      "bic_candidates": [
+        "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

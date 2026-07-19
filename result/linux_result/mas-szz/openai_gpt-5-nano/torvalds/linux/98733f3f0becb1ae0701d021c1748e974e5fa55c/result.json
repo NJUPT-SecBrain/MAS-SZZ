@@ -1,0 +1,148 @@
+{
+  "cveid": "CVE-2026-53153",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "98733f3f0becb1ae0701d021c1748e974e5fa55c"
+  ],
+  "ground_truth_bic": "fb56fdf8b9a2f7397f8a83dce50189f3f0cf71af",
+  "predicted_bic": [
+    "28e98022b31efdb8f1ba310d938cd9b97ededfe4"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 8,
+  "llm_tokens": 13866,
+  "root_cause": {
+    "text": "In mm/list_lru, memcg_reparent_list_lrus() cleared the dying memcg’s xarray entry before reparenting its per-node list_lru lists, allowing concurrent list_lru_del()/walk operations to lock the parent while items were still linked on the child list and thus modify the same list under different per-memcg locks.",
+    "evidence": "The CVE/commit explicitly states that xas_store(&xas, NULL) happened “before reparenting its per-node lists,” creating a window where list_lru_del() “walks to the parent in lock_list_lru_of_memcg(), takes the parent’s per-node lock, and calls list_del_init() on an item still physically linked on the dying memcg’s list”; the patch fixes this by reparenting each per-node list first, marking the child dead, and only then calling xa_erase_irq().",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/list_lru.c",
+      "lineno": 483,
+      "content": "mlru = xas_store(&xas, NULL);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In mm/list_lru, memcg_reparent_list_lrus() cleared the dying memcg’s xarray entry before reparenting its per-node list_lru lists, allowing concurrent list_lru_del()/walk operations to lock the parent while items were still linked on the child list and thus modify the same list under different per-memcg locks.",
+      "evidence_points": "The CVE/commit explicitly states that xas_store(&xas, NULL) happened “before reparenting its per-node lists,” creating a window where list_lru_del() “walks to the parent in lock_list_lru_of_memcg(), takes the parent’s per-node lock, and calls list_del_init() on an item still physically linked on the dying memcg’s list”; the patch fixes this by reparenting each per-node list first, marking the child dead, and only then calling xa_erase_irq()."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/list_lru.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix a memcg list_lru teardown race by deferring xarray entry removal until after all child lists are reparented.",
+        "what": "In memcg_reparent_list_lrus(), the code removes the XA_STATE declaration and the xas_lock_irq()/xas_store(..., NULL)/xas_unlock_irq() sequence that cleared the xarray entry before reparenting, replaces it with a plain xa_load() to fetch the list_lru_memcg pointer, keeps the null check, performs the per-node memcg_reparent_list_lru_one() loop first, and then adds xa_erase_irq(&lru->xa, memcg->kmemcg_id) after reparenting; the surrounding comments are updated to describe css_is_dying() preventing new allocation and to explain why xarray removal must happen after reparenting.",
+        "how": "At runtime, the child memcg's list_lru_memcg entry now stays discoverable in the xarray until its per-node lists have been fully reparented and marked dead, so concurrent list_lru_del() users will still lock against the child list rather than incorrectly switching to the parent while objects are still linked on the child list. This prevents a race that could corrupt list state during memcg teardown, while still removing the xarray entry afterward to allow safe cleanup."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix a memcg list_lru teardown race by deferring xarray entry removal until after all child lists are reparented."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it fixes the memcg list_lru teardown race by postponing xarray entry clearing until after per-node child lists are reparented, preventing concurrent operations from using the parent lock while items remain on the child list."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "mm/list_lru.c",
+            "lineno": 483,
+            "content": "mlru = xas_store(&xas, NULL);",
+            "rationale": "This clears the dying memcg's xarray entry before reparenting its per-node list_lru lists. That premature removal lets concurrent list_lru users resolve to the parent memcg while objects are still linked on the child list, enabling operations on the same list under different per-memcg locks."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/list_lru.c",
+            "lineno": 494,
+            "content": "memcg_reparent_list_lru_one(lru, i, &mlru->node[i], parent);",
+            "rationale": "This is the reparenting step that should have happened before clearing the xarray entry. Its ordering relative to the earlier xas_store(NULL) is central to the race, because the child lists are still being moved only after lookups can no longer find the child."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/list_lru.c",
+            "stmt_text": "mlru = xas_store(&xas, NULL);",
+            "location": "hunk",
+            "explanation": "This statement prematurely clears the dying memcg's xarray entry before its per-node list_lru lists are reparented. That allows concurrent list_lru operations to resolve to the parent memcg while objects are still linked on the child list, leading to manipulation of the same list under different per-memcg locks."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "43e7f189769c",
+          "anchor_file": "mm/list_lru.c",
+          "anchor_lineno": 483
+        },
+        "commit": "28e98022b31efdb8f1ba310d938cd9b97ededfe4",
+        "commit_short": "28e98022b31e",
+        "commit_msg": "mm/list_lru: simplify reparenting and initial allocation\n\nCurrently, there is a lot of code for detecting reparent racin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/list_lru.c",
+        "display_lineno": 440,
+        "code_snippet": "commit 28e98022b31efdb8f1ba310d938cd9b97ededfe4\nAuthor: Kairui Song <kasong@tencent.com>\nDate:   Tue Nov 5 01:52:55 2024 +0800\n\n    mm/list_lru: simplify reparenting and initial allocation\n    \n    Currently, there is a lot of code for detecting reparent racing using\n    kmemcg_id as the synchronization flag.  And an intermediate table is\n    required to record and compare the kmemcg_id.\n    \n    We can simplify this by just checking the cgroup css status, skip if\n    cgroup is being offlined.  ",
+        "exists": false,
+        "reason": "The diff shows the relevant reparenting and lookup logic clearly enough to determine the race condition handling. The root cause was that reparenting cleared the dying memcg's xarray entry before moving per-node lists, so concurrent list_lru_del()/walk could resolve to the parent while items were still on the child list and then operate under different per-memcg locks. In this commit, the accessors no longer blindly use the current memcg id mapping: a new helper `list_lru_from_memcg()` does `l = list_lru_from_memcg_idx(lru, nid, memcg_kmem_id(memcg)); if (likely(l)) return l; memcg = parent_mem_cgroup(memcg); VM_WARN_ON(!css_is_dying(&memcg->css)); goto again;` and both `list_lru_add()` and `list_lru_del()` now call `list_lru_from_memcg(lru, nid, memcg)` instead of `list_lru_from_memcg_idx(..., memcg_kmem_id(memcg))`. This is the key fix behavior: after the xarray entry is cleared, operations on a dying cgroup explicitly fall back to the parent mapping.\n\nThe reparent path also uses the xarray lock as a barrier: in `memcg_reparent_list_lrus()` it does `xas_lock_irq(&xas); mlru = xas_store(&xas, NULL); xas_unlock_irq(&xas);` with the comment `Lock the Xarray to ensure no on going list_lru_memcg allocation and further allocation will see css_is_dying().` Then it reparents using the captured `mlru` directly for each node: `memcg_reparent_list_lru_node(lru, i, &mlru->node[i], parent);`. Inside `memcg_reparent_list_lru_node()`, the source list is no longer re-fetched from the xarray after removal; instead it uses the passed-in `src` pointer and only looks up the destination parent list: `dst = list_lru_from_memcg_idx(lru, nid, memcg_kmem_id(dst_memcg)); list_splice_init(&src->list, &dst->list);`. This avoids losing access to the child list contents after clearing the xarray slot.\n\nAdditionally, allocation now checks cgroup dying state: `if (!xas_load(&xas) && !css_is_dying(&pos->css)) { xas_store(&xas, mlru); ... }`, matching the commit message's strategy that further allocation will bail out for dying cgroups.\n\nSo the vulnerable construct is not present in this version as an unhandled race; the function bodies already include the fallback-to-parent and synchronized reparenting logic that addresses the root cause."
+      }
+    },
+    {
+      "bic_found": "28e98022b31efdb8f1ba310d938cd9b97ededfe4",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "28e98022b31efdb8f1ba310d938cd9b97ededfe4": 1
+      },
+      "bic_candidates": [
+        "28e98022b31efdb8f1ba310d938cd9b97ededfe4"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

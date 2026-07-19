@@ -1,0 +1,190 @@
+{
+  "cveid": "CVE-2026-53123",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "cf86bb53b9c92354904a328e947a05ffbfdd1840"
+  ],
+  "ground_truth_bic": "714d20150ed85811193ae07a494d91f9927c590f",
+  "predicted_bic": [
+    "714d20150ed85811193ae07a494d91f9927c590f"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 16776,
+  "root_cause": {
+    "text": "Direct IO in raid456 reshape can sleep in raid5_make_request() waiting for reshape progress while holding an active_io reference, and when mddev_suspend() kills active_io without first waking these waiters, the reshape thread (which is frozen) never progresses to wake them, causing a deadlock where suspend waits indefinitely for the IO reference to be dropped.",
+    "evidence": "The patch adds a call to `mddev->pers->prepare_suspend(mddev)` after `percpu_ref_kill(&mddev->active_io)` specifically to wake `wait_for_reshape` waiters when reshape is already interrupted. The comment in the patch explicitly states: \"RAID456 IO can sleep in wait_for_reshape while still holding an active_io reference. If reshape is already interrupted or frozen, wake those waiters so they can abort and drop the reference instead of deadlocking suspend.\" The root cause is the missing wake-up of reshape waiters before suspend, which allows IO threads to remain blocked on reshape progress that will never arrive due to the frozen reshape thread.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/md/md.c",
+      "lineno": 489,
+      "content": "percpu_ref_kill(&mddev->active_io);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/md/md.c",
+      "lineno": 491,
+      "content": "err = wait_event_interruptible(mddev->sb_wait, percpu_ref_is_zero(&mddev->active_io));",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Direct IO in raid456 reshape can sleep in raid5_make_request() waiting for reshape progress while holding an active_io reference, and when mddev_suspend() kills active_io without first waking these waiters, the reshape thread (which is frozen) never progresses to wake them, causing a deadlock where suspend waits indefinitely for the IO reference to be dropped.",
+      "evidence_points": "The patch adds a call to `mddev->pers->prepare_suspend(mddev)` after `percpu_ref_kill(&mddev->active_io)` specifically to wake `wait_for_reshape` waiters when reshape is already interrupted. The comment in the patch explicitly states: \"RAID456 IO can sleep in wait_for_reshape while still holding an active_io reference. If reshape is already interrupted or frozen, wake those waiters so they can abort and drop the reference instead of deadlocking suspend.\" The root cause is the missing wake-up of reshape waiters before suspend, which allows IO threads to remain blocked on reshape progress that will never arrive due to the frozen reshape thread."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/md/md.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential deadlock in mddev_suspend by waking reshape waiters before waiting for active_io references to drain when reshape is already interrupted.",
+        "what": "Added a conditional block after percpu_ref_kill(&mddev->active_io) that calls mddev->pers->prepare_suspend(mddev) when both a prepare_suspend callback exists and reshape_interrupted(mddev) returns true, preceded by an explanatory comment.",
+        "how": "This change prevents a deadlock scenario in RAID456 suspend operations. When reshape is interrupted or frozen, IO threads may be blocked in wait_for_reshape while holding active_io references. By calling prepare_suspend before waiting for active_io to reach zero, the code wakes those waiters, allowing them to abort and release their references instead of blocking indefinitely and preventing suspend from completing."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix potential deadlock in mddev_suspend by waking reshape waiters before waiting for active_io references to drain when reshape is already interrupted."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the core deadlock mechanism described in the vulnerability: it fixes mddev_suspend to wake reshape waiters before draining active_io references, which prevents the exact deadlock scenario where suspend waits indefinitely while reshape threads are frozen and unable to wake waiting IOs."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/md.c",
+            "lineno": 489,
+            "content": "percpu_ref_kill(&mddev->active_io);",
+            "rationale": "This line kills the active_io reference counter without first waking reshape waiters. When direct IO in raid456 reshape is sleeping in raid5_make_request() waiting for reshape progress while holding an active_io reference, killing active_io before waking these waiters causes them to remain blocked indefinitely. The reshape thread (which is frozen) never progresses to wake them, creating a deadlock where mddev_suspend() waits for active_io to drain but the waiters are never awakened."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/md.c",
+            "lineno": 490,
+            "content": "if (interruptible)",
+            "rationale": "The conditional check for interruptible mode proceeds directly to waiting for active_io references to drain without first waking reshape waiters. This ordering is incorrect when reshape is in progress, as it allows the wait_event to block indefinitely while reshape waiters are still sleeping and holding active_io references."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/md/md.c",
+            "lineno": 491,
+            "content": "err = wait_event_interruptible(mddev->sb_wait, percpu_ref_is_zero(&mddev->active_io));",
+            "rationale": "This wait_event call blocks waiting for active_io references to become zero, but it does so without having first woken the reshape waiters that are sleeping in raid5_make_request(). Since the reshape thread is frozen and cannot progress to wake these waiters, the condition percpu_ref_is_zero(&mddev->active_io) will never be satisfied, causing a deadlock."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/md/md.c",
+            "stmt_text": "percpu_ref_kill(&mddev->active_io);",
+            "location": "hunk",
+            "explanation": "This statement kills the active_io reference counter without first waking reshape waiters. When direct IO in raid456 reshape is sleeping in raid5_make_request() while holding an active_io reference, killing active_io before waking these waiters causes them to remain blocked indefinitely. The frozen reshape thread cannot progress to wake them, creating a deadlock where mddev_suspend() waits for active_io to drain but the waiters are never awakened."
+          },
+          {
+            "vuln_file": "drivers/md/md.c",
+            "stmt_text": "err = wait_event_interruptible(mddev->sb_wait, percpu_ref_is_zero(&mddev->active_io));",
+            "location": "hunk",
+            "explanation": "This wait_event call blocks waiting for active_io references to become zero without first waking reshape waiters that are sleeping in raid5_make_request(). Since the reshape thread is frozen and cannot progress to wake these waiters, the condition percpu_ref_is_zero(&mddev->active_io) will never be satisfied, causing a deadlock where mddev_suspend() waits indefinitely."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "808cec74601c",
+          "anchor_file": "drivers/md/md.c",
+          "anchor_lineno": 489
+        },
+        "commit": "714d20150ed85811193ae07a494d91f9927c590f",
+        "commit_short": "714d20150ed8",
+        "commit_msg": "md: add new helpers to suspend/resume array\n\nAdvantages for new apis:\n - reconfig_mutex is not required;\n - the weird lo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/md.c",
+        "display_lineno": 526,
+        "code_snippet": "commit 714d20150ed85811193ae07a494d91f9927c590f\nAuthor: Yu Kuai <yukuai3@huawei.com>\nDate:   Tue Oct 10 23:19:43 2023 +0800\n\n    md: add new helpers to suspend/resume array\n    \n    Advantages for new apis:\n     - reconfig_mutex is not required;\n     - the weird logical that suspend array hold 'reconfig_mutex' for\n       mddev_check_recovery() to update superblock is not needed;\n     - the specail handling, 'pers->prepare_suspend', for raid456 is not\n       needed;\n     - It's safe to be called ",
+        "exists": false,
+        "reason": "The function shows the suspend implementation that already contains the fix for the vulnerability. Line 526 kills active_io references with percpu_ref_kill(), and lines 527-532 wait for all active_io references to be dropped via wait_event(). Critically, lines 540-544 contain the fix: the comment explicitly acknowledges the raid456 reshape deadlock issue ('io might be waiting for reshape to make progress'), and line 544 increments mddev->suspended BEFORE releasing the suspend_mutex (line 550). This allows the reshape thread to proceed even while suspend is waiting for IO to complete, preventing the deadlock described in the vulnerability root cause. The vulnerable construct (killing active_io without waking waiters while holding locks that prevent reshape progress) is NOT present here because the code explicitly allows reshape to progress by incrementing suspended before releasing the mutex."
+      }
+    },
+    {
+      "bic_found": "714d20150ed85811193ae07a494d91f9927c590f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "808cec74601c",
+          "anchor_file": "drivers/md/md.c",
+          "anchor_lineno": 491
+        },
+        "commit": "714d20150ed85811193ae07a494d91f9927c590f",
+        "commit_short": "714d20150ed8",
+        "commit_msg": "md: add new helpers to suspend/resume array\n\nAdvantages for new apis:\n - reconfig_mutex is not required;\n - the weird lo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/md.c",
+        "display_lineno": 528,
+        "code_snippet": "commit 714d20150ed85811193ae07a494d91f9927c590f\nAuthor: Yu Kuai <yukuai3@huawei.com>\nDate:   Tue Oct 10 23:19:43 2023 +0800\n\n    md: add new helpers to suspend/resume array\n    \n    Advantages for new apis:\n     - reconfig_mutex is not required;\n     - the weird logical that suspend array hold 'reconfig_mutex' for\n       mddev_check_recovery() to update superblock is not needed;\n     - the specail handling, 'pers->prepare_suspend', for raid456 is not\n       needed;\n     - It's safe to be called ",
+        "exists": false,
+        "reason": "The function shows the suspend implementation with proper handling of the raid456 reshape deadlock scenario. Lines 540-543 contain an explicit comment acknowledging the vulnerability: 'For raid456, io might be waiting for reshape to make progress, allow new reshape to start while waiting for io to be done to prevent deadlock.' The fix is implemented by setting WRITE_ONCE(mddev->suspended, mddev->suspended + 1) at line 544 AFTER waiting for active_io to be zero (lines 528-532), which allows the reshape thread to progress even though it's frozen, preventing the deadlock. The code properly kills active_io (line 526), waits for it to reach zero (lines 528-532), and then increments the suspended counter to allow reshape operations. This is the correct fix for the vulnerability where mddev_suspend() would kill active_io without waking waiters, causing reshape thread to never progress."
+      }
+    },
+    {
+      "bic_found": "714d20150ed85811193ae07a494d91f9927c590f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "714d20150ed85811193ae07a494d91f9927c590f": 2
+      },
+      "bic_candidates": [
+        "714d20150ed85811193ae07a494d91f9927c590f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

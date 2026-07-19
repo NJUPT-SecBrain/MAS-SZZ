@@ -1,0 +1,320 @@
+{
+  "cveid": "CVE-2025-68823",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "c258f5c4502c9667bccf5d76fa731ab9c96687c1"
+  ],
+  "ground_truth_bic": "71f28f3136aff5890cd56de78abc673f8393cad9",
+  "predicted_bic": [
+    "71f28f3136aff5890cd56de78abc673f8393cad9"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 57997,
+  "root_cause": {
+    "text": "The ublk request completion path in `__ublk_complete_rq()` called `blk_update_request()`/`blk_mq_end_request()` without disabling bottom halves, allowing `bio->bi_end_io`-triggered `fput()` task work to invoke `blkdev_release()` reentrantly in the same task while `bdev_open()` still held `disk->open_mutex`, causing a self-deadlock.",
+    "evidence": "The CVE/commit message explicitly describes the sequence where `bdev_open()` holds `disk->open_mutex`, completion callbacks run during `__ublk_complete_rq()`, `fput()` defers to current task work, and `blkdev_release()` then tries to lock `disk->open_mutex` again; the patch wraps `blk_update_request()` and `blk_mq_end_request()` with `local_bh_disable()`/`local_bh_enable()` and adds a comment that this prevents `blkdev_release()` from being called on current's task work.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/block/ublk_drv.c",
+      "lineno": 1120,
+      "content": "if (blk_update_request(req, BLK_STS_OK, io->res))",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/block/ublk_drv.c",
+      "lineno": 1123,
+      "content": "__blk_mq_end_request(req, BLK_STS_OK);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/block/ublk_drv.c",
+      "lineno": 1127,
+      "content": "blk_mq_end_request(req, res);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The ublk request completion path in `__ublk_complete_rq()` called `blk_update_request()`/`blk_mq_end_request()` without disabling bottom halves, allowing `bio->bi_end_io`-triggered `fput()` task work to invoke `blkdev_release()` reentrantly in the same task while `bdev_open()` still held `disk->open_mutex`, causing a self-deadlock.",
+      "evidence_points": "The CVE/commit message explicitly describes the sequence where `bdev_open()` holds `disk->open_mutex`, completion callbacks run during `__ublk_complete_rq()`, `fput()` defers to current task work, and `blkdev_release()` then tries to lock `disk->open_mutex` again; the patch wraps `blk_update_request()` and `blk_mq_end_request()` with `local_bh_disable()`/`local_bh_enable()` and adds a comment that this prevents `blkdev_release()` from being called on current's task work."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/block/ublk_drv.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/block/ublk_drv.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/block/ublk_drv.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/block/ublk_drv.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a protected request-completion helper that disables bottom halves around `blk_mq_end_request()` to make ublk request completion safe in the current execution context.",
+        "what": "A new helper function `ublk_end_request(struct request *req, blk_status_t error)` was added, which wraps `blk_mq_end_request(req, error)` with `local_bh_disable()` and `local_bh_enable()`. In `__ublk_complete_rq`, a new local variable `bool requeue;` was also introduced.",
+        "how": "The added helper changes request completion behavior by ensuring bottom halves are disabled while ending a block request, which can prevent unsafe execution context interactions during completion. The new `requeue` variable prepares `__ublk_complete_rq` for additional request requeue logic, though no behavioral effect from that variable is visible in this hunk alone."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Prevent ublk request completion deadlocks by running bio completion with softirqs disabled and using the ublk-specific end-request path on error exit.",
+        "what": "The change wraps the call to blk_update_request(req, BLK_STS_OK, io->res) with local_bh_disable() and local_bh_enable(), stores its return value in a new variable requeue, and then uses that variable in the existing requeue/end-request branch. It also replaces blk_mq_end_request(req, res) with ublk_end_request(req, res) in the exit path and adds a comment explaining the locking and task-work rationale.",
+        "how": "Disabling softirqs around blk_update_request() forces bio completion callbacks to run with softirqs disabled, which avoids deferring the final fput in a way that could delay blkdev_release() onto current task work and deadlock when disk->open_mutex is already held during partition-table reads from bdev_open(). Changing the exit path to ublk_end_request() ensures request completion follows the ublk-specific completion path instead of the generic blk_mq_end_request()."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the ublk-specific request completion path when aborting non-requeued requests so they are finished with I/O error using the correct handling.",
+        "what": "The code replaces a direct call to blk_mq_end_request(rq, BLK_STS_IOERR) with a call to ublk_end_request(rq, BLK_STS_IOERR) in the non-requeue branch of __ublk_abort_rq().",
+        "how": "At runtime, aborted requests that are not requeued are now completed through the ublk-specific request completion wrapper instead of the generic block-layer completion function, ensuring any ublk-specific completion handling is applied when finishing the request with an I/O error."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Use ublk_end_request() instead of blk_mq_end_request() when auto buffer registration fails so errored ublk requests are completed through the correct driver-specific path.",
+        "what": "The call used when registration failure occurs in __ublk_do_auto_buf_reg() was changed from blk_mq_end_request(req, BLK_STS_IOERR) to ublk_end_request(req, BLK_STS_IOERR), with no other modifications in this hunk.",
+        "how": "At runtime, failed requests in this path are now completed through the ublk-specific request completion wrapper instead of the generic block multiqueue completion function, ensuring the driver's own completion handling logic is used when ending the request with an I/O error."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Use ublk_end_request() instead of blk_mq_end_request() when auto buffer registration fails so errored ublk requests are completed through the correct driver-specific path."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix ublk request completion so requests are ended through the correct ublk-specific path and in a safe execution context to avoid completion deadlocks/errors.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by making ublk request completion use a ublk-specific helper that disables bottom halves around request end/completion, preventing reentrant bio end_io/task_work execution and ensuring errored requests are completed through the safe path."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 1127,
+            "content": "blk_mq_end_request(req, res);",
+            "rationale": "This completion call is executed in __ublk_complete_rq() without disabling bottom halves, matching the root cause: bio end_io can run task work such as fput()/blkdev_release() reentrantly and deadlock while open_mutex is held."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 1120,
+            "content": "if (blk_update_request(req, BLK_STS_OK, io->res))",
+            "rationale": "This request-update path is part of the vulnerable completion flow identified in the root cause; invoking blk_update_request() here without BH protection can trigger bio completion callbacks in the unsafe execution context."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 1123,
+            "content": "__blk_mq_end_request(req, BLK_STS_OK);",
+            "rationale": "This directly ends the request from the same unsafe completion path, and the fix intent says ublk requests must be ended through a protected ublk-specific helper to avoid completion deadlocks/errors."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 1167,
+            "content": "blk_mq_end_request(rq, BLK_STS_IOERR);",
+            "rationale": "This is another pre-fix direct blk_mq_end_request() on a ublk request, which the fix changes to the ublk-specific completion path because direct ending in this context is unsafe."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 1212,
+            "content": "blk_mq_end_request(req, BLK_STS_IOERR);",
+            "rationale": "This pre-fix error completion also bypasses the ublk-specific protected path. The fix explicitly replaces such direct completions, indicating this statement participates in the vulnerable request-ending behavior."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/block/ublk_drv.c",
+            "stmt_text": "if (blk_update_request(req, BLK_STS_OK, io->res))",
+            "location": "hunk",
+            "explanation": "This statement is in the vulnerable __ublk_complete_rq() completion path identified in the root cause. Calling blk_update_request() here without disabling bottom halves can trigger bio completion callbacks, including bi_end_io-driven task work such as fput()/blkdev_release(), causing reentrant execution and deadlock while disk->open_mutex is held."
+          },
+          {
+            "vuln_file": "drivers/block/ublk_drv.c",
+            "stmt_text": "__blk_mq_end_request(req, BLK_STS_OK);",
+            "location": "hunk",
+            "explanation": "This statement directly ends the request from the same unsafe completion path. The fix intent indicates ublk request completion must be routed through a protected ublk-specific helper with softirqs disabled, because direct request ending can invoke bio completion in the deadlock-prone context described in the root cause."
+          },
+          {
+            "vuln_file": "drivers/block/ublk_drv.c",
+            "stmt_text": "blk_mq_end_request(req, res);",
+            "location": "hunk",
+            "explanation": "This is the direct request completion call in __ublk_complete_rq() called without bottom halves disabled. It matches the root cause precisely: bio->bi_end_io can run task work reentrantly in the same task, leading to blkdev_release() deadlocking on disk->open_mutex."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a58383fa45c7",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 1120
+        },
+        "commit": "71f28f3136aff5890cd56de78abc673f8393cad9",
+        "commit_short": "71f28f3136af",
+        "commit_msg": "ublk_drv: add io_uring based userspace block driver\n\nThis is the driver part of userspace block driver(ublk driver), the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 478,
+        "code_snippet": "commit 71f28f3136aff5890cd56de78abc673f8393cad9\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Wed Jul 13 22:07:10 2022 +0800\n\n    ublk_drv: add io_uring based userspace block driver\n    \n    This is the driver part of userspace block driver(ublk driver), the other\n    part is userspace daemon part(ublksrv)[1].\n    \n    The two parts communicate by io_uring's IORING_OP_URING_CMD with one\n    shared cmd buffer for storing io command, and the buffer is read only for\n    ublksrv, each io command is",
+        "exists": true,
+        "reason": "The relevant completion logic is fully visible in `ublk_complete_rq()`, so the snippet is sufficient. The vulnerable construct is present because request completion directly calls block-layer completion helpers without any bottom-half disabling around them. Specifically, in the error path it does `blk_mq_end_request(req, errno_to_blk_status(io->res));`, in the non-data path it does `blk_mq_end_request(req, BLK_STS_OK);`, and in the read/write path it does `if (blk_update_request(req, BLK_STS_OK, io->res)) blk_mq_requeue_request(req, true); else __blk_mq_end_request(req, BLK_STS_OK);`. There is no `local_bh_disable()/local_bh_enable()` or equivalent protection anywhere in this function before invoking `blk_update_request()` / `blk_mq_end_request()` / `__blk_mq_end_request()`. That matches the root cause: `bio->bi_end_io` may run and trigger `fput()` task work reentrantly in the same task while higher-level open/release locking is still held, leading to self-deadlock. Because this initial commit contains the unprotected completion path and no fix is present, `has_bug` is true and `is_fixed` is false."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "71f28f3136aff5890cd56de78abc673f8393cad9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a58383fa45c7",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 1123
+        },
+        "commit": "71f28f3136aff5890cd56de78abc673f8393cad9",
+        "commit_short": "71f28f3136af",
+        "commit_msg": "ublk_drv: add io_uring based userspace block driver\n\nThis is the driver part of userspace block driver(ublk driver), the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 481,
+        "code_snippet": "commit 71f28f3136aff5890cd56de78abc673f8393cad9\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Wed Jul 13 22:07:10 2022 +0800\n\n    ublk_drv: add io_uring based userspace block driver\n    \n    This is the driver part of userspace block driver(ublk driver), the other\n    part is userspace daemon part(ublksrv)[1].\n    \n    The two parts communicate by io_uring's IORING_OP_URING_CMD with one\n    shared cmd buffer for storing io command, and the buffer is read only for\n    ublksrv, each io command is",
+        "exists": true,
+        "reason": "The relevant completion logic is fully shown in `ublk_complete_rq()`, so the snippet is sufficient. The vulnerable construct is present because request completion directly calls block-layer completion helpers without any bottom-half disabling around them. Specifically: `blk_mq_end_request(req, errno_to_blk_status(io->res));`, `blk_mq_end_request(req, BLK_STS_OK);`, and for read/write completion `if (blk_update_request(req, BLK_STS_OK, io->res)) blk_mq_requeue_request(req, true); else __blk_mq_end_request(req, BLK_STS_OK);`. There is no `local_bh_disable()/local_bh_enable()` or equivalent protection anywhere in `ublk_complete_rq()` before invoking `blk_update_request()` / end-request paths. That matches the root cause: `bio->bi_end_io` can run in this path and trigger `fput()` task work reentrantly while `bdev_open()` still holds `disk->open_mutex`, causing self-deadlock. Since this initial commit contains the unprotected completion path and lacks the bottom-half disabling fix, `has_bug` is true and `is_fixed` is false."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "71f28f3136aff5890cd56de78abc673f8393cad9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a58383fa45c7",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 1127
+        },
+        "commit": "903f8aeea9fd1b97fba4ab805ddd639f57f117f8",
+        "commit_short": "903f8aeea9fd",
+        "commit_msg": "block: ublk_drv: add common exit handling\n\nSimplify exit handling a bit, and prepare for supporting fused command.\n\nRevi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 696,
+        "code_snippet": "commit 903f8aeea9fd1b97fba4ab805ddd639f57f117f8\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Thu Mar 30 19:36:20 2023 +0800\n\n    block: ublk_drv: add common exit handling\n    \n    Simplify exit handling a bit, and prepare for supporting fused command.\n    \n    Reviewed-by: Ziyang Zhang <ZiyangZhang@linux.alibaba.com>\n    Signed-off-by: Ming Lei <ming.lei@redhat.com>\n    Signed-off-by: Jens Axboe <axboe@kernel.dk>\n\ndiff --git a/drivers/block/ublk_drv.c b/drivers/block/ublk_drv.c\nindex d1d1c8d60",
+        "exists": true,
+        "reason": "The function body is sufficient because it clearly shows the request completion path and how requests are ended. The root cause is calling blk_update_request()/blk_mq_end_request() in the ublk completion path without disabling bottom halves. In this commit, the common exit path ends with `blk_mq_end_request(req, res);` under `exit:` and there is no `local_bh_disable()/local_bh_enable()` or equivalent protection anywhere in the function. Earlier error and non-read/write cases are redirected to this same path via `goto exit;`. The normal completion path also still invokes `__blk_mq_end_request(req, BLK_STS_OK);` directly, likewise without any bottom-half disabling shown. Therefore the vulnerable construct is present: request completion is performed without BH disabling, allowing `bio->bi_end_io` side effects such as `fput()` task work to run reentrantly. No fix is present in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "0d11f3cf279c",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 696
+        },
+        "commit": "71f28f3136aff5890cd56de78abc673f8393cad9",
+        "commit_short": "71f28f3136af",
+        "commit_msg": "ublk_drv: add io_uring based userspace block driver\n\nThis is the driver part of userspace block driver(ublk driver), the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 484,
+        "code_snippet": "commit 71f28f3136aff5890cd56de78abc673f8393cad9\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Wed Jul 13 22:07:10 2022 +0800\n\n    ublk_drv: add io_uring based userspace block driver\n    \n    This is the driver part of userspace block driver(ublk driver), the other\n    part is userspace daemon part(ublksrv)[1].\n    \n    The two parts communicate by io_uring's IORING_OP_URING_CMD with one\n    shared cmd buffer for storing io command, and the buffer is read only for\n    ublksrv, each io command is",
+        "exists": true,
+        "reason": "The relevant completion logic is fully visible in `ublk_complete_rq()`, so the snippet is sufficient. The vulnerable construct is present because request completion calls are made directly with no bottom-half disabling around them. Specifically: for error completion it does `blk_mq_end_request(req, errno_to_blk_status(io->res));`; for non-READ/WRITE completion it does `blk_mq_end_request(req, BLK_STS_OK);`; and for READ/WRITE it does `if (blk_update_request(req, BLK_STS_OK, io->res)) blk_mq_requeue_request(req, true); else __blk_mq_end_request(req, BLK_STS_OK);`. There is no `local_bh_disable()`/`local_bh_enable()` or equivalent protection anywhere in this function before `blk_update_request()` or end-request paths. That matches the root cause: `bio->bi_end_io` can run during these completions and trigger reentrant `fput()`/`blkdev_release()` in the same task. The later fix would add bottom-half disabling around this completion path, but this commit version does not contain such handling."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "71f28f3136aff5890cd56de78abc673f8393cad9",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "71f28f3136aff5890cd56de78abc673f8393cad9": 3
+      },
+      "bic_candidates": [
+        "71f28f3136aff5890cd56de78abc673f8393cad9"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

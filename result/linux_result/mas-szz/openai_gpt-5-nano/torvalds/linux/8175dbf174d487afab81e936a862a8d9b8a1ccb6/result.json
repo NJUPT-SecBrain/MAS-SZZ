@@ -1,0 +1,360 @@
+{
+  "cveid": "CVE-2026-23121",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "8175dbf174d487afab81e936a862a8d9b8a1ccb6"
+  ],
+  "ground_truth_bic": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+  "predicted_bic": [
+    "1b2b03f8e514e4f68e293846ba511a948b80243c"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 29845,
+  "root_cause": {
+    "text": "The mISDN timerdev code accessed the shared `dev->work` flag from `mISDN_read()`/`mISDN_poll()` without synchronization while `mISDN_ioctl()` via `misdn_add_timer()` updated it concurrently, causing a data race on the `mISDNtimerdev` state.",
+    "evidence": "The patch changes lockless reads of `dev->work` in `mISDN_read()` and `mISDN_poll()` to `READ_ONCE()` and writes in `misdn_add_timer()`/`mISDN_read()` to `WRITE_ONCE()`, and the KCSAN report explicitly shows a concurrent write in `mISDN_ioctl`/`misdn_add_timer` racing with a read in `mISDN_read`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/isdn/mISDN/timerdev.c",
+      "lineno": 175,
+      "content": "dev->work = 1;",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/isdn/mISDN/timerdev.c",
+      "lineno": 112,
+      "content": "wait_event_interruptible(dev->wait, (dev->work ||",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/isdn/mISDN/timerdev.c",
+      "lineno": 118,
+      "content": "if (dev->work)",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/isdn/mISDN/timerdev.c",
+      "lineno": 119,
+      "content": "dev->work = 0;",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/isdn/mISDN/timerdev.c",
+      "lineno": 146,
+      "content": "if (dev->work || !list_empty(&dev->expired))",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The mISDN timerdev code accessed the shared `dev->work` flag from `mISDN_read()`/`mISDN_poll()` without synchronization while `mISDN_ioctl()` via `misdn_add_timer()` updated it concurrently, causing a data race on the `mISDNtimerdev` state.",
+      "evidence_points": "The patch changes lockless reads of `dev->work` in `mISDN_read()` and `mISDN_poll()` to `READ_ONCE()` and writes in `misdn_add_timer()`/`mISDN_read()` to `WRITE_ONCE()`, and the KCSAN report explicitly shows a concurrent write in `mISDN_ioctl`/`misdn_add_timer` racing with a read in `mISDN_read`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/isdn/mISDN/timerdev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/isdn/mISDN/timerdev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/isdn/mISDN/timerdev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use READ_ONCE/WRITE_ONCE for the `dev->work` flag in `mISDN_read()` to safely handle concurrent access to the wakeup state.",
+        "what": "The change wraps the `dev->work` access in the `wait_event_interruptible()` condition with `READ_ONCE(dev->work)` and replaces the direct assignment `dev->work = 0` with `WRITE_ONCE(dev->work, 0)` inside `mISDN_read()`.",
+        "how": "This makes reads and writes of `dev->work` explicit single-access operations, preventing compiler optimizations or tearing from causing inconsistent observation of the flag across concurrent contexts while waiting and clearing work state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Use READ_ONCE() to snapshot dev->work in mISDN_poll() so polling and debug logging use a consistent concurrently updated value.",
+        "what": "Inside mISDN_poll(), a new local variable `u32 work` is introduced, `dev->work` is read once via `READ_ONCE(dev->work)` into that variable, and subsequent uses in the readiness check and debug printk are changed from direct `dev->work` access to `work`.",
+        "how": "This makes the poll path use a single atomic-like snapshot of `dev->work`, avoiding multiple unsynchronized reads that could observe different values or trigger data-race issues under concurrent updates; runtime behavior is otherwise unchanged except that readiness and debug output now reflect the same sampled value consistently."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use WRITE_ONCE when setting `dev->work` before waking waiters to make the zero-timeout work flag update safe for concurrent access.",
+        "what": "The assignment `dev->work = 1;` inside the `if (!timeout)` branch of `misdn_add_timer()` was replaced with `WRITE_ONCE(dev->work, 1);`.",
+        "how": "At runtime this preserves the same logical state change for zero-timeout handling, but forces the store to `dev->work` to be performed as a single explicit write visible to concurrent code, reducing the risk of compiler reordering or optimization issues when the wait queue is awakened immediately afterward."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Use WRITE_ONCE when setting `dev->work` before waking waiters to make the zero-timeout work flag update safe for concurrent access."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Make concurrent access to the mISDN device `dev->work` wakeup flag safe and consistent by using READ_ONCE/WRITE_ONCE in read, poll, and wakeup-related paths.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is an unsynchronized data race on `dev->work` between read/poll and ioctl/timer update paths. This group directly addresses that by using READ_ONCE/WRITE_ONCE on `dev->work` in `mISDN_read()`, `mISDN_poll()`, and wakeup-related updates, making the concurrent accesses safe and consistent."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/isdn/mISDN/timerdev.c",
+            "lineno": 175,
+            "content": "dev->work = 1;",
+            "rationale": "This unsynchronized write in misdn_add_timer()/ioctl updates the shared wakeup flag concurrently with read/poll paths, directly causing the reported data race."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/isdn/mISDN/timerdev.c",
+            "lineno": 112,
+            "content": "wait_event_interruptible(dev->wait, (dev->work ||",
+            "rationale": "This wait condition reads dev->work without synchronization while another thread may update it, making it one of the direct racing accesses described in the root cause."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/isdn/mISDN/timerdev.c",
+            "lineno": 118,
+            "content": "if (dev->work)",
+            "rationale": "This conditional in mISDN_read() performs another unsynchronized read of the shared work flag and participates in the same race."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/isdn/mISDN/timerdev.c",
+            "lineno": 119,
+            "content": "dev->work = 0;",
+            "rationale": "This unsynchronized clear of the shared work flag in mISDN_read() races with concurrent updates from ioctl/timer setup and is part of the inconsistent state handling."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/isdn/mISDN/timerdev.c",
+            "lineno": 146,
+            "content": "if (dev->work || !list_empty(&dev->expired))",
+            "rationale": "This mISDN_poll() readiness check reads dev->work without synchronization, directly matching the root cause of concurrent access from poll versus ioctl."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/isdn/mISDN/timerdev.c",
+            "stmt_text": "dev->work = 1;",
+            "location": "hunk 2",
+            "explanation": "This unsynchronized write in the timer setup/ioctl path updates the shared `dev->work` flag concurrently with `mISDN_read()` and `mISDN_poll()`, which is the core data race described in the root cause."
+          },
+          {
+            "vuln_file": "drivers/isdn/mISDN/timerdev.c",
+            "stmt_text": "wait_event_interruptible(dev->wait, (dev->work ||",
+            "location": "hunk 0",
+            "explanation": "This statement contains an unsynchronized read of `dev->work` in `mISDN_read()`. It races with concurrent updates from the ioctl path and is one of the direct accesses involved in the reported race."
+          },
+          {
+            "vuln_file": "drivers/isdn/mISDN/timerdev.c",
+            "stmt_text": "if (dev->work)",
+            "location": "hunk 0",
+            "explanation": "This conditional performs another unsynchronized read of the shared `dev->work` flag in `mISDN_read()`, contributing directly to the concurrent access race."
+          },
+          {
+            "vuln_file": "drivers/isdn/mISDN/timerdev.c",
+            "stmt_text": "dev->work = 0;",
+            "location": "hunk 0",
+            "explanation": "This unsynchronized clear of `dev->work` in `mISDN_read()` races with concurrent writes from the ioctl/timer path, making the shared state inconsistent and racy."
+          },
+          {
+            "vuln_file": "drivers/isdn/mISDN/timerdev.c",
+            "stmt_text": "if (dev->work || !list_empty(&dev->expired))",
+            "location": "hunk 1",
+            "explanation": "This readiness check in `mISDN_poll()` reads `dev->work` without synchronization while ioctl/timer code may update it concurrently, matching the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3d778e65b4f4",
+          "anchor_file": "drivers/isdn/mISDN/timerdev.c",
+          "anchor_lineno": 175
+        },
+        "commit": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+        "commit_short": "1b2b03f8e514",
+        "commit_msg": "Add mISDN core files\n\nAdd mISDN core files\n\nSigned-off-by: Karsten Keil <kkeil@suse.de>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/isdn/mISDN/timerdev.c",
+        "display_lineno": 179,
+        "code_snippet": "commit 1b2b03f8e514e4f68e293846ba511a948b80243c\nAuthor: Karsten Keil <kkeil@suse.de>\nDate:   Sun Jul 27 01:54:58 2008 +0200\n\n    Add mISDN core files\n    \n    Add mISDN core files\n    \n    Signed-off-by: Karsten Keil <kkeil@suse.de>\n\ndiff --git a/drivers/isdn/mISDN/timerdev.c b/drivers/isdn/mISDN/timerdev.c\nnew file mode 100644\nindex 000000000000..b5fabc7019d8\n--- /dev/null\n+++ b/drivers/isdn/mISDN/timerdev.c\n@@ -0,0 +1,301 @@\n+/*\n+ *\n+ * general timer device for using in ISDN stacks\n+ *\n+ * Aut",
+        "exists": true,
+        "reason": "The function bodies shown are sufficient because they include all relevant accesses to the shared `dev->work` flag in `mISDN_read()`, `mISDN_poll()`, and `misdn_add_timer()`. The vulnerable construct is present: `misdn_add_timer()` updates `dev->work` without any locking or atomic operation in the `if (!timeout)` path: `dev->work = 1; wake_up_interruptible(&dev->wait);`. Meanwhile, `mISDN_read()` checks and clears the same flag without synchronization: `if (list_empty(&dev->expired) && (dev->work == 0))`, `wait_event_interruptible(dev->wait, (dev->work || !list_empty(&dev->expired)));`, and later `if (dev->work) dev->work = 0;`. `mISDN_poll()` also reads it unsynchronized: `if (dev->work || !list_empty(&dev->expired))`. The only lock in the struct is `spinlock_t lock; /* protect lists */`, and it is used for list operations, not for `work`. There is no mutex, spinlock coverage, atomic type, READ_ONCE/WRITE_ONCE, or other synchronization protecting `dev->work`. Therefore this commit contains the data-race bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3d778e65b4f4",
+          "anchor_file": "drivers/isdn/mISDN/timerdev.c",
+          "anchor_lineno": 112
+        },
+        "commit": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+        "commit_short": "1b2b03f8e514",
+        "commit_msg": "Add mISDN core files\n\nAdd mISDN core files\n\nSigned-off-by: Karsten Keil <kkeil@suse.de>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/isdn/mISDN/timerdev.c",
+        "display_lineno": 104,
+        "code_snippet": "commit 1b2b03f8e514e4f68e293846ba511a948b80243c\nAuthor: Karsten Keil <kkeil@suse.de>\nDate:   Sun Jul 27 01:54:58 2008 +0200\n\n    Add mISDN core files\n    \n    Add mISDN core files\n    \n    Signed-off-by: Karsten Keil <kkeil@suse.de>\n\ndiff --git a/drivers/isdn/mISDN/timerdev.c b/drivers/isdn/mISDN/timerdev.c\nnew file mode 100644\nindex 000000000000..b5fabc7019d8\n--- /dev/null\n+++ b/drivers/isdn/mISDN/timerdev.c\n@@ -0,0 +1,301 @@\n+/*\n+ *\n+ * general timer device for using in ISDN stacks\n+ *\n+ * Aut",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains all relevant accesses to `dev->work` in `mISDN_read()`, `mISDN_poll()`, and `misdn_add_timer()`. The vulnerable construct is present: `misdn_add_timer()` updates the shared flag with `dev->work = 1;` in the `!timeout` case, but this write is done without any locking or atomic primitive. `mISDN_read()` reads and writes the same flag without synchronization: `if (list_empty(&dev->expired) && (dev->work == 0))`, `wait_event_interruptible(dev->wait, (dev->work || !list_empty(&dev->expired)));`, and later `if (dev->work) dev->work = 0;`. `mISDN_poll()` also reads it unsynchronized: `if (dev->work || !list_empty(&dev->expired))`. Although `dev->lock` exists, it is commented as `/* protect lists */` and is not used around `work` accesses. Therefore the commit contains the data-racy logic described in the root cause. No fix is present here, such as taking a lock around `work`, using READ_ONCE/WRITE_ONCE, or converting `work` to an atomic/synchronized state variable."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3d778e65b4f4",
+          "anchor_file": "drivers/isdn/mISDN/timerdev.c",
+          "anchor_lineno": 118
+        },
+        "commit": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+        "commit_short": "1b2b03f8e514",
+        "commit_msg": "Add mISDN core files\n\nAdd mISDN core files\n\nSigned-off-by: Karsten Keil <kkeil@suse.de>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/isdn/mISDN/timerdev.c",
+        "display_lineno": 111,
+        "code_snippet": "commit 1b2b03f8e514e4f68e293846ba511a948b80243c\nAuthor: Karsten Keil <kkeil@suse.de>\nDate:   Sun Jul 27 01:54:58 2008 +0200\n\n    Add mISDN core files\n    \n    Add mISDN core files\n    \n    Signed-off-by: Karsten Keil <kkeil@suse.de>\n\ndiff --git a/drivers/isdn/mISDN/timerdev.c b/drivers/isdn/mISDN/timerdev.c\nnew file mode 100644\nindex 000000000000..b5fabc7019d8\n--- /dev/null\n+++ b/drivers/isdn/mISDN/timerdev.c\n@@ -0,0 +1,301 @@\n+/*\n+ *\n+ * general timer device for using in ISDN stacks\n+ *\n+ * Aut",
+        "exists": true,
+        "reason": "The function bodies in this new file are sufficient to determine the issue because they show all accesses to the shared `dev->work` flag from `mISDN_read()`, `mISDN_poll()`, and `misdn_add_timer()`. The vulnerable construct is present: `misdn_add_timer()` updates the shared state with `dev->work = 1;` in the `!timeout` path, but this write is not protected by any lock or atomic operation. At the same time, `mISDN_read()` reads and writes the same flag unsafely: `if (list_empty(&dev->expired) && (dev->work == 0))`, `wait_event_interruptible(dev->wait, (dev->work || !list_empty(&dev->expired)));`, and later `if (dev->work) dev->work = 0;`. Likewise, `mISDN_poll()` reads it without synchronization in `if (dev->work || !list_empty(&dev->expired))` and in the debug print `dev->work`. The only lock in the structure is `spinlock_t lock; /* protect lists */`, and it is used for list manipulation, not for `work`. Therefore the root-cause condition—a data race on `dev->work` between ioctl/add_timer and read/poll—is present. No fix is visible here: there is no locking around `work`, no atomic type/accessors, and no READ_ONCE/WRITE_ONCE-style handling."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3d778e65b4f4",
+          "anchor_file": "drivers/isdn/mISDN/timerdev.c",
+          "anchor_lineno": 119
+        },
+        "commit": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+        "commit_short": "1b2b03f8e514",
+        "commit_msg": "Add mISDN core files\n\nAdd mISDN core files\n\nSigned-off-by: Karsten Keil <kkeil@suse.de>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/isdn/mISDN/timerdev.c",
+        "display_lineno": 112,
+        "code_snippet": "commit 1b2b03f8e514e4f68e293846ba511a948b80243c\nAuthor: Karsten Keil <kkeil@suse.de>\nDate:   Sun Jul 27 01:54:58 2008 +0200\n\n    Add mISDN core files\n    \n    Add mISDN core files\n    \n    Signed-off-by: Karsten Keil <kkeil@suse.de>\n\ndiff --git a/drivers/isdn/mISDN/timerdev.c b/drivers/isdn/mISDN/timerdev.c\nnew file mode 100644\nindex 000000000000..b5fabc7019d8\n--- /dev/null\n+++ b/drivers/isdn/mISDN/timerdev.c\n@@ -0,0 +1,301 @@\n+/*\n+ *\n+ * general timer device for using in ISDN stacks\n+ *\n+ * Aut",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes all relevant accesses to the shared `dev->work` flag in `mISDN_read()`, `mISDN_poll()`, and the writer in `misdn_add_timer()`. The vulnerable construct is present: `misdn_add_timer()` updates `dev->work` with `dev->work = 1;` in the `if (!timeout)` path, but this update is done without any locking or atomic primitive. Meanwhile `mISDN_read()` checks and modifies the same field unsafely: `if (list_empty(&dev->expired) && (dev->work == 0))`, `wait_event_interruptible(dev->wait, (dev->work || !list_empty(&dev->expired)));`, and later `if (dev->work) dev->work = 0;`. `mISDN_poll()` also reads it without synchronization: `if (dev->work || !list_empty(&dev->expired))`. The only lock in the structure is `spinlock_t lock; /* protect lists */`, and it is used around list operations, not around `work`. There is no mutex, spinlock coverage, atomic_t, READ_ONCE/WRITE_ONCE, or other synchronization protecting `dev->work`. Therefore this commit contains the data-race-prone logic and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3d778e65b4f4",
+          "anchor_file": "drivers/isdn/mISDN/timerdev.c",
+          "anchor_lineno": 146
+        },
+        "commit": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+        "commit_short": "1b2b03f8e514",
+        "commit_msg": "Add mISDN core files\n\nAdd mISDN core files\n\nSigned-off-by: Karsten Keil <kkeil@suse.de>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/isdn/mISDN/timerdev.c",
+        "display_lineno": 150,
+        "code_snippet": "commit 1b2b03f8e514e4f68e293846ba511a948b80243c\nAuthor: Karsten Keil <kkeil@suse.de>\nDate:   Sun Jul 27 01:54:58 2008 +0200\n\n    Add mISDN core files\n    \n    Add mISDN core files\n    \n    Signed-off-by: Karsten Keil <kkeil@suse.de>\n\ndiff --git a/drivers/isdn/mISDN/timerdev.c b/drivers/isdn/mISDN/timerdev.c\nnew file mode 100644\nindex 000000000000..b5fabc7019d8\n--- /dev/null\n+++ b/drivers/isdn/mISDN/timerdev.c\n@@ -0,0 +1,301 @@\n+/*\n+ *\n+ * general timer device for using in ISDN stacks\n+ *\n+ * Aut",
+        "exists": true,
+        "reason": "The function bodies shown are sufficient to determine the issue because they include all relevant accesses to `dev->work` from `mISDN_read()`, `mISDN_poll()`, and the update in `misdn_add_timer()` called from `mISDN_ioctl()`. The vulnerable construct is present: `misdn_add_timer()` does `dev->work = 1; wake_up_interruptible(&dev->wait);` in the `!timeout` path with no locking or atomic access. Concurrent unsynchronized reads/writes of the same field also appear in `mISDN_read()`: `if (list_empty(&dev->expired) && (dev->work == 0))`, `wait_event_interruptible(dev->wait, (dev->work || !list_empty(&dev->expired)));`, and later `if (dev->work) dev->work = 0;`—all outside any lock. `mISDN_poll()` likewise reads it without synchronization: `if (dev->work || !list_empty(&dev->expired))` and logs `dev->work` directly. The only spinlock in the structure is documented as `lock; /* protect lists */`, and it is not used around `work`. There is no apparent fix such as protecting `work` with the lock, using atomic/bitops, or another synchronization mechanism. Therefore this commit version contains the data-race vulnerability and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "1b2b03f8e514e4f68e293846ba511a948b80243c",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "1b2b03f8e514e4f68e293846ba511a948b80243c": 5
+      },
+      "bic_candidates": [
+        "1b2b03f8e514e4f68e293846ba511a948b80243c"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

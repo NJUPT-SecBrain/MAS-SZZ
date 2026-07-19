@@ -1,0 +1,361 @@
+{
+  "cveid": "CVE-2026-53085",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "d8e27d2d22b6e2df3a0125b8c08e9aace38c954c"
+  ],
+  "ground_truth_bic": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+  "predicted_bic": [
+    "4ac4546821584736798aaa9e97da9f6eaf689ea3"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 30,
+  "llm_tokens": 23662,
+  "root_cause": {
+    "text": "The BPF open-coded task_vma iterator in `kernel/bpf/task_iter.c` accessed `task->mm` locklessly and used it after only taking `mmap_read_trylock()` without acquiring an `mm_struct` reference, allowing concurrent task exit to free the non-`SLAB_TYPESAFE_BY_RCU` `mm_struct` and cause a use-after-free.",
+    "evidence": "The CVE/commit explicitly states that the iterator “reads task->mm locklessly and acquires mmap_read_trylock() but never calls mmget()” and that “If the task exits concurrently, the mm_struct can be freed,” while the patch adds `spin_trylock(&task->alloc_lock)`, `mmget(kit->data->mm)`, and matching `bpf_iter_mmput_async()` cleanup in destroy/error paths.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 837,
+      "content": "kit->data->mm = task->mm;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 845,
+      "content": "if (irq_work_busy || !mmap_read_trylock(kit->data->mm)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 876,
+      "content": "bpf_mmap_unlock_mm(kit->data->work, kit->data->mm);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The BPF open-coded task_vma iterator in `kernel/bpf/task_iter.c` accessed `task->mm` locklessly and used it after only taking `mmap_read_trylock()` without acquiring an `mm_struct` reference, allowing concurrent task exit to free the non-`SLAB_TYPESAFE_BY_RCU` `mm_struct` and cause a use-after-free.",
+      "evidence_points": "The CVE/commit explicitly states that the iterator “reads task->mm locklessly and acquires mmap_read_trylock() but never calls mmget()” and that “If the task exits concurrently, the mm_struct can be freed,” while the patch adds `spin_trylock(&task->alloc_lock)`, `mmget(kit->data->mm)`, and matching `bpf_iter_mmput_async()` cleanup in destroy/error paths."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add the missing `linux/sched/mm.h` include so the file can use required MM scheduler declarations without compilation errors.",
+        "what": "A single header include was added: `#include <linux/sched/mm.h>` to the existing list of includes in the source file.",
+        "how": "This makes declarations from `linux/sched/mm.h` available during compilation, enabling use of memory-management-related task scheduler interfaces in this file and preventing build issues from missing prototypes or definitions if such interfaces are referenced."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a configuration-aware helper for releasing mm_struct references so BPF iterator code uses async mmput on MMU kernels and a safe fallback elsewhere.",
+        "what": "A new static inline helper function named bpf_iter_mmput_async(struct mm_struct *mm) was added; it conditionally calls mmput_async(mm) when CONFIG_MMU is enabled and falls back to mmput(mm) otherwise.",
+        "how": "This introduces a wrapper that selects the appropriate mm_struct release routine based on kernel configuration, allowing callers to use asynchronous mm teardown on MMU-enabled builds while preserving compatibility and correct reference release behavior on non-MMU builds."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add early checks in bpf_iter_task_vma_new() to reject non-MMU and IRQs-disabled contexts and avoid unsupported execution and possible deadlocks.",
+        "what": "Two early-return checks were added near the start of bpf_iter_task_vma_new(): one rejects builds without CONFIG_MMU by setting kit->data to NULL and returning -EOPNOTSUPP, and another rejects IRQs-disabled contexts by setting kit->data to NULL and returning -EBUSY; explanatory comments were also added for both checks.",
+        "how": "At runtime, the function now refuses to initialize the task VMA iterator when MMU support is unavailable or when called from an IRQs-disabled/NMI context, preventing later _next() and _destroy() paths from invoking mmput_async(), mmap_read_unlock(), or related locking operations in unsupported or potentially deadlocking contexts."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Safely acquire and reference a task's `mm` under `alloc_lock` using a non-blocking lock path to avoid deadlocks and invalid `mm` access in task VMA iteration.",
+        "what": "The change replaces the previous direct assignment of `task->mm` with a guarded sequence: it adds a comment explaining safe `task->mm` access, attempts `spin_trylock(&task->alloc_lock)` and returns `-EBUSY` on failure via `goto err_cleanup_iter`, assigns `kit->data->mm = task->mm`, conditionally calls `mmget(kit->data->mm)` only when `mm` exists and the task is not a kernel thread, otherwise clears `kit->data->mm`, then releases `task->alloc_lock` before the existing null check that returns `-ENOENT`.",
+        "how": "At runtime this makes acquisition of a task's `mm` structure safe and non-blocking by avoiding `get_task_mm()` and using `spin_trylock` instead of a potentially deadlocking blocking lock path. It ensures the iterator holds a valid `mm` reference when one exists, avoids treating kernel threads as having a usable `mm`, returns `-EBUSY` when the lock cannot be safely obtained, and prevents use of an unreferenced or invalid `mm` pointer."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix the bpf_iter_task_vma_new failure path to properly release mm and task references when mmap locking cannot be obtained.",
+        "what": "The error path after a failed irq_work/mmap_read_trylock check was changed to jump to a new label, err_cleanup_mmget, which calls bpf_iter_mmput_async(kit->data->mm) before falling through to the existing iterator cleanup. Additionally, the conditional check around put_task_struct(kit->data->task) was removed so put_task_struct is now always called in the cleanup path.",
+        "how": "On initialization failure after acquiring or referencing the mm, the code now releases that mm reference asynchronously before freeing iterator data, preventing an mm reference leak. The cleanup path also now unconditionally drops the task reference, ensuring consistent resource release during this failure case."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the iterator's mm asynchronously during task VMA iterator teardown to fix missing mm cleanup.",
+        "what": "A call to bpf_iter_mmput_async(kit->data->mm) was added in bpf_iter_task_vma_destroy() inside the existing if (kit->data) cleanup block, after put_task_struct(kit->data->task) and before freeing kit->data.",
+        "how": "This change ensures the mm associated with the iterator data is released asynchronously during destruction, preventing the mm reference from being left unreleased and completing the intended cleanup sequence for task, mmap lock state, and mm resources."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add the missing `linux/sched/mm.h` include so the file can use required MM scheduler declarations without compilation errors."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Release the iterator's mm asynchronously during task VMA iterator teardown to fix missing mm cleanup."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add early checks in bpf_iter_task_vma_new() to reject non-MMU and IRQs-disabled contexts and avoid unsupported execution and possible deadlocks."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix task VMA BPF iterator mm_struct lifetime handling by safely acquiring task mm references, correctly unwinding failures, and releasing mm references with an async-safe helper during teardown.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "This change only adds a header include for MM scheduler declarations to fix compilation/build issues. It does not address the root cause: lockless use of task->mm without taking an mm_struct reference, leading to a potential use-after-free during task exit."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: they stop lockless/unsafe use of task->mm by safely acquiring an mm_struct reference, handle failure unwinding correctly, and release that reference safely during teardown, preventing the task-exit mm_struct use-after-free."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The change adds context checks for non-MMU and IRQs-disabled execution to avoid unsupported contexts and deadlocks, but it does not address the root cause: lockless access to task->mm without taking an mm_struct reference, leading to a use-after-free during task exit."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 837,
+            "content": "kit->data->mm = task->mm;",
+            "rationale": "This is the core vulnerable access: it reads task->mm locklessly and stores the raw mm_struct pointer without acquiring an mm reference, enabling use-after-free if the task exits concurrently."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 845,
+            "content": "if (irq_work_busy || !mmap_read_trylock(kit->data->mm)) {",
+            "rationale": "This uses the previously fetched mm pointer only under mmap_read_trylock(), which does not establish mm_struct lifetime. If task->mm was concurrently freed, this can operate on a dangling mm."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 876,
+            "content": "bpf_mmap_unlock_mm(kit->data->work, kit->data->mm);",
+            "rationale": "Teardown continues to use the stored mm pointer despite no reference ever being taken, so a concurrently freed mm_struct could also be dereferenced here."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "kit->data->mm = task->mm;",
+            "location": "hunk",
+            "explanation": "This is the root vulnerable statement: it reads task->mm locklessly and stores the raw mm_struct pointer without taking a reference or stabilizing its lifetime, allowing concurrent task exit to free the mm_struct and causing later use-after-free."
+          },
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "if (irq_work_busy || !mmap_read_trylock(kit->data->mm)) {",
+            "location": "hunk",
+            "explanation": "This statement dereferences and attempts to lock the previously unstabilized mm pointer. mmap_read_trylock() does not acquire an mm_struct reference, so if the mm was freed after the lockless task->mm read, this operates on a dangling pointer."
+          },
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "bpf_mmap_unlock_mm(kit->data->work, kit->data->mm);",
+            "location": "hunk",
+            "explanation": "This teardown path continues using the stored mm pointer even though no mm reference was ever taken. If the mm_struct was concurrently freed, this later dereference also participates in the use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0c584fc1805",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 837
+        },
+        "commit": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+        "commit_short": "4ac454682158",
+        "commit_msg": "bpf: Introduce task_vma open-coded iterator kfuncs\n\nThis patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 850,
+        "code_snippet": "commit 4ac4546821584736798aaa9e97da9f6eaf689ea3\nAuthor: Dave Marchevsky <davemarchevsky@fb.com>\nDate:   Fri Oct 13 13:44:24 2023 -0700\n\n    bpf: Introduce task_vma open-coded iterator kfuncs\n    \n    This patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which allow\n    creation and manipulation of struct bpf_iter_task_vma in open-coded\n    iterator style. BPF programs can use these kfuncs directly or through\n    bpf_for_each macro for natural-looking iteration of all task vmas.\n    \n    Th",
+        "exists": true,
+        "reason": "The snippet is sufficient because it contains the full implementation of the new open-coded task_vma iterator lifecycle: `bpf_iter_task_vma_new`, `bpf_iter_task_vma_next`, and `bpf_iter_task_vma_destroy`, which is exactly where the reported root cause would appear. The vulnerable construct is present in `bpf_iter_task_vma_new`: it does `kit->data->task = get_task_struct(task);` and then immediately reads `kit->data->mm = task->mm;` without taking an `mm_struct` reference. It then uses that pointer in `if (irq_work_busy || !mmap_read_trylock(kit->data->mm))` and later `vma_iter_init(&kit->data->vmi, kit->data->mm, addr);`, and finally in destroy `bpf_mmap_unlock_mm(kit->data->work, kit->data->mm);`. This matches the root cause: lockless access to `task->mm` and subsequent use after only taking `mmap_read_trylock()` on an mm pointer that was never stabilized with an mm reference. There is no fix present such as acquiring the mm safely (e.g. via `get_task_mm()` / `mmget_not_zero()` or equivalent) before using it, nor any retry/validation logic around `task->mm`. Therefore this commit version contains the bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0c584fc1805",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 845
+        },
+        "commit": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+        "commit_short": "4ac454682158",
+        "commit_msg": "bpf: Introduce task_vma open-coded iterator kfuncs\n\nThis patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 858,
+        "code_snippet": "commit 4ac4546821584736798aaa9e97da9f6eaf689ea3\nAuthor: Dave Marchevsky <davemarchevsky@fb.com>\nDate:   Fri Oct 13 13:44:24 2023 -0700\n\n    bpf: Introduce task_vma open-coded iterator kfuncs\n    \n    This patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which allow\n    creation and manipulation of struct bpf_iter_task_vma in open-coded\n    iterator style. BPF programs can use these kfuncs directly or through\n    bpf_for_each macro for natural-looking iteration of all task vmas.\n    \n    Th",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full open-coded task_vma iterator initialization, use, and destroy logic. The vulnerable construct is present in `bpf_iter_task_vma_new()`: it does `kit->data->task = get_task_struct(task);` and then directly reads `kit->data->mm = task->mm;` without taking an `mm_struct` reference. It then proceeds to use that pointer in `mmap_read_trylock(kit->data->mm)` and `vma_iter_init(&kit->data->vmi, kit->data->mm, addr);`. This matches the root cause: lockless access to `task->mm` and subsequent use after only taking `mmap_read_trylock()` without acquiring an `mm_struct` ref, allowing concurrent task exit to free `mm`. The destroy path also uses the raw stored pointer in `bpf_mmap_unlock_mm(kit->data->work, kit->data->mm);`, confirming the iterator lifetime depends on an unreferenced `mm`. There is no fix present such as `get_task_mm()`, `mmget_not_zero()`, or any other explicit `mm_struct` reference acquisition before storing/using `mm`."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0c584fc1805",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 876
+        },
+        "commit": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+        "commit_short": "4ac454682158",
+        "commit_msg": "bpf: Introduce task_vma open-coded iterator kfuncs\n\nThis patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 889,
+        "code_snippet": "commit 4ac4546821584736798aaa9e97da9f6eaf689ea3\nAuthor: Dave Marchevsky <davemarchevsky@fb.com>\nDate:   Fri Oct 13 13:44:24 2023 -0700\n\n    bpf: Introduce task_vma open-coded iterator kfuncs\n    \n    This patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which allow\n    creation and manipulation of struct bpf_iter_task_vma in open-coded\n    iterator style. BPF programs can use these kfuncs directly or through\n    bpf_for_each macro for natural-looking iteration of all task vmas.\n    \n    Th",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full open-coded task_vma iterator initialization, use, and teardown logic. The vulnerable construct is present in `bpf_iter_task_vma_new()`: it stores `kit->data->mm = task->mm;` directly from `task->mm` without taking an `mm_struct` reference, then later uses that pointer in `mmap_read_trylock(kit->data->mm)` and `vma_iter_init(&kit->data->vmi, kit->data->mm, addr)`. This matches the root cause: lockless access to `task->mm` followed by use after only taking `mmap_read_trylock()` and without acquiring an mm reference. The lifetime is extended only for the task via `kit->data->task = get_task_struct(task);`, but there is no corresponding `mmgrab()`, `get_task_mm()`, or similar on `mm`. The destructor also uses the raw mm pointer again in `bpf_mmap_unlock_mm(kit->data->work, kit->data->mm)`, reinforcing that the iterator keeps and uses `mm` without owning a reference. Therefore the bug is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "4ac4546821584736798aaa9e97da9f6eaf689ea3": 3
+      },
+      "bic_candidates": [
+        "4ac4546821584736798aaa9e97da9f6eaf689ea3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

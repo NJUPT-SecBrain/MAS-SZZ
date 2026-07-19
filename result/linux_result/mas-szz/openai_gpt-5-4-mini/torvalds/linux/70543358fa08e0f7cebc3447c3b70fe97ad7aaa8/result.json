@@ -1,0 +1,186 @@
+{
+  "cveid": "CVE-2026-46317",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "70543358fa08e0f7cebc3447c3b70fe97ad7aaa8"
+  ],
+  "ground_truth_bic": "4f128f8e1aaac189f83d0f828bcdb2986d8d2e51",
+  "predicted_bic": [
+    "4f128f8e1aaac189f83d0f828bcdb2986d8d2e51",
+    "5417a2e9b130a78bf48cb4cf92630efcee5ccf38"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 9,
+  "llm_tokens": 12343,
+  "root_cause": {
+    "text": "In KVM arm64 nested Stage-2 MMU handling, `kvm_vcpu_init_nested()` could reallocate and free `kvm->arch.nested_mmus[]` under only `config_lock` even though that array is concurrently walked under `kvm->mmu_lock` (including MMU notifier paths), creating a use-after-free race.",
+    "evidence": "The CVE description says `kvm->arch.nested_mmus[] is walked under kvm->mmu_lock ... which can run at any time` while `kvm_vcpu_init_nested() reallocates the array and frees the old buffer while holding only kvm->arch.config_lock, so such a walker can reference the freed array`; the patch fixes this by moving the reassign/copy under `write_lock(&kvm->mmu_lock)` and freeing the old buffer only after unlocking.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/arm64/kvm/nested.c",
+      "lineno": 92,
+      "content": "tmp = kvrealloc(kvm->arch.nested_mmus,",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/arm64/kvm/nested.c",
+      "lineno": 98,
+      "content": "swap(kvm->arch.nested_mmus, tmp);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In KVM arm64 nested Stage-2 MMU handling, `kvm_vcpu_init_nested()` could reallocate and free `kvm->arch.nested_mmus[]` under only `config_lock` even though that array is concurrently walked under `kvm->mmu_lock` (including MMU notifier paths), creating a use-after-free race.",
+      "evidence_points": "The CVE description says `kvm->arch.nested_mmus[] is walked under kvm->mmu_lock ... which can run at any time` while `kvm_vcpu_init_nested() reallocates the array and frees the old buffer while holding only kvm->arch.config_lock, so such a walker can reference the freed array`; the patch fixes this by moving the reassign/copy under `write_lock(&kvm->mmu_lock)` and freeing the old buffer only after unlocking."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/arm64/kvm/nested.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Expand nested MMU storage safely under lock while preserving and fixing back-pointers during reallocation.",
+        "what": "The code no longer always reallocates `kvm->arch.nested_mmus` with `kvrealloc()` and swaps it unconditionally. Instead, it only allocates a new array when `num_mmus` exceeds `kvm->arch.nested_mmus_size`, uses `kvcalloc()` for the new buffer, takes `kvm->mmu_lock` with `write_lock()`, copies the old array into the new one with `memcpy()`, updates each copied `pgt->mmu` back-pointer to point into the new array, swaps the pointers, unlocks, and frees the old buffer via `kvfree(tmp)`. The subsequent initialization loop remains, starting from the previous `nested_mmus_size` up to `num_mmus`.",
+        "how": "At runtime, existing nested MMU entries are preserved while the array is expanded only when needed. The lock makes the pointer swap and back-pointer updates safe against concurrent MMU access, and the copied structures keep their `pgt->mmu` references valid after relocation. This avoids stale back-pointers and ensures newly added nested MMUs are initialized in the enlarged array."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Expand nested MMU storage safely under lock while preserving and fixing back-pointers during reallocation."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it addresses unsafe reallocation of kvm->arch.nested_mmus[] by expanding nested MMU storage safely under lock and fixing back-pointers, which is the race leading to the use-after-free."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "arch/arm64/kvm/nested.c",
+            "lineno": 92,
+            "content": "tmp = kvrealloc(kvm->arch.nested_mmus,",
+            "rationale": "This reallocates the nested MMU array, which can move or free the old allocation while it may still be walked under kvm->mmu_lock, creating the use-after-free race described in the root cause."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "arch/arm64/kvm/nested.c",
+            "lineno": 98,
+            "content": "swap(kvm->arch.nested_mmus, tmp);",
+            "rationale": "Swapping in the newly reallocated array under only config_lock changes the backing storage of nested_mmus without synchronizing with mmu_lock readers, directly enabling concurrent UAF."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/arm64/kvm/nested.c",
+            "stmt_text": "tmp = kvrealloc(kvm->arch.nested_mmus,",
+            "location": "hunk",
+            "explanation": "This reallocation can move or free the existing nested_mmus array while other paths may still walk it under kvm->mmu_lock, creating the use-after-free race."
+          },
+          {
+            "vuln_file": "arch/arm64/kvm/nested.c",
+            "stmt_text": "swap(kvm->arch.nested_mmus, tmp);",
+            "location": "hunk",
+            "explanation": "Swapping in the reallocated array under only config_lock changes the backing storage concurrently visible to mmu_lock readers, directly exposing the UAF race."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cbaffe843a94",
+          "anchor_file": "arch/arm64/kvm/nested.c",
+          "anchor_lineno": 92
+        },
+        "commit": "4f128f8e1aaac189f83d0f828bcdb2986d8d2e51",
+        "commit_short": "4f128f8e1aaa",
+        "commit_msg": "KVM: arm64: nv: Support multiple nested Stage-2 mmu structures\n\nAdd Stage-2 mmu data structures for virtual EL2 and for ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/arm64/kvm/nested.c",
+        "display_lineno": 63,
+        "code_snippet": "commit 4f128f8e1aaac189f83d0f828bcdb2986d8d2e51\nAuthor: Marc Zyngier <maz@kernel.org>\nDate:   Fri Jun 14 15:45:37 2024 +0100\n\n    KVM: arm64: nv: Support multiple nested Stage-2 mmu structures\n    \n    Add Stage-2 mmu data structures for virtual EL2 and for nested guests.\n    We don't yet populate shadow Stage-2 page tables, but we now have a\n    framework for getting to a shadow Stage-2 pgd.\n    \n    We allocate twice the number of vcpus as Stage-2 mmu structures because\n    that's sufficient f",
+        "exists": false,
+        "reason": "The shown code clearly includes the nested MMU allocation path, but it does not show the vulnerable race as described. In `kvm_vcpu_init_nested()` the array is reallocated with `kvrealloc(...)`, and if the pointer changes it updates back-pointers and then installs the new array under `kvm->arch.nested_mmus = tmp;`. However, the snippet does not show any concurrent walker using `kvm->mmu_lock` versus only `config_lock`, nor does it show an unsafe free of the old array while it is still being traversed. The code shown also does not contain the later fix for synchronizing this with `kvm->mmu_lock`; it only has the allocation/reallocation logic. Because the vulnerable construct is not demonstrably present in this snippet alone, `has_bug` is false and `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "4f128f8e1aaac189f83d0f828bcdb2986d8d2e51",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "cbaffe843a94",
+          "anchor_file": "arch/arm64/kvm/nested.c",
+          "anchor_lineno": 98
+        },
+        "commit": "5417a2e9b130a78bf48cb4cf92630efcee5ccf38",
+        "commit_short": "5417a2e9b130",
+        "commit_msg": "KVM: arm64: Fix nested S2 MMU structures reallocation\n\nFor each vcpu that userspace creates, we allocate a number of\ns2_",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/arm64/kvm/nested.c",
+        "display_lineno": 70,
+        "code_snippet": "commit 5417a2e9b130a78bf48cb4cf92630efcee5ccf38\nAuthor: Marc Zyngier <maz@kernel.org>\nDate:   Tue Feb 4 14:55:54 2025 +0000\n\n    KVM: arm64: Fix nested S2 MMU structures reallocation\n    \n    For each vcpu that userspace creates, we allocate a number of\n    s2_mmu structures that will eventually contain our shadow S2\n    page tables.\n    \n    Since this is a dynamically allocated array, we reallocate\n    the array and initialise the newly allocated elements. Once\n    everything is correctly init",
+        "exists": false,
+        "reason": "The shown function already contains the reallocation fix. The key change is `swap(kvm->arch.nested_mmus, tmp);`, which makes the KVM struct point to the newly allocated array before initialization continues, avoiding leaving a stale pointer on failure. The code then uses the new array consistently: `kvm->arch.nested_mmus[i].pgt->mmu = &kvm->arch.nested_mmus[i];`, `init_nested_s2_mmu(kvm, &kvm->arch.nested_mmus[i]);`, and `kvm_free_stage2_pgd(&kvm->arch.nested_mmus[i]);`. It also no longer assigns `kvm->arch.nested_mmus = tmp;` at the end, so the vulnerable stale-pointer reallocation path described in the root cause is absent here."
+      }
+    },
+    {
+      "bic_found": "5417a2e9b130a78bf48cb4cf92630efcee5ccf38",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "4f128f8e1aaac189f83d0f828bcdb2986d8d2e51": 1,
+        "5417a2e9b130a78bf48cb4cf92630efcee5ccf38": 1
+      },
+      "bic_candidates": [
+        "4f128f8e1aaac189f83d0f828bcdb2986d8d2e51",
+        "5417a2e9b130a78bf48cb4cf92630efcee5ccf38"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

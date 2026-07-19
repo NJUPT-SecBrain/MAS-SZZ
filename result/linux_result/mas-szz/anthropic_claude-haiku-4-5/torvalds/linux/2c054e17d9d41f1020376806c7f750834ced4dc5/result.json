@@ -1,0 +1,360 @@
+{
+  "cveid": "CVE-2026-31700",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "2c054e17d9d41f1020376806c7f750834ced4dc5"
+  ],
+  "ground_truth_bic": "1d036d25e5609ba73fee6a88db01c306b140d512",
+  "predicted_bic": [
+    "1d036d25e5609ba73fee6a88db01c306b140d512",
+    "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 25,
+  "llm_tokens": 66499,
+  "root_cause": {
+    "text": "The tpacket_snd() function directly referenced vnet_hdr fields from the mmap'd TX ring buffer shared with userspace, allowing concurrent userspace threads to modify the header fields between kernel validation and use, creating a Time-of-Check-Time-of-Use (TOCTOU) race condition.",
+    "evidence": "The patch changes `vnet_hdr` from a pointer into the mmap'd buffer (`struct virtio_net_hdr *vnet_hdr = NULL`) to a stack-local copy (`struct virtio_net_hdr vnet_hdr`), and adds `memcpy(&vnet_hdr, data - vnet_hdr_sz, sizeof(vnet_hdr))` to copy the header before validation. The CVE description explicitly states that \"The kernel validates the header via __packet_snd_vnet_parse() but then re-reads all fields later in virtio_net_hdr_to_skb(). A concurrent userspace thread can modify the vnet_hdr fields between validation and use, bypassing all safety checks.\" The patch also notes that packet_snd() and all other kernel vnet_hdr consumers (tun.c, tap.c, virtio_net.c) already use stack copies, making tpacket_snd() the only vulnerable path.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2822,
+      "content": "vnet_hdr = data;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2830,
+      "content": "copylen = __virtio16_to_cpu(vio_le(), vnet_hdr->hdr_len);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/packet/af_packet.c",
+      "lineno": 2826,
+      "content": "__packet_snd_vnet_parse(vnet_hdr, tp_len)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The tpacket_snd() function directly referenced vnet_hdr fields from the mmap'd TX ring buffer shared with userspace, allowing concurrent userspace threads to modify the header fields between kernel validation and use, creating a Time-of-Check-Time-of-Use (TOCTOU) race condition.",
+      "evidence_points": "The patch changes `vnet_hdr` from a pointer into the mmap'd buffer (`struct virtio_net_hdr *vnet_hdr = NULL`) to a stack-local copy (`struct virtio_net_hdr vnet_hdr`), and adds `memcpy(&vnet_hdr, data - vnet_hdr_sz, sizeof(vnet_hdr))` to copy the header before validation. The CVE description explicitly states that \"The kernel validates the header via __packet_snd_vnet_parse() but then re-reads all fields later in virtio_net_hdr_to_skb(). A concurrent userspace thread can modify the vnet_hdr fields between validation and use, bypassing all safety checks.\" The patch also notes that packet_snd() and all other kernel vnet_hdr consumers (tun.c, tap.c, virtio_net.c) already use stack copies, making tpacket_snd() the only vulnerable path."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/packet/af_packet.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/packet/af_packet.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/packet/af_packet.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace nullable pointer with stack-allocated struct and explicit validity flag to prevent potential null-pointer dereferences and improve memory safety.",
+        "what": "Changed `struct virtio_net_hdr *vnet_hdr` pointer initialization from NULL to a stack-allocated struct `struct virtio_net_hdr vnet_hdr`, and added a new boolean flag `bool has_vnet_hdr = false` to track whether the header is valid.",
+        "how": "This change converts vnet_hdr from a dynamically allocated pointer to a stack-allocated structure, eliminating the need for pointer dereferencing and heap allocation. The new boolean flag explicitly tracks whether vnet_hdr contains valid data, replacing the implicit NULL-pointer check pattern. This improves memory safety by avoiding potential use-after-free or uninitialized pointer dereferences, and reduces heap fragmentation by using stack allocation."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential out-of-bounds access vulnerability by copying vnet_hdr into a kernel stack buffer instead of using a direct pointer into user packet data, and improve validation ordering.",
+        "what": "Changed vnet_hdr from a pointer to user data into a stack-allocated struct. Replaced direct pointer assignment with memcpy to copy vnet_hdr data from the packet buffer. Split the combined tp_len validation and vnet_parse check into separate error handling paths. Updated all vnet_hdr dereferences from pointer notation (vnet_hdr->) to struct notation (vnet_hdr.). Added has_vnet_hdr flag initialization.",
+        "how": "This change prevents potential out-of-bounds access by copying vnet_hdr data into a kernel stack buffer rather than using a direct pointer into user-controlled packet data. It separates validation logic so tp_len < 0 is caught before attempting to parse vnet_hdr. The memcpy at the correct offset ensures the vnet_hdr struct is safely extracted from the packet buffer. This hardens the code against malicious or malformed packet data that could otherwise be directly dereferenced."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix virtual network header handling by using correct presence flag and passing header by reference instead of by value.",
+        "what": "Changed the condition from `if (vnet_hdr_sz)` to `if (has_vnet_hdr)`, and changed two function calls from passing `vnet_hdr` to passing `&vnet_hdr` (address-of operator added) in `virtio_net_hdr_to_skb()` and `virtio_net_hdr_set_proto()` calls.",
+        "how": "This change fixes how the virtual network header is passed to kernel functions. The original code checked a size variable and passed the header by value, but the corrected code checks a boolean flag indicating header presence and passes the header by reference (pointer). This ensures the functions receive the correct data type they expect and operate on the actual header structure rather than a copy."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix potential out-of-bounds access vulnerability by copying vnet_hdr into a kernel stack buffer instead of using a direct pointer into user packet data, and improve validation ordering."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix virtual network header handling by using correct presence flag and passing header by reference instead of by value."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix memory safety vulnerabilities by replacing direct user-space pointer access with stack-allocated buffers and improving validation logic.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the TOCTOU vulnerability by copying vnet_hdr from the mmap'd TX ring buffer into a kernel stack buffer (Hunk 1), eliminating concurrent access to shared memory. This prevents userspace from modifying header fields between kernel validation and use. The stack-allocated buffer approach (Hunk 0) and improved validation ordering are core mitigations for the race condition described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group addresses virtual network header handling by changing how the header is passed (by reference vs by value) and fixing a presence flag. However, the root cause is a TOCTOU race condition where userspace can modify mmap'd buffer fields between kernel validation and use. Passing by reference doesn't prevent concurrent modification of the shared buffer, and fixing a presence flag doesn't address the fundamental issue of unsynchronized access to userspace-controlled memory. A relevant fix would involve copying the header from the shared buffer into kernel-only memory before validation, or adding synchronization mechanisms."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2822,
+            "content": "vnet_hdr = data;",
+            "rationale": "This line directly assigns a pointer to the mmap'd TX ring buffer (userspace-controlled data) to vnet_hdr. This creates the TOCTOU vulnerability because subsequent code reads from vnet_hdr fields (line 2826, 2830-2831) without copying the data to kernel space first, allowing userspace to modify the header between validation and use."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2826,
+            "content": "__packet_snd_vnet_parse(vnet_hdr, tp_len)",
+            "rationale": "This validation function operates on the direct pointer to userspace data (vnet_hdr). After validation passes, the same pointer is dereferenced again at line 2830-2831 to read vnet_hdr->hdr_len, but userspace can modify the data between the validation check and this read, exploiting the TOCTOU race condition."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/packet/af_packet.c",
+            "lineno": 2830,
+            "content": "copylen = __virtio16_to_cpu(vio_le(), vnet_hdr->hdr_len);",
+            "rationale": "This line dereferences vnet_hdr->hdr_len directly from the userspace-controlled buffer without having copied it to kernel space. This is the use phase of the TOCTOU race, where userspace can have modified hdr_len after the validation at line 2826."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "vnet_hdr = data;",
+            "location": "hunk",
+            "explanation": "This statement directly assigns a pointer to the mmap'd TX ring buffer (userspace-controlled data) to vnet_hdr without copying it to kernel space. This is the root cause of the TOCTOU vulnerability, as subsequent code validates and then uses fields from this pointer, allowing userspace to modify the header between validation and use."
+          },
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "copylen = __virtio16_to_cpu(vio_le(), vnet_hdr->hdr_len);",
+            "location": "hunk",
+            "explanation": "This line dereferences vnet_hdr->hdr_len directly from the userspace-controlled buffer without having copied it to kernel space first. This is the use phase of the TOCTOU race condition, where userspace can modify hdr_len after the validation check at line 2826, leading to out-of-bounds access."
+          },
+          {
+            "vuln_file": "net/packet/af_packet.c",
+            "stmt_text": "__packet_snd_vnet_parse(vnet_hdr, tp_len)",
+            "location": "hunk",
+            "explanation": "This validation function operates on the direct pointer to userspace data (vnet_hdr). After validation passes, the same pointer is dereferenced again to read vnet_hdr->hdr_len, but userspace can modify the data between the validation check and subsequent reads, exploiting the TOCTOU race condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2822
+        },
+        "commit": "1d036d25e5609ba73fee6a88db01c306b140d512",
+        "commit_short": "1d036d25e560",
+        "commit_msg": "packet: tpacket_snd gso and checksum offload\n\nSupport socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n\nWhen ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2696,
+        "code_snippet": "commit 1d036d25e5609ba73fee6a88db01c306b140d512\nAuthor: Willem de Bruijn <willemb@google.com>\nDate:   Wed Feb 3 18:02:17 2016 -0500\n\n    packet: tpacket_snd gso and checksum offload\n    \n    Support socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n    \n    When enabled, a struct virtio_net_hdr is expected to precede the data\n    in the ring. The vnet option must be set before the ring is created.\n    \n    The implementation reuses the existing skb_copy_bits code that is used\n    when ",
+        "exists": true,
+        "reason": "The commit introduces a TOCTOU vulnerability in tpacket_snd(). At line 2695-2706, the code reads vnet_hdr fields directly from the mmap'd ring buffer: 'vnet_hdr = data' followed by 'copylen = __virtio16_to_cpu(vio_le(), vnet_hdr->hdr_len)'. These vnet_hdr fields are then used later at line 2748 in 'packet_snd_vnet_gso(skb, vnet_hdr)' without being copied to kernel memory. A concurrent userspace thread can modify vnet_hdr->hdr_len between the validation at lines 2699-2706 and the actual use at line 2748, violating the Time-of-Check-Time-of-Use invariant. The fix would require copying vnet_hdr to kernel-allocated memory before validation, but this commit does not perform such a copy - it directly references the shared buffer throughout."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8d39b4a6b83c",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2696
+        },
+        "commit": "ae641949df01b85117845bec45328eab6d6fada1",
+        "commit_short": "ae641949df01",
+        "commit_msg": "net: Remove all uses of LL_ALLOCATED_SPACE\n\nnet: Remove all uses of LL_ALLOCATED_SPACE\n\nThe macro LL_ALLOCATED_SPACE was",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2106,
+        "code_snippet": "commit ae641949df01b85117845bec45328eab6d6fada1\nAuthor: Herbert Xu <herbert@gondor.apana.org.au>\nDate:   Fri Nov 18 02:20:04 2011 +0000\n\n    net: Remove all uses of LL_ALLOCATED_SPACE\n    \n    net: Remove all uses of LL_ALLOCATED_SPACE\n    \n    The macro LL_ALLOCATED_SPACE was ill-conceived.  It applies the\n    alignment to the sum of needed_headroom and needed_tailroom.  As\n    the amount that is then reserved for head room is needed_headroom\n    with alignment, this means that the tail room le",
+        "exists": false,
+        "reason": "The vulnerability root cause describes a TOCTOU race condition where vnet_hdr fields from the mmap'd TX ring buffer are directly referenced between validation and use. However, this function body (tpacket_snd) does not contain any direct references to vnet_hdr fields or their validation/use. The function calls tpacket_fill_skb() at line 2114, which is where vnet_hdr processing would occur, but that function is not shown here. The commit message indicates this is about removing LL_ALLOCATED_SPACE macro usage - line 2105 shows LL_RESERVED_SPACE(dev) being used instead. This particular function does not exhibit the vulnerable construct of directly accessing and using vnet_hdr fields from userspace-shared memory without proper copying/validation. The TOCTOU vulnerability would be in the tpacket_fill_skb() function or related header processing code, not in this tpacket_snd() wrapper function shown here."
+      }
+    },
+    {
+      "bic_found": "1d036d25e5609ba73fee6a88db01c306b140d512",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2830
+        },
+        "commit": "1d036d25e5609ba73fee6a88db01c306b140d512",
+        "commit_short": "1d036d25e560",
+        "commit_msg": "packet: tpacket_snd gso and checksum offload\n\nSupport socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n\nWhen ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2704,
+        "code_snippet": "commit 1d036d25e5609ba73fee6a88db01c306b140d512\nAuthor: Willem de Bruijn <willemb@google.com>\nDate:   Wed Feb 3 18:02:17 2016 -0500\n\n    packet: tpacket_snd gso and checksum offload\n    \n    Support socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n    \n    When enabled, a struct virtio_net_hdr is expected to precede the data\n    in the ring. The vnet option must be set before the ring is created.\n    \n    The implementation reuses the existing skb_copy_bits code that is used\n    when ",
+        "exists": true,
+        "reason": "The commit introduces a TOCTOU vulnerability in tpacket_snd(). At lines 2695-2706, the code reads vnet_hdr fields directly from the mmap'd ring buffer: 'vnet_hdr = data' followed by 'copylen = __virtio16_to_cpu(vio_le(), vnet_hdr->hdr_len)'. These vnet_hdr fields are then used later at line 2748 in 'packet_snd_vnet_gso(skb, vnet_hdr)' without being copied to kernel memory. A concurrent userspace thread can modify vnet_hdr->hdr_len between the validation at line 2700 and the use at line 2748, violating the TOCTOU safety principle. The fix would require copying vnet_hdr to kernel-allocated memory before validation, but this commit does not implement such copying - it directly references the shared buffer throughout."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8d39b4a6b83c",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2704
+        },
+        "commit": "fbf33a2802f71dba06faa948af805884ff16a2ab",
+        "commit_short": "fbf33a2802f7",
+        "commit_msg": "af_packet / TX_RING not fully non-blocking (w/ MSG_DONTWAIT).\n\nThis patch fixes an issue where the send(MSG_DONTWAIT) ca",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2319,
+        "code_snippet": "commit fbf33a2802f71dba06faa948af805884ff16a2ab\nAuthor: Kretschmer, Mathias <mathias.kretschmer@fokus.fraunhofer.de>\nDate:   Fri May 8 15:44:37 2015 +0200\n\n    af_packet / TX_RING not fully non-blocking (w/ MSG_DONTWAIT).\n    \n    This patch fixes an issue where the send(MSG_DONTWAIT) call\n    on a TX_RING is not fully non-blocking in cases where the device's sndBuf is\n    full. We pass nonblock=true to sock_alloc_send_skb() and return any possibly\n    occuring error code (most likely EGAIN) to ",
+        "exists": false,
+        "reason": "The vulnerability root cause describes a TOCTOU race condition where vnet_hdr fields from the mmap'd TX ring buffer are directly referenced between kernel validation and use. However, examining this function body, there is no direct reference to vnet_hdr fields or any vnet_hdr structure access visible in the code. The function uses 'ph' (packet header pointer) obtained from packet_current_frame() at line 2301-2302, and passes it to tpacket_fill_skb() at line 2322-2323, but the actual vnet_hdr field access would occur inside tpacket_fill_skb(), which is not shown here. The vulnerable construct (direct vnet_hdr field access without copying to kernel memory) is not present in this function body itself. The commit message discusses MSG_DONTWAIT blocking behavior, not TOCTOU vulnerabilities. Without seeing the tpacket_fill_skb() implementation, we cannot determine if the vulnerability exists there, but based on the provided function body alone, the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "1d036d25e5609ba73fee6a88db01c306b140d512",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "3bfcf396081a",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2826
+        },
+        "commit": "1d036d25e5609ba73fee6a88db01c306b140d512",
+        "commit_short": "1d036d25e560",
+        "commit_msg": "packet: tpacket_snd gso and checksum offload\n\nSupport socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n\nWhen ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 2700,
+        "code_snippet": "commit 1d036d25e5609ba73fee6a88db01c306b140d512\nAuthor: Willem de Bruijn <willemb@google.com>\nDate:   Wed Feb 3 18:02:17 2016 -0500\n\n    packet: tpacket_snd gso and checksum offload\n    \n    Support socket option PACKET_VNET_HDR together with PACKET_TX_RING.\n    \n    When enabled, a struct virtio_net_hdr is expected to precede the data\n    in the ring. The vnet option must be set before the ring is created.\n    \n    The implementation reuses the existing skb_copy_bits code that is used\n    when ",
+        "exists": true,
+        "reason": "The commit introduces a TOCTOU vulnerability in tpacket_snd(). At line 2695-2706, the code reads vnet_hdr fields directly from the mmap'd ring buffer: 'vnet_hdr = data' followed by '__packet_snd_vnet_parse(vnet_hdr, tp_len)' and 'copylen = __virtio16_to_cpu(vio_le(), vnet_hdr->hdr_len)'. These values are then used later at line 2748 in 'packet_snd_vnet_gso(skb, vnet_hdr)'. Since vnet_hdr points directly into the shared mmap buffer, a concurrent userspace thread can modify vnet_hdr->hdr_len or other fields between the validation at line 2700-2701 and the usage at line 2748, creating a classic TOCTOU race condition. The fix would require copying vnet_hdr to kernel stack memory before validation and use, but this commit does not perform such copying - it directly references the userspace-controlled memory throughout."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8d39b4a6b83c",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 2700
+        },
+        "commit": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+        "commit_short": "69e3c75f4d54",
+        "commit_msg": "net: TX_RING and packet mmap\n\nNew packet socket feature that makes packet socket more efficient for\ntransmission.\n\n- It ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 1012,
+        "code_snippet": "commit 69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1\nAuthor: Johann Baudy <johann.baudy@gnu-log.net>\nDate:   Mon May 18 22:11:22 2009 -0700\n\n    net: TX_RING and packet mmap\n    \n    New packet socket feature that makes packet socket more efficient for\n    transmission.\n    \n    - It reduces number of system call through a PACKET_TX_RING mechanism,\n      based on PACKET_RX_RING (Circular buffer allocated in kernel space\n      which is mmapped from user space).\n    \n    - It minimizes CPU copy using f",
+        "exists": true,
+        "reason": "The tpacket_snd() function introduced in this commit directly reads vnet_hdr fields from the mmap'd TX ring buffer shared with userspace without copying them to kernel space first. Specifically, at lines 847-849, the function reads 'tp_len' directly from the user-controlled frame: 'tp_len = ph.h2->tp_len' (line 847) and 'tp_len = ph.h1->tp_len' (line 849). This value is then used at line 851 for validation ('if (unlikely(tp_len > size_max))'), and later at line 876 in 'tpacket_fill_skb()' where it's used again ('to_write = tp_len' at line 906). Between the validation check and actual use, a concurrent userspace thread could modify the tp_len field in the shared buffer, creating a TOCTOU race condition. The code lacks any mechanism to copy the header fields to kernel-controlled memory before validation and use, which is the vulnerable construct described in the root cause."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "f67f34084914",
+          "anchor_file": "net/packet/af_packet.c",
+          "anchor_lineno": 1012
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/packet/af_packet.c",
+        "display_lineno": 945,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided code snippet is from packet_bind() function (lines 928-956), which handles socket binding to a network device. This function does not contain any references to vnet_hdr fields or the tpacket_snd() function mentioned in the vulnerability root cause. The vulnerability description specifically mentions tpacket_snd() directly referencing vnet_hdr fields from mmap'd TX ring buffer with TOCTOU race conditions. The shown code is insufficient to determine if the vulnerable tpacket_snd() function exists or contains the vulnerable construct, as it appears to be a different function entirely. To properly analyze this vulnerability, the actual tpacket_snd() function body would need to be examined."
+      }
+    },
+    {
+      "bic_found": "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "1d036d25e5609ba73fee6a88db01c306b140d512": 2,
+        "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1": 1
+      },
+      "bic_candidates": [
+        "1d036d25e5609ba73fee6a88db01c306b140d512",
+        "69e3c75f4d541a6eb151b3ef91f34033cb3ad6e1"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

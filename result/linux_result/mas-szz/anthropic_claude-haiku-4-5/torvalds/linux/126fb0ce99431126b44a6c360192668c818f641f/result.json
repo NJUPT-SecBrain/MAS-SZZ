@@ -1,0 +1,315 @@
+{
+  "cveid": "CVE-2025-71271",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "126fb0ce99431126b44a6c360192668c818f641f"
+  ],
+  "ground_truth_bic": "432f7c78cb000a3151fa0d39585b000312f50d7e",
+  "predicted_bic": [
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+    "c5b8d0bce052949e173b5b32f96bd59bceaa2ab0",
+    "af072cf683acd2307e02378cfcf2502c49d2e127"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 34235,
+  "root_cause": {
+    "text": "The hfsplus filesystem's conversion to the new mount API introduced a resource leak where sb->s_fs_info could be allocated by sget_fc() but never freed if setup_bdev_super() fails before hfsplus_fill_super() completes, because cleanup responsibility was not properly transferred to the kill_super callback.",
+    "evidence": "The patch moves the RCU-deferred freeing of sbi (sb->s_fs_info) from hfsplus_put_super() to a new hfsplus_kill_super() callback, and removes the direct kfree(sbi) from the error path in hfsplus_fill_super(). This ensures that regardless of when failure occurs during mount (whether in setup_bdev_super() or later), the kill_super callback will always be invoked to clean up the allocated s_fs_info structure. The original code relied on hfsplus_fill_super() to free sbi on error, but this function is never called if setup_bdev_super() fails, leaving the allocation orphaned.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/hfsplus/super.c",
+      "lineno": 715,
+      "content": ".kill_sb\t= kill_block_super,",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/hfsplus/super.c",
+      "lineno": 653,
+      "content": "kfree(sbi);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/hfsplus/super.c",
+      "lineno": 347,
+      "content": "call_rcu(&sbi->rcu, delayed_free);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The hfsplus filesystem-specific data (sb->s_fs_info) allocated during mount initialization was not freed when setup_bdev_super() failed after sget_fc() created a new superblock, because the cleanup responsibility was ambiguous between hfsplus_fill_super() and hfsplus_put_super() after the conversion to the new mount API.",
+      "evidence_points": "The patch shows that:"
+    },
+    {
+      "root_cause_review": {
+        "passed": false,
+        "feedback": "The proposed root cause is incomplete and does not accurately reflect the vulnerability revealed by the patch."
+      }
+    },
+    {
+      "root_cause_candidate": "The hfsplus filesystem's conversion to the new mount API introduced a resource leak where sb->s_fs_info could be allocated by sget_fc() but never freed if setup_bdev_super() fails before hfsplus_fill_super() completes, because cleanup responsibility was not properly transferred to the kill_super callback.",
+      "evidence_points": "The patch moves the RCU-deferred freeing of sbi (sb->s_fs_info) from hfsplus_put_super() to a new hfsplus_kill_super() callback, and removes the direct kfree(sbi) from the error path in hfsplus_fill_super(). This ensures that regardless of when failure occurs during mount (whether in setup_bdev_super() or later), the kill_super callback will always be invoked to clean up the allocated s_fs_info structure. The original code relied on hfsplus_fill_super() to free sbi on error, but this function is never called if setup_bdev_super() fails, leaving the allocation orphaned."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/hfsplus/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/hfsplus/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/hfsplus/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove RCU-deferred freeing of superblock info to fix a use-after-free or memory management issue in hfsplus unmount path.",
+        "what": "Removed two lines from hfsplus_put_super(): a call_rcu() invocation with delayed_free callback and a blank line that followed it.",
+        "how": "This change eliminates the deferred freeing of the superblock info structure via RCU (Read-Copy-Update) mechanism. The sbi structure will no longer be freed asynchronously through the RCU grace period; instead, it will be freed immediately or through other means. This removes the asynchronous cleanup path that was previously protecting concurrent readers."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove redundant kfree(sbi) from error path that is now handled by a cleanup callback or different memory management strategy.",
+        "what": "Removed a `kfree(sbi)` call from the error handling path in the `hfsplus_fill_super` function's `out_unload_nls` label.",
+        "how": "This change eliminates a memory deallocation that was previously performed when unwinding from NLS (National Language Support) unloading errors. The `sbi` structure will no longer be freed at this error exit point, which could lead to memory leaks unless `sbi` is freed elsewhere or the allocation is managed differently (e.g., via a cleanup callback or embedded structure)."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential use-after-free in HFS+ superblock cleanup by deferring sbi deallocation until after RCU grace period completes.",
+        "what": "Added a new hfsplus_kill_super() function that wraps kill_block_super() and calls delayed_free via RCU, then updated hfsplus_fs_type.kill_sb to point to this new function instead of directly using kill_block_super.",
+        "how": "When the HFS+ filesystem is unmounted, instead of immediately freeing the superblock info structure, the code now schedules it for deferred RCU-based cleanup via call_rcu(). This ensures that any RCU read-side critical sections still holding references to sbi complete before the structure is freed, preventing use-after-free bugs."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove RCU-deferred freeing of superblock info to fix a use-after-free or memory management issue in hfsplus unmount path."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove redundant kfree(sbi) from error path that is now handled by a cleanup callback or different memory management strategy."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix potential use-after-free in HFS+ superblock cleanup by deferring sbi deallocation until after RCU grace period completes."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses RCU-deferred freeing and use-after-free issues in the unmount path, but the vulnerability root cause is about a resource leak where sb->s_fs_info is allocated but never freed when setup_bdev_super() fails during mount initialization. These are different memory management issues in different code paths (mount vs unmount), and removing RCU-deferred freeing does not address the failure-path cleanup responsibility that should be transferred to kill_super callback."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group removes redundant kfree(sbi) calls, suggesting memory is being freed elsewhere. However, the vulnerability root cause is the opposite problem: sb->s_fs_info is NOT being freed when setup_bdev_super() fails. Removing kfree() calls would exacerbate the leak, not fix it. A relevant fix would add proper cleanup in the kill_super callback or ensure kfree(sbi) is called in error paths, not remove it."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group addresses a use-after-free issue in superblock cleanup via RCU grace period deferral, which is a different vulnerability than the resource leak root cause. The root cause is about sb->s_fs_info not being freed when setup_bdev_super() fails before hfsplus_fill_super() completes. This group does not address the failure path handling or the missing cleanup responsibility transfer to kill_super that caused the original leak."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "fs/hfsplus/super.c",
+            "lineno": 653,
+            "content": "kfree(sbi);",
+            "rationale": "This kfree(sbi) in the error path (line 653) is removed because it creates a resource leak when sget_fc() allocates sb->s_fs_info but setup_bdev_super() fails before hfsplus_fill_super() completes. The cleanup responsibility must be transferred to kill_super callback, not handled in the error path."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/hfsplus/super.c",
+            "lineno": 347,
+            "content": "call_rcu(&sbi->rcu, delayed_free);",
+            "rationale": "The RCU-deferred freeing (line 347) is removed because it causes use-after-free issues. The proper fix requires synchronous freeing through a dedicated kill_super callback that can properly handle the cleanup when sb->s_fs_info is allocated by sget_fc()."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/hfsplus/super.c",
+            "lineno": 715,
+            "content": ".kill_sb\t= kill_block_super,",
+            "rationale": "The kill_sb callback is set to kill_block_super (line 715), which does not properly free sb->s_fs_info allocated by sget_fc(). This is the root cause - a custom kill_super callback is needed to handle cleanup of sbi when setup_bdev_super() fails."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/hfsplus/super.c",
+            "stmt_text": ".kill_sb\t= kill_block_super,",
+            "location": "hunk",
+            "explanation": "The kill_sb callback is set to kill_block_super, which does not properly free sb->s_fs_info when it is allocated by sget_fc() but setup_bdev_super() fails before hfsplus_fill_super() completes. This is the root cause of the resource leak - a custom kill_super callback is needed to handle cleanup of sbi in this failure scenario."
+          },
+          {
+            "vuln_file": "fs/hfsplus/super.c",
+            "stmt_text": "kfree(sbi);",
+            "location": "hunk",
+            "explanation": "The kfree(sbi) in the error path (line 653) is insufficient because it only handles cleanup within hfsplus_fill_super(). When sget_fc() allocates sb->s_fs_info but setup_bdev_super() fails before hfsplus_fill_super() completes, this error path is never reached, leaving sbi allocated but not freed. Cleanup responsibility must be transferred to the kill_super callback."
+          },
+          {
+            "vuln_file": "fs/hfsplus/super.c",
+            "stmt_text": "call_rcu(&sbi->rcu, delayed_free);",
+            "location": "hunk",
+            "explanation": "The RCU-deferred freeing in the kill_super path (line 347) is removed because it does not properly handle the case where sb->s_fs_info is allocated by sget_fc() but setup_bdev_super() fails. The RCU deferral creates a window where sbi may be accessed after being freed, and the proper fix requires synchronous freeing through a dedicated kill_super callback."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "05ce49a902be",
+          "anchor_file": "fs/hfsplus/super.c",
+          "anchor_lineno": 715
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/hfsplus/super.c",
+        "display_lineno": 467,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided code snippet only shows the file_system_type structure definition with kill_sb callback assignment. This is insufficient to determine if a resource leak exists. The vulnerability root cause describes a leak in sb->s_fs_info allocation/cleanup during mount API conversion, which would involve: (1) the hfsplus_get_sb() function implementation, (2) hfsplus_fill_super() implementation, (3) setup_bdev_super() behavior, and (4) the actual cleanup logic in kill_block_super(). The snippet shows only that kill_block_super is assigned as the kill_sb callback, but does not show the actual mount/fill_super logic where the leak would occur, nor does it show whether proper cleanup was implemented. To make a determination, we would need to see the hfsplus_get_sb() and hfsplus_fill_super() implementations to understand if sb->s_fs_info allocation and cleanup are properly handled."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "05ce49a902be",
+          "anchor_file": "fs/hfsplus/super.c",
+          "anchor_lineno": 653
+        },
+        "commit": "c5b8d0bce052949e173b5b32f96bd59bceaa2ab0",
+        "commit_short": "c5b8d0bce052",
+        "commit_msg": "hfsplus: fix failed mount handling\n\nCurrently the error handling in hfsplus_fill_super is a mess, and can\nlead to access",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/hfsplus/super.c",
+        "display_lineno": 516,
+        "code_snippet": "commit c5b8d0bce052949e173b5b32f96bd59bceaa2ab0\nAuthor: Christoph Hellwig <hch@tuxera.com>\nDate:   Wed Feb 2 09:32:39 2011 -0700\n\n    hfsplus: fix failed mount handling\n    \n    Currently the error handling in hfsplus_fill_super is a mess, and can\n    lead to accessing fields in the superblock that haven't been even set\n    up yet.  Fix this by making sure we do not set up sb->s_root until we\n    have the mount fully set up, and before that do proper step by step\n    unwinding instead of using h",
+        "exists": false,
+        "reason": "This commit FIXES the vulnerability rather than introducing it. The root cause describes a resource leak where sb->s_fs_info (sbi) could be allocated but never freed if setup_bdev_super() fails. This commit addresses that by: (1) replacing the single 'cleanup: hfsplus_put_super(sb)' label with granular error handling labels (out_put_hidden_dir, out_put_root, out_put_alloc_file, out_close_cat_tree, out_close_ext_tree, out_free_vhdr, out_unload_nls, out), (2) ensuring proper step-by-step unwinding of resources, and (3) critically, adding 'kfree(sbi)' at the 'out_unload_nls:' label before the final 'out:' label. This ensures that if any error occurs during hfsplus_fill_super, the sbi structure allocated at the beginning is properly freed. The commit also defers setting sb->s_root until the mount is fully set up, preventing access to uninitialized superblock fields. The fix is complete and comprehensive."
+      }
+    },
+    {
+      "bic_found": "c5b8d0bce052949e173b5b32f96bd59bceaa2ab0",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "05ce49a902be",
+          "anchor_file": "fs/hfsplus/super.c",
+          "anchor_lineno": 347
+        },
+        "commit": "af072cf683acd2307e02378cfcf2502c49d2e127",
+        "commit_short": "af072cf683ac",
+        "commit_msg": "hfsplus: switch to rcu-delayed unloading of nls and freeing ->s_fs_info\n\n->d_hash() and ->d_compare() use those, so we n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/hfsplus/super.c",
+        "display_lineno": 313,
+        "code_snippet": "commit af072cf683acd2307e02378cfcf2502c49d2e127\nAuthor: Al Viro <viro@zeniv.linux.org.uk>\nDate:   Tue Sep 19 20:18:59 2023 -0400\n\n    hfsplus: switch to rcu-delayed unloading of nls and freeing ->s_fs_info\n    \n    ->d_hash() and ->d_compare() use those, so we need to delay freeing\n    them.\n    \n    Reviewed-by: Christian Brauner <brauner@kernel.org>\n    Signed-off-by: Al Viro <viro@zeniv.linux.org.uk>\n\ndiff --git a/fs/hfsplus/super.c b/fs/hfsplus/super.c\nindex 1986b4f18a90..97920202790f 100644",
+        "exists": false,
+        "reason": "The function shows the fix is already present. Line 313 calls `call_rcu(&sbi->rcu, delayed_free)` which implements RCU-delayed freeing of the sbi structure (which contains ->s_fs_info). This addresses the vulnerability root cause by ensuring that sb->s_fs_info is properly freed even if setup_bdev_super() fails, because the cleanup is now deferred via RCU callback rather than being synchronous. The commit message confirms this is the fix: 'switch to rcu-delayed unloading of nls and freeing ->s_fs_info' because '->d_hash() and ->d_compare() use those, so we need to delay freeing them.' The vulnerable construct (immediate freeing without RCU delay) is absent, and the correct handling (RCU-delayed freeing) is present."
+      }
+    },
+    {
+      "bic_found": "af072cf683acd2307e02378cfcf2502c49d2e127",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 1,
+        "c5b8d0bce052949e173b5b32f96bd59bceaa2ab0": 1,
+        "af072cf683acd2307e02378cfcf2502c49d2e127": 1
+      },
+      "bic_candidates": [
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "c5b8d0bce052949e173b5b32f96bd59bceaa2ab0",
+        "af072cf683acd2307e02378cfcf2502c49d2e127"
+      ]
+    }
+  ],
+  "used_fallback": true,
+  "error": ""
+}

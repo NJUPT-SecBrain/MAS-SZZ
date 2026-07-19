@@ -1,0 +1,240 @@
+{
+  "cveid": "CVE-2026-53163",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "40a25d59e85b3c8709ac2424d44f65610467871e"
+  ],
+  "ground_truth_bic": "3bfdc63936dd4773109b7b8c280c0f3b5ae7d349",
+  "predicted_bic": [
+    "531ae4b06a737ed5539cd75dc6f6b9a28f900bba"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 12,
+  "llm_tokens": 17659,
+  "root_cause": {
+    "text": "The rtmutex proxy-lock path could call remove_waiter() on an rt_mutex_waiter that was never enqueued—especially after deadlock detection in task_blocks_on_rt_mutex() leaves waiter->task unset—causing remove_waiter() to dereference a NULL waiter task.",
+    "evidence": "The commit states “task_blocks_on_rt_mutex() does not arm the waiter upon deadlock detection, leaving waiter->task nil,” and the patch adds `if (!waiter_task) /* never enqueued */ return;` in remove_waiter(), while also changing `rt_mutex_start_proxy_lock()` from `if (unlikely(ret))` to `if (unlikely(ret < 0))` so remove_waiter() is not called after a successful lock acquisition.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/locking/rtmutex_api.c",
+      "lineno": 369,
+      "content": "remove_waiter(lock, waiter);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/locking/rtmutex_api.c",
+      "lineno": 368,
+      "content": "if (unlikely(ret))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The rtmutex proxy-lock path could call remove_waiter() on an rt_mutex_waiter that was never enqueued—especially after deadlock detection in task_blocks_on_rt_mutex() leaves waiter->task unset—causing remove_waiter() to dereference a NULL waiter task.",
+      "evidence_points": "The commit states “task_blocks_on_rt_mutex() does not arm the waiter upon deadlock detection, leaving waiter->task nil,” and the patch adds `if (!waiter_task) /* never enqueued */ return;` in remove_waiter(), while also changing `rt_mutex_start_proxy_lock()` from `if (unlikely(ret))` to `if (unlikely(ret < 0))` so remove_waiter() is not called after a successful lock acquisition."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/locking/rtmutex.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/locking/rtmutex_api.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a null waiter_task guard in remove_waiter() to safely ignore waiters that were never enqueued.",
+        "what": "A new early-return check was added in remove_waiter() after lockdep_assert_held(&lock->wait_lock): if waiter_task is null, indicated by the comment 'never enqueued', the function now returns before entering the scoped_guard on waiter_task->pi_lock.",
+        "how": "At runtime, this prevents the function from attempting to lock or dereference waiter_task when no waiter task was ever associated with the waiter, avoiding invalid access and skipping dequeue/PI state cleanup for a waiter that was never actually enqueued."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix rt_mutex proxy-lock handling by removing the waiter only on negative error returns instead of on all nonzero results.",
+        "what": "The conditional after calling __rt_mutex_start_proxy_lock() was changed from checking any nonzero return value with `if (unlikely(ret))` to checking only negative return values with `if (unlikely(ret < 0))` before calling `remove_waiter(lock, waiter)`.",
+        "how": "At runtime, `remove_waiter()` is now executed only when __rt_mutex_start_proxy_lock() returns an error code less than zero, instead of on all nonzero returns. This preserves the waiter state for positive return values that represent non-error conditions, preventing incorrect waiter removal and allowing valid proxy-lock outcomes to proceed correctly."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a null waiter_task guard in remove_waiter() to safely ignore waiters that were never enqueued."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix rt_mutex proxy-lock handling by removing the waiter only on negative error returns instead of on all nonzero results."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by guarding remove_waiter() against a NULL waiter_task, preventing dereference of waiters that were never enqueued after deadlock detection."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly targets the proxy-lock error path that could call remove_waiter() when the waiter was never properly enqueued. Restricting removal to negative error returns avoids removing an uninitialized/non-enqueued waiter after deadlock detection, matching the described root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/locking/rtmutex_api.c",
+            "lineno": 368,
+            "content": "if (unlikely(ret))",
+            "rationale": "This condition treats all nonzero returns as failures requiring cleanup. In the proxy-lock path, positive/nonnegative returns can occur after deadlock detection without the waiter ever being enqueued, leading to remove_waiter() being called on an unqueued waiter."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/locking/rtmutex_api.c",
+            "lineno": 369,
+            "content": "remove_waiter(lock, waiter);",
+            "rationale": "This directly triggers the vulnerability by removing a waiter that may never have been enqueued. When deadlock detection leaves waiter->task unset, remove_waiter() dereferences that NULL task."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/locking/rtmutex.c",
+            "lineno": 1561,
+            "content": "scoped_guard(raw_spinlock, &waiter_task->pi_lock) {",
+            "rationale": "remove_waiter() dereferences waiter_task via waiter_task->pi_lock without first checking whether waiter->task is NULL. If called on a waiter never enqueued, this causes the NULL dereference."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/locking/rtmutex.c",
+            "lineno": 1563,
+            "content": "waiter_task->pi_blocked_on = NULL;",
+            "rationale": "This also dereferences waiter_task unconditionally inside remove_waiter(). It is part of the unsafe assumption that the waiter was enqueued and has a valid associated task."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/locking/rtmutex_api.c",
+            "stmt_text": "remove_waiter(lock, waiter);",
+            "location": "hunk",
+            "explanation": "This is the direct trigger of the vulnerability. In the proxy-lock path it can be reached for a nonzero return even when the waiter was never enqueued, such as after deadlock detection leaves waiter->task unset. Calling remove_waiter() in that state leads to dereferencing a NULL waiter task."
+          },
+          {
+            "vuln_file": "kernel/locking/rtmutex_api.c",
+            "stmt_text": "if (unlikely(ret))",
+            "location": "hunk",
+            "explanation": "This condition is the control-flow bug that misclassifies all nonzero returns as requiring waiter removal. Positive/nonnegative returns can occur without the waiter ever being enqueued, so this check wrongly allows the unsafe remove_waiter() call."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "74e144274af3",
+          "anchor_file": "kernel/locking/rtmutex_api.c",
+          "anchor_lineno": 369
+        },
+        "commit": "531ae4b06a737ed5539cd75dc6f6b9a28f900bba",
+        "commit_short": "531ae4b06a73",
+        "commit_msg": "locking/rtmutex: Split API from implementation\n\nPrepare for reusing the inner functions of rtmutex for RT lock\nsubstitut",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/locking/rtmutex_api.c",
+        "display_lineno": 308,
+        "code_snippet": "commit 531ae4b06a737ed5539cd75dc6f6b9a28f900bba\nAuthor: Thomas Gleixner <tglx@kernel.org>\nDate:   Sun Aug 15 23:27:57 2021 +0200\n\n    locking/rtmutex: Split API from implementation\n    \n    Prepare for reusing the inner functions of rtmutex for RT lock\n    substitutions: introduce kernel/locking/rtmutex_api.c and move\n    them there.\n    \n    Signed-off-by: Thomas Gleixner <tglx@linutronix.de>\n    Signed-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>\n    Signed-off-by: Ingo Molnar <mingo@",
+        "exists": true,
+        "reason": "The snippet contains the relevant proxy-lock start path and cleanup logic, so it is sufficient. The vulnerable construct is present in `rt_mutex_start_proxy_lock()`: after `ret = __rt_mutex_start_proxy_lock(lock, waiter, task);` it does `if (unlikely(ret)) remove_waiter(lock, waiter);`. This unconditionally calls `remove_waiter()` for any non-zero return, including negative error returns from deadlock detection. In `__rt_mutex_start_proxy_lock()`, the waiter is only enqueued via `ret = task_blocks_on_rt_mutex(lock, waiter, task, RT_MUTEX_FULL_CHAINWALK);`. Per the root cause, deadlock detection can return an error without the waiter being fully enqueued / with `waiter->task` left unset, yet this wrapper still calls `remove_waiter(lock, waiter)`. There is no guard here checking that the waiter was actually enqueued (for example by checking waiter state/task) before removing it. Therefore the buggy construct is present, and the fix is not yet in this function."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "531ae4b06a737ed5539cd75dc6f6b9a28f900bba",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "74e144274af3",
+          "anchor_file": "kernel/locking/rtmutex_api.c",
+          "anchor_lineno": 368
+        },
+        "commit": "531ae4b06a737ed5539cd75dc6f6b9a28f900bba",
+        "commit_short": "531ae4b06a73",
+        "commit_msg": "locking/rtmutex: Split API from implementation\n\nPrepare for reusing the inner functions of rtmutex for RT lock\nsubstitut",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/locking/rtmutex_api.c",
+        "display_lineno": 307,
+        "code_snippet": "commit 531ae4b06a737ed5539cd75dc6f6b9a28f900bba\nAuthor: Thomas Gleixner <tglx@kernel.org>\nDate:   Sun Aug 15 23:27:57 2021 +0200\n\n    locking/rtmutex: Split API from implementation\n    \n    Prepare for reusing the inner functions of rtmutex for RT lock\n    substitutions: introduce kernel/locking/rtmutex_api.c and move\n    them there.\n    \n    Signed-off-by: Thomas Gleixner <tglx@linutronix.de>\n    Signed-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>\n    Signed-off-by: Ingo Molnar <mingo@",
+        "exists": true,
+        "reason": "The vulnerable proxy-lock cleanup path is visible in this snippet. In `rt_mutex_start_proxy_lock()`, after calling `__rt_mutex_start_proxy_lock(lock, waiter, task)`, the code does `if (unlikely(ret)) remove_waiter(lock, waiter);`. The root cause says deadlock detection in `task_blocks_on_rt_mutex()` can leave `waiter->task` unset when the waiter was never actually enqueued. In `__rt_mutex_start_proxy_lock()`, the waiter is passed to `task_blocks_on_rt_mutex(lock, waiter, task, RT_MUTEX_FULL_CHAINWALK);` and the function can return an error (`ret`), including deadlock-related failures, without any check here that the waiter was actually enqueued before the outer wrapper unconditionally calls `remove_waiter()`. There is no visible guard such as checking `waiter->task`, `waiter->tree_entry`, or another 'enqueued' indicator before `remove_waiter(lock, waiter)`. Therefore the vulnerable construct is present. The fix is not present because the code still unconditionally removes the waiter on any nonzero return from `__rt_mutex_start_proxy_lock()`."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "531ae4b06a737ed5539cd75dc6f6b9a28f900bba",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "531ae4b06a737ed5539cd75dc6f6b9a28f900bba": 2
+      },
+      "bic_candidates": [
+        "531ae4b06a737ed5539cd75dc6f6b9a28f900bba"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

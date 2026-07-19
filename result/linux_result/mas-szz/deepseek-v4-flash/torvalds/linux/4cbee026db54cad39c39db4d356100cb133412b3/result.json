@@ -1,0 +1,412 @@
+{
+  "cveid": "CVE-2026-53084",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4cbee026db54cad39c39db4d356100cb133412b3"
+  ],
+  "ground_truth_bic": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+  "predicted_bic": [
+    "bee9ef4a40a277bf401be43d39ba7f7f063cf39c"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 40425,
+  "root_cause": {
+    "text": "Holding the per-VMA lock across the BPF program body in the task_vma iterator creates a lock ordering deadlock because BPF helpers may acquire locks that depend on mmap_lock, leading to a circular lock dependency chain (vm_lock → i_rwsem → mmap_lock → vm_lock).",
+    "evidence": "The commit message explicitly states: \"Holding the per-VMA lock across the BPF program body creates a lock ordering problem when helpers acquire locks that depend on mmap_lock: vm_lock -> i_rwsem -> mmap_lock -> vm_lock\". The patch fixes this by snapshotting the VMA under the lock in `_next()` via `memcpy()`, then dropping the lock before returning.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 967,
+      "content": "kit->data->locked_vma = vma;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 811,
+      "content": "struct vm_area_struct *locked_vma;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 969,
+      "content": "return vma;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Holding the per-VMA lock across the BPF program body in the task_vma iterator creates a lock ordering deadlock because BPF helpers may acquire locks that depend on mmap_lock, leading to a circular lock dependency chain (vm_lock → i_rwsem → mmap_lock → vm_lock).",
+      "evidence_points": "The commit message explicitly states: \"Holding the per-VMA lock across the BPF program body creates a lock ordering problem when helpers acquire locks that depend on mmap_lock: vm_lock -> i_rwsem -> mmap_lock -> vm_lock\". The patch fixes this by snapshotting the VMA under the lock in `_next()` via `memcpy()`, then dropping the lock before returning."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential use-after-free by storing a snapshot of the VMA rather than a pointer in BPF task VMA iterator data.",
+        "what": "Replaced the pointer field `locked_vma` of type `struct vm_area_struct *` with an embedded struct field `snapshot` of type `struct vm_area_struct` in `struct bpf_iter_task_vma_kern_data`.",
+        "how": "The struct now holds a copy of the VMA data (snapshot) instead of a pointer to an external VMA, ensuring that the iterator can safely access VMA contents without relying on the original VMA's lifetime or being affected by concurrent modifications."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "style",
+        "intent_summary": "Update comment to accurately list all operations that can take spinlocks with IRQs disabled in bpf_iter_task_vma_new.",
+        "what": "The comment listing operations used by _next() and _destroy() now includes 'fput' in addition to 'vma_end_read' and 'bpf_iter_mmput_async'.",
+        "how": "This is a comment-only change; no runtime behavior is affected."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix bug in bpf_iter_task_vma_new where the wrong field was initialized to NULL.",
+        "what": "Changed assignment from `kit->data->locked_vma = NULL` to `kit->data->snapshot.vm_file = NULL`.",
+        "how": "At runtime, the field `snapshot.vm_file` is now set to NULL instead of `locked_vma`, correcting the initialization of the iterator's internal state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix iterator by snapshotting VMA and properly refcounting vm_file to avoid holding mmap read lock across BPF program calls.",
+        "what": "Added a helper function bpf_iter_task_vma_snapshot_reset to drop reference on vm_file. In bpf_iter_task_vma_next, removed locked_vma handling and instead copy the VMA into a snapshot, take a reference on vm_file if present, then release the read lock and return the snapshot.",
+        "how": "The iterator now creates a private copy (snapshot) of the VMA and takes an extra reference on vm_file. It releases the mmap read lock immediately after copying, rather than holding it across iterations. This ensures the VMA data accessed by BPF programs remains valid even after the lock is dropped, reducing lock contention and preventing potential use-after-free or deadlock issues."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "refactor",
+        "intent_summary": "Refactor cleanup in bpf_iter_task_vma_destroy to use a unified snapshot reset function instead of manually unlocking a VMA.",
+        "what": "Replaced a conditional call to vma_end_read on kit->data->locked_vma with a call to bpf_iter_task_vma_snapshot_reset on &kit->data->snapshot in the bpf_iter_task_vma_destroy function.",
+        "how": "Instead of explicitly releasing a read lock on a single locked VMA if present, the cleanup now resets the snapshot structure, which likely handles unlocking and other state cleanup internally."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix iterator by snapshotting VMA and properly refcounting vm_file to avoid holding mmap read lock across BPF program calls."
+        },
+        {
+          "group_id": 1,
+          "category": "style",
+          "hunk_count": 1,
+          "intent": "Update comment to accurately list all operations that can take spinlocks with IRQs disabled in bpf_iter_task_vma_new."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix bug in bpf_iter_task_vma_new where the wrong field was initialized to NULL."
+        },
+        {
+          "group_id": 3,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Refactor cleanup in bpf_iter_task_vma_destroy to use a unified snapshot reset function instead of manually unlocking a VMA."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix iterator by snapshotting VMA and properly refcounting vm_file to avoid holding mmap read lock across BPF program calls.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by snapshotting the VMA and refcounting vm_file to avoid holding the mmap read lock across BPF program calls, which prevents the deadlock described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group only updates a comment to accurately list spinlock operations, which is a documentation improvement. It does not directly address or fix the lock ordering deadlock described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group fixes a wrong field initialization bug in bpf_iter_task_vma_new, which is unrelated to the deadlock caused by holding the per-VMA lock across BPF program execution."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": false,
+        "reason": "The group's core intent is a cleanup refactor to use a unified snapshot reset function in bpf_iter_task_vma_destroy, not directly addressing the lock ordering deadlock caused by holding the per-VMA lock across the BPF program body."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 967,
+            "content": "kit->data->locked_vma = vma;",
+            "rationale": "This assignment stores the VMA with its read lock held into the iterator data, causing the per-VMA lock to be held across the BPF program body until the next call to bpf_iter_task_vma_next or destroy. This creates a lock ordering deadlock (vm_lock -> i_rwsem -> mmap_lock -> vm_lock) when BPF helpers attempt to acquire locks that depend on mmap_lock."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 811,
+            "content": "struct vm_area_struct *locked_vma;",
+            "rationale": "This field in the iterator data structure stores a pointer to the VMA whose per-VMA lock is held. Its existence enables the lock to be retained across BPF program calls, directly contributing to the deadlock condition."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 969,
+            "content": "return vma;",
+            "rationale": "Returning the VMA while its read lock is still held (as set by the line above) ensures that the lock remains acquired when the BPF program runs, which is the core cause of the deadlock."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "kit->data->locked_vma = vma;",
+            "location": "hunk",
+            "explanation": "This assignment stores the VMA with its read lock held into the iterator data, causing the per-VMA lock to be held across the BPF program body until the next call to bpf_iter_task_vma_next or destroy. This creates a lock ordering deadlock (vm_lock -> i_rwsem -> mmap_lock -> vm_lock) when BPF helpers attempt to acquire locks that depend on mmap_lock."
+          },
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "struct vm_area_struct *locked_vma;",
+            "location": "hunk",
+            "explanation": "This field in the iterator data structure stores a pointer to the VMA whose per-VMA lock is held. Its existence enables the lock to be retained across BPF program calls, directly contributing to the deadlock condition."
+          },
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "return vma;",
+            "location": "hunk",
+            "explanation": "Returning the VMA while its read lock is still held (as set by the line above) ensures that the lock remains acquired when the BPF program runs, which is the core cause of the deadlock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "bee9ef4a40a2",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 967
+        },
+        "commit": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+        "commit_short": "bee9ef4a40a2",
+        "commit_msg": "bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n\nThe open-coded task_vma iterator holds mmap_lock for the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 967,
+        "code_snippet": "commit bee9ef4a40a277bf401be43d39ba7f7f063cf39c\nAuthor: Puranjay Mohan <puranjay@kernel.org>\nDate:   Wed Apr 8 08:45:36 2026 -0700\n\n    bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n    \n    The open-coded task_vma iterator holds mmap_lock for the entire duration\n    of iteration, increasing contention on this highly contended lock.\n    \n    Switch to per-VMA locking. Find the next VMA via an RCU-protected maple\n    tree walk and lock it with lock_vma_under_rcu(). lock_next_vma()",
+        "exists": true,
+        "reason": "The commit introduces per-VMA locking in the task_vma iterator. In `bpf_iter_task_vma_next`, the VMA is locked via `lock_vma_under_rcu()` and stored in `kit->data->locked_vma` (line 971-972). It is only released in the subsequent call to `bpf_iter_task_vma_next` or `bpf_iter_task_vma_destroy` (lines 963-965 and 977-978). This means the per-VMA lock is held across the entire BPF program invocation, which according to the root cause creates a lock ordering deadlock (vm_lock -> i_rwsem -> mmap_lock -> vm_lock). No fix is present, as the lock is deliberately held across the program body."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "d8e27d2d22b6",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 967
+        },
+        "commit": "9c66dc94b62aef23300f05f63404afb8990920b4",
+        "commit_short": "9c66dc94b62a",
+        "commit_msg": "bpf: Introduce css_task open-coded iterator kfuncs\n\nThis patch adds kfuncs bpf_iter_css_task_{new,next,destroy} which al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 932,
+        "code_snippet": "commit 9c66dc94b62aef23300f05f63404afb8990920b4\nAuthor: Chuyi Zhou <zhouchuyi@bytedance.com>\nDate:   Wed Oct 18 14:17:40 2023 +0800\n\n    bpf: Introduce css_task open-coded iterator kfuncs\n    \n    This patch adds kfuncs bpf_iter_css_task_{new,next,destroy} which allow\n    creation and manipulation of struct bpf_iter_css_task in open-coded\n    iterator style. These kfuncs actually wrapps css_task_iter_{start,next,\n    end}. BPF programs can use these kfuncs through bpf_for_each macro for\n    iter",
+        "exists": false,
+        "reason": "The commit only adds new css_task iterator kfuncs (bpf_iter_css_task_new, next, destroy), which do not hold the per-VMA lock across the BPF program body. The vulnerable construct (holding per-VMA lock in task_vma iterator) is not present in this added code. Therefore, the vulnerability root cause is not introduced or fixed here."
+      }
+    },
+    {
+      "bic_found": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "bee9ef4a40a2",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 811
+        },
+        "commit": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+        "commit_short": "bee9ef4a40a2",
+        "commit_msg": "bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n\nThe open-coded task_vma iterator holds mmap_lock for the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 811,
+        "code_snippet": "commit bee9ef4a40a277bf401be43d39ba7f7f063cf39c\nAuthor: Puranjay Mohan <puranjay@kernel.org>\nDate:   Wed Apr 8 08:45:36 2026 -0700\n\n    bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n    \n    The open-coded task_vma iterator holds mmap_lock for the entire duration\n    of iteration, increasing contention on this highly contended lock.\n    \n    Switch to per-VMA locking. Find the next VMA via an RCU-protected maple\n    tree walk and lock it with lock_vma_under_rcu(). lock_next_vma()",
+        "exists": true,
+        "reason": "The commit introduces per-VMA locking in the task_vma iterator. In bpf_iter_task_vma_find_next, lock_vma_under_rcu() is called to lock a VMA, and the locked VMA is stored in data->locked_vma. In bpf_iter_task_vma_next, this locked VMA is returned to the BPF program without releasing the lock (the lock is only released in the subsequent call or in destroy). This means the per-VMA lock is held across the BPF program body, which according to the root cause creates a deadlock via a circular lock dependency chain. The code does not contain any fix to avoid holding the lock across the BPF program."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "d8e27d2d22b6",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 811
+        },
+        "commit": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+        "commit_short": "4ac454682158",
+        "commit_msg": "bpf: Introduce task_vma open-coded iterator kfuncs\n\nThis patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 812,
+        "code_snippet": "commit 4ac4546821584736798aaa9e97da9f6eaf689ea3\nAuthor: Dave Marchevsky <davemarchevsky@fb.com>\nDate:   Fri Oct 13 13:44:24 2023 -0700\n\n    bpf: Introduce task_vma open-coded iterator kfuncs\n    \n    This patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which allow\n    creation and manipulation of struct bpf_iter_task_vma in open-coded\n    iterator style. BPF programs can use these kfuncs directly or through\n    bpf_for_each macro for natural-looking iteration of all task vmas.\n    \n    Th",
+        "exists": false,
+        "reason": "The commit introduces bpf_iter_task_vma_{new,next,destroy} kfuncs. The code in bpf_iter_task_vma_new acquires mmap_read_trylock and vma_iter_init, but does not acquire any per-VMA lock (vm_lock). bpf_iter_task_vma_next returns vma_next without locking. bpf_iter_task_vma_destroy releases the mmap lock. No per-VMA lock is held across the BPF program body, so the vulnerable construct (holding per-VMA lock) is absent."
+      }
+    },
+    {
+      "bic_found": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "bee9ef4a40a2",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 969
+        },
+        "commit": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+        "commit_short": "bee9ef4a40a2",
+        "commit_msg": "bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n\nThe open-coded task_vma iterator holds mmap_lock for the ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 969,
+        "code_snippet": "commit bee9ef4a40a277bf401be43d39ba7f7f063cf39c\nAuthor: Puranjay Mohan <puranjay@kernel.org>\nDate:   Wed Apr 8 08:45:36 2026 -0700\n\n    bpf: switch task_vma iterator from mmap_lock to per-VMA locks\n    \n    The open-coded task_vma iterator holds mmap_lock for the entire duration\n    of iteration, increasing contention on this highly contended lock.\n    \n    Switch to per-VMA locking. Find the next VMA via an RCU-protected maple\n    tree walk and lock it with lock_vma_under_rcu(). lock_next_vma()",
+        "exists": true,
+        "reason": "The diff shows the new implementation where bpf_iter_task_vma_next locks a VMA via lock_vma_under_rcu and stores it in kit->data->locked_vma, then returns the VMA. The lock is only released on the next call to _next or in _destroy, meaning the per-VMA lock is held across the BPF program execution. This matches the root cause: holding the per-VMA lock across the BPF program body can lead to deadlocks due to circular lock ordering (vm_lock → i_rwsem → mmap_lock → vm_lock). The code contains the vulnerable construct and does not include any fix (e.g., releasing the lock before the BPF program runs)."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "d8e27d2d22b6",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 969
+        },
+        "commit": "9c66dc94b62aef23300f05f63404afb8990920b4",
+        "commit_short": "9c66dc94b62a",
+        "commit_msg": "bpf: Introduce css_task open-coded iterator kfuncs\n\nThis patch adds kfuncs bpf_iter_css_task_{new,next,destroy} which al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 934,
+        "code_snippet": "commit 9c66dc94b62aef23300f05f63404afb8990920b4\nAuthor: Chuyi Zhou <zhouchuyi@bytedance.com>\nDate:   Wed Oct 18 14:17:40 2023 +0800\n\n    bpf: Introduce css_task open-coded iterator kfuncs\n    \n    This patch adds kfuncs bpf_iter_css_task_{new,next,destroy} which allow\n    creation and manipulation of struct bpf_iter_css_task in open-coded\n    iterator style. These kfuncs actually wrapps css_task_iter_{start,next,\n    end}. BPF programs can use these kfuncs through bpf_for_each macro for\n    iter",
+        "exists": false,
+        "reason": "The commit introduces new css_task iterator kfuncs (bpf_iter_css_task_new/next/destroy) and does not modify the task_vma iterator code. The vulnerability concerns holding the per-VMA lock across the BPF program body in task_vma iterator, which is absent from this diff."
+      }
+    },
+    {
+      "bic_found": "bee9ef4a40a277bf401be43d39ba7f7f063cf39c",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "bee9ef4a40a277bf401be43d39ba7f7f063cf39c": 3
+      },
+      "bic_candidates": [
+        "bee9ef4a40a277bf401be43d39ba7f7f063cf39c"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

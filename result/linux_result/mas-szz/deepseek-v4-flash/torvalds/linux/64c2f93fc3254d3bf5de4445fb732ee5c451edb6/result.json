@@ -1,0 +1,181 @@
+{
+  "cveid": "CVE-2026-53033",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "64c2f93fc3254d3bf5de4445fb732ee5c451edb6"
+  ],
+  "ground_truth_bic": "2c860a43dd77f969bb959336a2f743d7103a8f63",
+  "predicted_bic": [
+    "4d328dd695383224aa750ddee6b4ad40c0f8d205"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 22833,
+  "root_cause": {
+    "text": "The unix socket's peer pointer (`unix_peer(sk)`) is accessed in `unix_stream_bpf_update_proto()` without holding the socket's state lock (`unix_state_lock`), allowing a concurrent `unix_release_sock()` on another CPU to clear the peer pointer and free the socket, leading to a use-after-free when the BPF iterator program subsequently dereferences or holds a reference to the stale peer.",
+    "evidence": "The commit message explicitly shows the race condition between `CPU0 bpf` (in `unix_stream_bpf_update_proto()`) and `CPU1 close` (in `unix_release_sock()`) where `sk_pair = unix_peer(sk)` is followed by the peer being set to NULL and freed, then `sock_hold(sk_pair)` accesses freed memory. The KASAN report confirms the use-after-free at `unix_stream_bpf_update_proto+0x155/0x490`. The fix adds `unix_state_lock(sk)`/`unix_state_unlock(sk)` around the iterator code that invokes the BPF program, indicating the missing synchronization is the root cause.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 3745,
+      "content": "if (unlikely(sock_flag(sk, SOCK_DEAD))) {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The unix socket's peer pointer (`unix_peer(sk)`) is accessed in `unix_stream_bpf_update_proto()` without holding the socket's state lock (`unix_state_lock`), allowing a concurrent `unix_release_sock()` on another CPU to clear the peer pointer and free the socket, leading to a use-after-free when the BPF iterator program subsequently dereferences or holds a reference to the stale peer.",
+      "evidence_points": "The commit message explicitly shows the race condition between `CPU0 bpf` (in `unix_stream_bpf_update_proto()`) and `CPU1 close` (in `unix_release_sock()`) where `sk_pair = unix_peer(sk)` is followed by the peer being set to NULL and freed, then `sock_hold(sk_pair)` accesses freed memory. The KASAN report confirms the use-after-free at `unix_stream_bpf_update_proto+0x155/0x490`. The fix adds `unix_state_lock(sk)`/`unix_state_unlock(sk)` around the iterator code that invokes the BPF program, indicating the missing synchronization is the root cause."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/unix/af_unix.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add missing unix_state_lock() to prevent race condition when checking SOCK_DEAD flag in bpf_iter_unix_seq_show.",
+        "what": "Added a call to unix_state_lock(sk) immediately after lock_sock(sk) in bpf_iter_unix_seq_show function.",
+        "how": "This ensures that the socket's state (specifically the SOCK_DEAD flag) is accessed under proper synchronization, preventing a race condition where the socket could be marked dead by another thread after lock_sock but before the flag check."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add missing unix_state_unlock before release_sock to fix lock imbalance in bpf_iter_unix_seq_show.",
+        "what": "Added call to unix_state_unlock(sk) before release_sock(sk) in bpf_iter_unix_seq_show.",
+        "how": "Ensures the Unix socket state lock is released before the socket is released, fixing a potential lock imbalance or deadlock."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add missing unix_state_lock() to prevent race condition when checking SOCK_DEAD flag in bpf_iter_unix_seq_show."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add missing unix_state_unlock before release_sock to fix lock imbalance in bpf_iter_unix_seq_show."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses a missing lock in `bpf_iter_unix_seq_show` for checking the SOCK_DEAD flag, which is a different code path from the vulnerability root cause in `unix_stream_bpf_update_proto` where the peer pointer is accessed without a lock leading to use-after-free."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": ""
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 3745,
+            "content": "if (unlikely(sock_flag(sk, SOCK_DEAD))) {",
+            "rationale": "This statement checks the SOCK_DEAD flag without holding unix_state_lock, allowing a concurrent unix_release_sock() to free the socket after the check passes. Subsequent access to unix_peer(sk) (or other socket state) then results in a use-after-free."
+          }
+        ],
+        "confidence": "low",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 0
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "if (unlikely(sock_flag(sk, SOCK_DEAD))) {",
+            "location": "hunk",
+            "explanation": "This statement checks the SOCK_DEAD flag without holding unix_state_lock. A concurrent unix_release_sock() on another CPU can set SOCK_DEAD and free the socket after this check passes, leading to a use-after-free when the BPF iterator subsequently accesses unix_peer(sk)."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dca38b7734d2",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 3745
+        },
+        "commit": "4d328dd695383224aa750ddee6b4ad40c0f8d205",
+        "commit_short": "4d328dd69538",
+        "commit_msg": "bpf, sockmap: Fix af_unix iter deadlock\n\nbpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\npath",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 3745,
+        "code_snippet": "commit 4d328dd695383224aa750ddee6b4ad40c0f8d205\nAuthor: Michal Luczaj <mhal@rbox.co>\nDate:   Tue Apr 14 16:13:16 2026 +0200\n\n    bpf, sockmap: Fix af_unix iter deadlock\n    \n    bpf_iter_unix_seq_show() may deadlock when lock_sock_fast() takes the fast\n    path and the iter prog attempts to update a sockmap. Which ends up spinning\n    at sock_map_update_elem()'s bh_lock_sock():\n    \n    WARNING: possible recursive locking detected\n    test_progs/1393 is trying to acquire lock:\n    ffff88811ec25f",
+        "exists": false,
+        "reason": "The function `bpf_iter_unix_seq_show()` shown in the diff does not access `unix_peer(sk)` or any similar peer pointer. It only locks the socket, checks `SOCK_DEAD`, retrieves UID, runs the BPF program, and releases the lock. The vulnerable construct (peer pointer dereference without `unix_state_lock`) is absent from this function, so no bug is present here."
+      }
+    },
+    {
+      "bic_found": "4d328dd695383224aa750ddee6b4ad40c0f8d205",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "4d328dd695383224aa750ddee6b4ad40c0f8d205": 1
+      },
+      "bic_candidates": [
+        "4d328dd695383224aa750ddee6b4ad40c0f8d205"
+      ]
+    }
+  ],
+  "used_fallback": true,
+  "error": ""
+}

@@ -1,0 +1,356 @@
+{
+  "cveid": "CVE-2026-23469",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "2d7f05cddf4c268cc36256a2476946041dbdd36d"
+  ],
+  "ground_truth_bic": "cc1aeedb98ad347c06ff59e991b2f94dfb4c565d",
+  "predicted_bic": [
+    "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+    "727538a4bbff07736ecfd704efd7e21718fca3e4",
+    "cc1aeedb98ad347c06ff59e991b2f94dfb4c565d"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 13,
+  "llm_tokens": 61379,
+  "root_cause": {
+    "text": "The runtime PM suspend callback in the Imagination GPU driver does not synchronize with the threaded IRQ handler before powering down the GPU, allowing the IRQ handler to access GPU registers after the GPU is suspended, and the IRQ handler's own power management calls would create a deadlock if synchronization were added.",
+    "evidence": "Commit message states: \"The runtime PM suspend callback doesn't know whether the IRQ handler is in progress on a different CPU core and doesn't wait for it to finish.\" and \"the driver would hit a deadlock between synchronize_irq() being called from a runtime PM suspend callback, holding the device power lock, and the resume callback requiring the same.\" The crash shows the IRQ handler in `pvr_riscv_irq_pending` causing an SError due to accessing GPU registers after suspend. The patch adds `synchronize_irq()` in `pvr_power_fw_disable` during RPM suspend and removes the `pvr_power_get/put` calls from the threaded IRQ handler to prevent the deadlock.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/imagination/pvr_power.c",
+      "lineno": 364,
+      "content": "err = pvr_power_fw_disable(pvr_dev, false);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/imagination/pvr_power.c",
+      "lineno": 530,
+      "content": "err = pvr_power_fw_disable(pvr_dev, hard_reset);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/imagination/pvr_device.c",
+      "lineno": 235,
+      "content": "err = pvr_power_get(pvr_dev);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/imagination/pvr_device.c",
+      "lineno": 243,
+      "content": "while (pvr_device_safety_irq_pending(pvr_dev)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/imagination/pvr_device.c",
+      "lineno": 250,
+      "content": "pvr_power_put(pvr_dev);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The runtime PM suspend callback in the Imagination GPU driver does not synchronize with the threaded IRQ handler before powering down the GPU, allowing the IRQ handler to access GPU registers after the GPU is suspended, and the IRQ handler's own power management calls would create a deadlock if synchronization were added.",
+      "evidence_points": "Commit message states: \"The runtime PM suspend callback doesn't know whether the IRQ handler is in progress on a different CPU core and doesn't wait for it to finish.\" and \"the driver would hit a deadlock between synchronize_irq() being called from a runtime PM suspend callback, holding the device power lock, and the resume callback requiring the same.\" The crash shows the IRQ handler in `pvr_riscv_irq_pending` causing an SError due to accessing GPU registers after suspend. The patch adds `synchronize_irq()` in `pvr_power_fw_disable` during RPM suspend and removes the `pvr_power_get/put` calls from the threaded IRQ handler to prevent the deadlock."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/imagination/pvr_device.c",
+            "lineno": 235,
+            "content": "err = pvr_power_get(pvr_dev);",
+            "rationale": "The threaded IRQ handler acquires a power reference, which would deadlock if the runtime PM suspend callback attempted to synchronize by waiting for the IRQ handler to complete, because the IRQ handler would then be blocked waiting for the power management system to resume."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/imagination/pvr_device.c",
+            "lineno": 243,
+            "content": "while (pvr_device_safety_irq_pending(pvr_dev)) {",
+            "rationale": "The IRQ handler checks a GPU register for pending safety events; this access can occur after the GPU has been suspended due to lack of synchronization with the suspend callback, leading to undefined behavior."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/imagination/pvr_device.c",
+            "lineno": 250,
+            "content": "pvr_power_put(pvr_dev);",
+            "rationale": "The IRQ handler releases the power reference; if the suspend callback has already powered down the GPU in the meantime, this operation may interact with an already-suspended device and fail to properly manage the power state."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "drivers/gpu/drm/imagination/pvr_power.c",
+            "lineno": 364,
+            "content": "err = pvr_power_fw_disable(pvr_dev, false);",
+            "rationale": "This call in the runtime PM suspend path disables the firmware and powers down the GPU without ensuring that the threaded IRQ handler has finished, allowing a race where the IRQ handler may still access registers."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "drivers/gpu/drm/imagination/pvr_power.c",
+            "lineno": 530,
+            "content": "err = pvr_power_fw_disable(pvr_dev, hard_reset);",
+            "rationale": "Another invocation of the firmware disable function in the suspend path; like the previous, it lacks synchronization with the IRQ handler, leaving a window for concurrent register access after power-down."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/imagination/pvr_power.c",
+            "stmt_text": "err = pvr_power_fw_disable(pvr_dev, false);",
+            "location": "hunk",
+            "explanation": "This call in the runtime PM suspend callback (hunk 3) disables firmware and powers down the GPU without synchronizing with the threaded IRQ handler. The IRQ handler may still be executing and accessing GPU registers, leading to undefined behavior. Additionally, if synchronization were attempted, the IRQ handler's own power management calls would deadlock."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/imagination/pvr_power.c",
+            "stmt_text": "err = pvr_power_fw_disable(pvr_dev, hard_reset);",
+            "location": "hunk",
+            "explanation": "Another invocation of the firmware disable function in the suspend path (hunk 4) that lacks synchronization with the IRQ handler. Same race condition: the GPU may be powered down while the IRQ handler is still active."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/imagination/pvr_device.c",
+            "stmt_text": "err = pvr_power_get(pvr_dev);",
+            "location": "hunk",
+            "explanation": "The threaded IRQ handler acquires a power reference via pvr_power_get. If synchronization were added to wait for the IRQ handler to finish before suspending, this call would block waiting for the power management system, which would be suspended, creating a deadlock."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/imagination/pvr_device.c",
+            "stmt_text": "while (pvr_device_safety_irq_pending(pvr_dev)) {",
+            "location": "hunk",
+            "explanation": "The IRQ handler checks a GPU register for pending safety events. Without synchronization, this register access can occur after the GPU has been suspended, leading to undefined behavior from accessing powered-down hardware."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/imagination/pvr_device.c",
+            "stmt_text": "pvr_power_put(pvr_dev);",
+            "location": "hunk",
+            "explanation": "The IRQ handler releases the power reference. If the suspend callback has already powered down the GPU, this operation may interact with an already-suspended device and fail to properly manage the power state, further contributing to the vulnerability."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a55c2a5c8d68",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_power.c",
+          "anchor_lineno": 364
+        },
+        "commit": "cc1aeedb98ad347c06ff59e991b2f94dfb4c565d",
+        "commit_short": "cc1aeedb98ad",
+        "commit_msg": "drm/imagination: Implement firmware infrastructure and META FW support\n\nThe infrastructure includes parsing of the firmw",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_power.c",
+        "display_lineno": 230,
+        "code_snippet": "commit cc1aeedb98ad347c06ff59e991b2f94dfb4c565d\nAuthor: Sarah Walker <sarah.walker@imgtec.com>\nDate:   Wed Nov 22 16:34:34 2023 +0000\n\n    drm/imagination: Implement firmware infrastructure and META FW support\n    \n    The infrastructure includes parsing of the firmware image, initialising\n    FW-side structures, handling the kernel and firmware command\n    ringbuffers and starting & stopping the firmware processor.\n    \n    This patch also adds the necessary support code for the META firmware\n ",
+        "exists": true,
+        "reason": "The `pvr_power_device_suspend` function in this commit (lines 220-242) does not disable the IRQ or synchronize with the threaded IRQ handler before calling `pvr_power_fw_disable` and powering down the GPU. This matches the vulnerability root cause: the runtime PM suspend callback lacks synchronization with the threaded IRQ handler, allowing the IRQ handler to access GPU registers after suspend."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "727538a4bbff",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_power.c",
+          "anchor_lineno": 230
+        },
+        "commit": "727538a4bbff07736ecfd704efd7e21718fca3e4",
+        "commit_short": "727538a4bbff",
+        "commit_msg": "drm/imagination: Implement power management\n\nAdd power management to the driver, using runtime pm. The power off\nsequenc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_power.c",
+        "display_lineno": 230,
+        "code_snippet": "commit 727538a4bbff07736ecfd704efd7e21718fca3e4\nAuthor: Sarah Walker <sarah.walker@imgtec.com>\nDate:   Wed Nov 22 16:34:33 2023 +0000\n\n    drm/imagination: Implement power management\n    \n    Add power management to the driver, using runtime pm. The power off\n    sequence depends on firmware commands which are not implemented in this\n    patch.\n    \n    Changes since v8:\n    - Corrected license identifiers\n    \n    Changes since v5:\n    - Use RUNTIME_PM_OPS() to declare PM callbacks\n    - Add Kc",
+        "exists": true,
+        "reason": "The `pvr_power_device_suspend` function disables clocks (`clk_disable_unprepare`) without any synchronization (e.g., `disable_irq` or `synchronize_irq`) with the threaded IRQ handler. This allows the IRQ handler to access GPU registers after the GPU is suspended, matching the vulnerability root cause. No fix is present in this function."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "727538a4bbff07736ecfd704efd7e21718fca3e4",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a55c2a5c8d68",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_power.c",
+          "anchor_lineno": 530
+        },
+        "commit": "cc1aeedb98ad347c06ff59e991b2f94dfb4c565d",
+        "commit_short": "cc1aeedb98ad",
+        "commit_msg": "drm/imagination: Implement firmware infrastructure and META FW support\n\nThe infrastructure includes parsing of the firmw",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_power.c",
+        "display_lineno": 340,
+        "code_snippet": "commit cc1aeedb98ad347c06ff59e991b2f94dfb4c565d\nAuthor: Sarah Walker <sarah.walker@imgtec.com>\nDate:   Wed Nov 22 16:34:34 2023 +0000\n\n    drm/imagination: Implement firmware infrastructure and META FW support\n    \n    The infrastructure includes parsing of the firmware image, initialising\n    FW-side structures, handling the kernel and firmware command\n    ringbuffers and starting & stopping the firmware processor.\n    \n    This patch also adds the necessary support code for the META firmware\n ",
+        "exists": true,
+        "reason": "The `pvr_power_device_suspend` function (lines 221-237) calls `pvr_power_fw_disable` to stop firmware and then disables clocks, but it does not synchronize with the threaded IRQ handler before powering down the GPU. No call to `disable_irq`, `synchronize_irq`, or equivalent is present. This matches the root cause description: the suspend callback lacks synchronization with the IRQ handler. The IRQ handler (not shown here) is threaded per the commit message, and if synchronization were added, it would deadlock because the IRQ handler might call `pm_runtime_get`. Therefore the vulnerable construct is present and not fixed in this commit."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "cc1aeedb98ad347c06ff59e991b2f94dfb4c565d",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a55c2a5c8d68",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_device.c",
+          "anchor_lineno": 235
+        },
+        "commit": "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+        "commit_short": "96822d38ff57",
+        "commit_msg": "drm/imagination: Handle Rogue safety event IRQs\n\nExtend interrupt handling logic to check for safety event IRQs, then cl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_device.c",
+        "display_lineno": 232,
+        "code_snippet": "commit 96822d38ff574433e06a2ec0f88ebc50d44c8eaa\nAuthor: Alessio Belle <alessio.belle@imgtec.com>\nDate:   Thu Apr 10 10:55:06 2025 +0100\n\n    drm/imagination: Handle Rogue safety event IRQs\n    \n    Extend interrupt handling logic to check for safety event IRQs, then clear\n    and handle them in the IRQ handler thread.\n    \n    Safety events need to be checked and cleared with a different set of GPU\n    registers than those the IRQ handler has been using so far.\n    \n    Only two safety events ne",
+        "exists": true,
+        "reason": "The threaded IRQ handler (pvr_device_irq_thread_handler) still accesses GPU registers (pvr_cr_read32, pvr_cr_write32) after acquiring a power reference via pvr_power_get(). However, there is no synchronization with the runtime PM suspend callback. The vulnerability root cause describes that the suspend callback does not synchronize with the IRQ handler, allowing register access after GPU suspend, and that the IRQ handler's own power management calls would deadlock if synchronization were added. The commit does not introduce any mechanism to properly order suspend and IRQ handling, so the vulnerable construct (unsynchronized register access) remains present and unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bdced61365b4",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_device.c",
+          "anchor_lineno": 232
+        },
+        "commit": "f99f5f3ea7efd54ba0529c4f2d7c72712918a522",
+        "commit_short": "f99f5f3ea7ef",
+        "commit_msg": "drm/imagination: Add GPU ID parsing and firmware loading\n\nRead the GPU ID register at probe time and select the correct\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_device.c",
+        "display_lineno": 118,
+        "code_snippet": "commit f99f5f3ea7efd54ba0529c4f2d7c72712918a522\nAuthor: Sarah Walker <sarah.walker@imgtec.com>\nDate:   Wed Nov 22 16:34:31 2023 +0000\n\n    drm/imagination: Add GPU ID parsing and firmware loading\n    \n    Read the GPU ID register at probe time and select the correct\n    features/quirks/enhancements. Use the GPU ID to form the firmware\n    file name and load the firmware.\n    \n    The features/quirks/enhancements arrays are currently hardcoded in\n    the driver for the supported GPUs. We are look",
+        "exists": false,
+        "reason": "The commit only adds GPU ID parsing, firmware loading, and device feature queries. It does not introduce or modify any runtime PM suspend callback or threaded IRQ handler, which are the components involved in the vulnerability. Therefore, the vulnerable construct is absent from this commit."
+      }
+    },
+    {
+      "bic_found": "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a55c2a5c8d68",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_device.c",
+          "anchor_lineno": 243
+        },
+        "commit": "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+        "commit_short": "96822d38ff57",
+        "commit_msg": "drm/imagination: Handle Rogue safety event IRQs\n\nExtend interrupt handling logic to check for safety event IRQs, then cl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_device.c",
+        "display_lineno": 240,
+        "code_snippet": "commit 96822d38ff574433e06a2ec0f88ebc50d44c8eaa\nAuthor: Alessio Belle <alessio.belle@imgtec.com>\nDate:   Thu Apr 10 10:55:06 2025 +0100\n\n    drm/imagination: Handle Rogue safety event IRQs\n    \n    Extend interrupt handling logic to check for safety event IRQs, then clear\n    and handle them in the IRQ handler thread.\n    \n    Safety events need to be checked and cleared with a different set of GPU\n    registers than those the IRQ handler has been using so far.\n    \n    Only two safety events ne",
+        "exists": true,
+        "reason": "The threaded IRQ handler (pvr_device_irq_thread_handler) performs GPU register accesses and calls pvr_power_get/put without any synchronization with the runtime PM suspend callback. The vulnerability root cause states that the suspend callback does not synchronize with the IRQ handler, allowing races. This commit adds safety event handling with additional register accesses and power management calls but does not introduce any synchronization mechanism. Therefore, the vulnerable construct (lack of synchronization) is present and unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bdced61365b4",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_device.c",
+          "anchor_lineno": 240
+        },
+        "commit": "f99f5f3ea7efd54ba0529c4f2d7c72712918a522",
+        "commit_short": "f99f5f3ea7ef",
+        "commit_msg": "drm/imagination: Add GPU ID parsing and firmware loading\n\nRead the GPU ID register at probe time and select the correct\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_device.c",
+        "display_lineno": 126,
+        "code_snippet": "commit f99f5f3ea7efd54ba0529c4f2d7c72712918a522\nAuthor: Sarah Walker <sarah.walker@imgtec.com>\nDate:   Wed Nov 22 16:34:31 2023 +0000\n\n    drm/imagination: Add GPU ID parsing and firmware loading\n    \n    Read the GPU ID register at probe time and select the correct\n    features/quirks/enhancements. Use the GPU ID to form the firmware\n    file name and load the firmware.\n    \n    The features/quirks/enhancements arrays are currently hardcoded in\n    the driver for the supported GPUs. We are look",
+        "exists": false,
+        "reason": "The commit f99f5f3ea7ef adds GPU ID parsing, firmware loading, and device initialization code. It does not include the runtime PM suspend callback or the threaded IRQ handler, which are the vulnerable constructs described in the root cause. The vulnerable logic is completely absent from this diff."
+      }
+    },
+    {
+      "bic_found": "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a55c2a5c8d68",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_device.c",
+          "anchor_lineno": 250
+        },
+        "commit": "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+        "commit_short": "96822d38ff57",
+        "commit_msg": "drm/imagination: Handle Rogue safety event IRQs\n\nExtend interrupt handling logic to check for safety event IRQs, then cl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_device.c",
+        "display_lineno": 247,
+        "code_snippet": "commit 96822d38ff574433e06a2ec0f88ebc50d44c8eaa\nAuthor: Alessio Belle <alessio.belle@imgtec.com>\nDate:   Thu Apr 10 10:55:06 2025 +0100\n\n    drm/imagination: Handle Rogue safety event IRQs\n    \n    Extend interrupt handling logic to check for safety event IRQs, then clear\n    and handle them in the IRQ handler thread.\n    \n    Safety events need to be checked and cleared with a different set of GPU\n    registers than those the IRQ handler has been using so far.\n    \n    Only two safety events ne",
+        "exists": true,
+        "reason": "The commit adds power management calls (pvr_power_get/pvr_power_put) inside the threaded IRQ handler (lines 261-277 in pvr_device_irq_thread_handler), which is identified in the vulnerability root cause as problematic because it would create a deadlock if synchronization were added. However, the commit does not introduce any synchronization between the runtime PM suspend callback and the IRQ handler. The existing interrupt handling for MTS/MTA events still lacks a power reference, allowing potential register access after GPU suspend. Therefore, the vulnerable construct (missing synchronization and power management calls in the IRQ handler) is present, and the fix (proper synchronization) is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bdced61365b4",
+          "anchor_file": "drivers/gpu/drm/imagination/pvr_device.c",
+          "anchor_lineno": 247
+        },
+        "commit": "f99f5f3ea7efd54ba0529c4f2d7c72712918a522",
+        "commit_short": "f99f5f3ea7ef",
+        "commit_msg": "drm/imagination: Add GPU ID parsing and firmware loading\n\nRead the GPU ID register at probe time and select the correct\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/imagination/pvr_device.c",
+        "display_lineno": 133,
+        "code_snippet": "commit f99f5f3ea7efd54ba0529c4f2d7c72712918a522\nAuthor: Sarah Walker <sarah.walker@imgtec.com>\nDate:   Wed Nov 22 16:34:31 2023 +0000\n\n    drm/imagination: Add GPU ID parsing and firmware loading\n    \n    Read the GPU ID register at probe time and select the correct\n    features/quirks/enhancements. Use the GPU ID to form the firmware\n    file name and load the firmware.\n    \n    The features/quirks/enhancements arrays are currently hardcoded in\n    the driver for the supported GPUs. We are look",
+        "exists": false,
+        "reason": "The commit only adds GPU ID parsing and firmware loading infrastructure (pvr_load_gpu_id, pvr_request_firmware, pvr_device_gpu_init). There is no runtime PM suspend callback or threaded IRQ handler implemented in this diff. The vulnerable construct (unsynchronized PM suspend callback) is absent."
+      }
+    },
+    {
+      "bic_found": "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "727538a4bbff07736ecfd704efd7e21718fca3e4": 1,
+        "cc1aeedb98ad347c06ff59e991b2f94dfb4c565d": 1,
+        "96822d38ff574433e06a2ec0f88ebc50d44c8eaa": 3
+      },
+      "bic_candidates": [
+        "96822d38ff574433e06a2ec0f88ebc50d44c8eaa",
+        "727538a4bbff07736ecfd704efd7e21718fca3e4",
+        "cc1aeedb98ad347c06ff59e991b2f94dfb4c565d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,314 @@
+{
+  "cveid": "CVE-2026-46047",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "7809fea20c9404bfcfa6112ec08d1fe1d3520beb"
+  ],
+  "ground_truth_bic": "0c2204a4ad710d95d348ea006f14ba926e842ffd",
+  "predicted_bic": [
+    "0c2204a4ad710d95d348ea006f14ba926e842ffd"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 31244,
+  "root_cause": {
+    "text": "The QRTR nameservice remove path freed the workqueue while the socket’s `sk_data_ready` callback was still set to `qrtr_ns_data_ready`, allowing concurrent packet reception/RX threads to queue `qrtr_ns.work` after teardown and causing a use-after-free.",
+    "evidence": "The CVE/commit explicitly states that a packet arriving “after `destroy_workqueue()` is called, but before `sock_release()`” makes `qrtr_ns_data_ready()` “try to queue the work, causing use-after-free,” and the patch fixes this by saving/restoring the original `sk_data_ready` under `sk_callback_lock` at the start of `qrtr_ns_remove()` and adding `synchronize_net()` before `destroy_workqueue()` so RX threads finish before the workqueue is destroyed.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/qrtr/ns.c",
+      "lineno": 800,
+      "content": "destroy_workqueue(qrtr_ns.workqueue);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/qrtr/ns.c",
+      "lineno": 760,
+      "content": "qrtr_ns.sock->sk->sk_data_ready = qrtr_ns_data_ready;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/qrtr/ns.c",
+      "lineno": 809,
+      "content": "cancel_work_sync(&qrtr_ns.work);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The QRTR nameservice remove path freed the workqueue while the socket’s `sk_data_ready` callback was still set to `qrtr_ns_data_ready`, allowing concurrent packet reception/RX threads to queue `qrtr_ns.work` after teardown and causing a use-after-free.",
+      "evidence_points": "The CVE/commit explicitly states that a packet arriving “after `destroy_workqueue()` is called, but before `sock_release()`” makes `qrtr_ns_data_ready()` “try to queue the work, causing use-after-free,” and the patch fixes this by saving/restoring the original `sk_data_ready` under `sk_callback_lock` at the start of `qrtr_ns_remove()` and adding `synchronize_net()` before `destroy_workqueue()` so RX threads finish before the workqueue is destroyed."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/qrtr/ns.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/qrtr/ns.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/qrtr/ns.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/qrtr/ns.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add storage in qrtr_ns for a saved socket data_ready callback so existing callback handling can be preserved.",
+        "what": "A new function pointer field named saved_data_ready with type void (*)(struct sock *sk) was added to the static qrtr_ns structure definition.",
+        "how": "This change extends qrtr_ns so it can store a socket data_ready callback for later use, enabling preservation or restoration of an existing handler at runtime; by itself, the hunk only adds the storage needed for that behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Save the original socket data-ready callback before replacing it so the previous handler is not lost.",
+        "what": "A new assignment was added in qrtr_ns_init() to store the current socket callback function pointer from qrtr_ns.sock->sk->sk_data_ready into qrtr_ns.saved_data_ready before overwriting sk_data_ready with qrtr_ns_data_ready.",
+        "how": "At runtime, this preserves the socket's original data-ready handler before installing the namespace-specific handler, enabling the original callback to be restored or invoked later instead of being lost when sk_data_ready is replaced."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Restore the original sk_data_ready callback under lock on qrtr_ns_init() failure before cleaning up resources.",
+        "what": "In the err_wq error path of qrtr_ns_init(), three lines were added to acquire sk_callback_lock with write_lock_bh(), restore qrtr_ns.sock->sk->sk_data_ready from qrtr_ns.saved_data_ready, and then release the lock with write_unlock_bh() before destroying the workqueue and releasing the socket.",
+        "how": "This ensures that if initialization fails after the socket callback was replaced, the original sk_data_ready callback is restored under the proper socket callback lock before cleanup. It prevents leaving the socket with a modified callback during teardown, avoiding incorrect callback handling and potential races."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Restore the socket callback under lock and wait for network activity to quiesce during qrtr_ns removal to avoid teardown races and stale callback state.",
+        "what": "The function qrtr_ns_remove() was updated to acquire sk_callback_lock with write_lock_bh(), restore qrtr_ns.sock->sk->sk_data_ready from qrtr_ns.saved_data_ready, release the lock with write_unlock_bh(), and then call synchronize_net() after cancel_work_sync() and before destroy_workqueue().",
+        "how": "At runtime, this restores the socket's original data-ready callback before teardown and synchronizes against in-flight network processing, preventing the QRTR namespace shutdown path from leaving a replaced callback installed or racing with pending socket callback execution while the workqueue is being destroyed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Restore the original sk_data_ready callback under lock on qrtr_ns_init() failure before cleaning up resources."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Restore the socket callback under lock and wait for network activity to quiesce during qrtr_ns removal to avoid teardown races and stale callback state."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Preserve and restore the original socket sk_data_ready callback when qrtr_ns temporarily overrides it, especially on initialization failure cleanup.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is teardown occurring while sk_data_ready still points to qrtr_ns_data_ready, enabling use-after-free. These changes explicitly save and restore the original callback during setup/failure cleanup, directly addressing the stale callback condition that can queue work after resources are freed."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the teardown race in qrtr_ns removal by restoring the socket callback under lock and waiting for network activity to quiesce, preventing sk_data_ready from queuing work after the workqueue is freed."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/qrtr/ns.c",
+            "lineno": 760,
+            "content": "qrtr_ns.sock->sk->sk_data_ready = qrtr_ns_data_ready;",
+            "rationale": "This overrides the socket callback with qrtr_ns_data_ready, but the pre-fix code did not preserve the original callback for later restoration. As a result, teardown could leave the socket still pointing at qrtr_ns_data_ready after related resources were freed."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/qrtr/ns.c",
+            "lineno": 800,
+            "content": "destroy_workqueue(qrtr_ns.workqueue);",
+            "rationale": "This frees the workqueue during remove without first restoring sk_data_ready and quiescing socket activity, enabling concurrent RX/callback paths to queue work onto freed workqueue-backed state, causing the use-after-free."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/qrtr/ns.c",
+            "lineno": 809,
+            "content": "cancel_work_sync(&qrtr_ns.work);",
+            "rationale": "Although it synchronizes currently queued work, it does not prevent new work from being queued afterward while sk_data_ready still points to qrtr_ns_data_ready. This contributes to the teardown race when followed by workqueue destruction."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/qrtr/ns.c",
+            "lineno": 800,
+            "content": "destroy_workqueue(qrtr_ns.workqueue);",
+            "rationale": "On the init failure path, the workqueue is destroyed without restoring the original sk_data_ready callback first, leaving the socket callback able to reference and queue work against torn-down state."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/qrtr/ns.c",
+            "stmt_text": "destroy_workqueue(qrtr_ns.workqueue);",
+            "location": "hunk",
+            "explanation": "This is the teardown action that frees the workqueue while the socket callback can still be set to qrtr_ns_data_ready. Because sk_data_ready was not restored and RX activity was not quiesced first, concurrent packet reception could still queue qrtr_ns.work onto freed workqueue state, causing the use-after-free described in the root cause."
+          },
+          {
+            "vuln_file": "net/qrtr/ns.c",
+            "stmt_text": "qrtr_ns.sock->sk->sk_data_ready = qrtr_ns_data_ready;",
+            "location": "hunk",
+            "explanation": "This replaces the socket's data-ready callback with qrtr_ns_data_ready without preserving/restoring the prior handler in the pre-fix code. That stale callback remains active into teardown, enabling later RX activity to invoke qrtr_ns_data_ready after related resources are being or have been freed."
+          },
+          {
+            "vuln_file": "net/qrtr/ns.c",
+            "stmt_text": "cancel_work_sync(&qrtr_ns.work);",
+            "location": "hunk",
+            "explanation": "This synchronization step is insufficient because it only drains currently queued work. Since sk_data_ready still points to qrtr_ns_data_ready, new work can be queued after this call and before or after workqueue destruction, contributing to the teardown race."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "27d5e84e810b",
+          "anchor_file": "net/qrtr/ns.c",
+          "anchor_lineno": 800
+        },
+        "commit": "0c2204a4ad710d95d348ea006f14ba926e842ffd",
+        "commit_short": "0c2204a4ad71",
+        "commit_msg": "net: qrtr: Migrate nameservice to kernel from userspace\n\nThe QRTR nameservice has been maintained in userspace for some ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/qrtr/ns.c",
+        "display_lineno": 735,
+        "code_snippet": "commit 0c2204a4ad710d95d348ea006f14ba926e842ffd\nAuthor: Manivannan Sadhasivam <mani@kernel.org>\nDate:   Thu Feb 20 20:43:26 2020 +0530\n\n    net: qrtr: Migrate nameservice to kernel from userspace\n    \n    The QRTR nameservice has been maintained in userspace for some time. This\n    commit migrates it to Linux kernel. This change is required in order to\n    eliminate the need of starting a userspace daemon for making the WiFi\n    functional for ath11k based devices. Since the QRTR NS is not usual",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes both setup and teardown of the nameservice socket callback and workqueue. In `qrtr_ns_init()`, the socket callback is installed with `qrtr_ns.sock->sk->sk_data_ready = qrtr_ns_data_ready;`, and `qrtr_ns_data_ready()` does `queue_work(qrtr_ns.workqueue, &qrtr_ns.work);`. In `qrtr_ns_remove()`, teardown is `cancel_work_sync(&qrtr_ns.work); destroy_workqueue(qrtr_ns.workqueue); sock_release(qrtr_ns.sock);`. This ordering is the vulnerable construct: the workqueue is destroyed before the socket is released, while `sk_data_ready` remains pointing to `qrtr_ns_data_ready`. That means concurrent packet reception can still invoke the callback and execute `queue_work(qrtr_ns.workqueue, &qrtr_ns.work)` after `destroy_workqueue(qrtr_ns.workqueue)`, matching the stated root cause (use-after-free due to queueing work after teardown). There is no visible fix such as clearing/restoring `sk_data_ready`, shutting down/releasing the socket before destroying the workqueue, or otherwise preventing callback-driven requeueing during removal."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "0c2204a4ad710d95d348ea006f14ba926e842ffd",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "27d5e84e810b",
+          "anchor_file": "net/qrtr/ns.c",
+          "anchor_lineno": 760
+        },
+        "commit": "0c2204a4ad710d95d348ea006f14ba926e842ffd",
+        "commit_short": "0c2204a4ad71",
+        "commit_msg": "net: qrtr: Migrate nameservice to kernel from userspace\n\nThe QRTR nameservice has been maintained in userspace for some ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/qrtr/ns.c",
+        "display_lineno": 709,
+        "code_snippet": "commit 0c2204a4ad710d95d348ea006f14ba926e842ffd\nAuthor: Manivannan Sadhasivam <mani@kernel.org>\nDate:   Thu Feb 20 20:43:26 2020 +0530\n\n    net: qrtr: Migrate nameservice to kernel from userspace\n    \n    The QRTR nameservice has been maintained in userspace for some time. This\n    commit migrates it to Linux kernel. This change is required in order to\n    eliminate the need of starting a userspace daemon for making the WiFi\n    functional for ath11k based devices. Since the QRTR NS is not usual",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes both setup and teardown of the nameservice socket/workqueue, including the callback assignment and remove path. The vulnerable construct is present: in `qrtr_ns_init()`, the socket callback is installed with `qrtr_ns.sock->sk->sk_data_ready = qrtr_ns_data_ready;`. That callback directly does `queue_work(qrtr_ns.workqueue, &qrtr_ns.work);` in `qrtr_ns_data_ready()`. However, in `qrtr_ns_remove()` the code only does `cancel_work_sync(&qrtr_ns.work);`, then `destroy_workqueue(qrtr_ns.workqueue);`, then `sock_release(qrtr_ns.sock);`. There is no step clearing/restoring `sk_data_ready` before destroying the workqueue. Therefore, packet reception can still invoke `qrtr_ns_data_ready` while the socket is alive and after the workqueue has been destroyed, matching the described root cause: freeing the workqueue while `sk_data_ready` still points to `qrtr_ns_data_ready`, enabling a use-after-free via `queue_work()`."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "0c2204a4ad710d95d348ea006f14ba926e842ffd",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "27d5e84e810b",
+          "anchor_file": "net/qrtr/ns.c",
+          "anchor_lineno": 809
+        },
+        "commit": "0c2204a4ad710d95d348ea006f14ba926e842ffd",
+        "commit_short": "0c2204a4ad71",
+        "commit_msg": "net: qrtr: Migrate nameservice to kernel from userspace\n\nThe QRTR nameservice has been maintained in userspace for some ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/qrtr/ns.c",
+        "display_lineno": 743,
+        "code_snippet": "commit 0c2204a4ad710d95d348ea006f14ba926e842ffd\nAuthor: Manivannan Sadhasivam <mani@kernel.org>\nDate:   Thu Feb 20 20:43:26 2020 +0530\n\n    net: qrtr: Migrate nameservice to kernel from userspace\n    \n    The QRTR nameservice has been maintained in userspace for some time. This\n    commit migrates it to Linux kernel. This change is required in order to\n    eliminate the need of starting a userspace daemon for making the WiFi\n    functional for ath11k based devices. Since the QRTR NS is not usual",
+        "exists": true,
+        "reason": "The snippet contains the full init/remove and callback logic needed to assess the teardown race. In `qrtr_ns_init()`, the socket callback is installed with `qrtr_ns.sock->sk->sk_data_ready = qrtr_ns_data_ready;` before the workqueue is used. The callback `qrtr_ns_data_ready()` directly does `queue_work(qrtr_ns.workqueue, &qrtr_ns.work);`. In `qrtr_ns_remove()`, teardown is `cancel_work_sync(&qrtr_ns.work); destroy_workqueue(qrtr_ns.workqueue); sock_release(qrtr_ns.sock);`. This ordering is vulnerable because the socket remains alive and its `sk_data_ready` callback remains set while `destroy_workqueue(qrtr_ns.workqueue)` is executed. A concurrent RX/data-ready event can still invoke `qrtr_ns_data_ready()` and attempt `queue_work()` on the just-destroyed workqueue before `sock_release()` finally removes the socket, matching the described use-after-free root cause. There is no fix present such as clearing/restoring `sk_data_ready` before destroying the workqueue or otherwise disabling reception prior to workqueue teardown."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "0c2204a4ad710d95d348ea006f14ba926e842ffd",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "0c2204a4ad710d95d348ea006f14ba926e842ffd": 3
+      },
+      "bic_candidates": [
+        "0c2204a4ad710d95d348ea006f14ba926e842ffd"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

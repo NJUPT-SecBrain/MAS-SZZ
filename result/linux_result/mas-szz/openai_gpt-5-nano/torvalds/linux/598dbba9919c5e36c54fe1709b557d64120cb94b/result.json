@@ -1,0 +1,343 @@
+{
+  "cveid": "CVE-2026-31408",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "598dbba9919c5e36c54fe1709b557d64120cb94b"
+  ],
+  "ground_truth_bic": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+  "predicted_bic": [
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 19,
+  "llm_tokens": 45655,
+  "root_cause": {
+    "text": "In the Bluetooth SCO subsystem, sco_recv_frame() accessed conn->sk after releasing sco_conn_lock() without first taking a socket reference, allowing a concurrent close() to free the struct sock and cause a use-after-free.",
+    "evidence": "The patch changes `sk = conn->sk;` to `sk = sco_sock_hold(conn);` under `sco_conn_lock(conn)` and adds `sock_put(sk)` on all exit paths, while the CVE/commit explicitly states that releasing the lock without holding the socket let a concurrent `close()` free it before `sk->sk_state` was accessed.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/bluetooth/sco.c",
+      "lineno": 404,
+      "content": "sk = conn->sk;",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/bluetooth/sco.c",
+      "lineno": 405,
+      "content": "sco_conn_unlock(conn);",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/bluetooth/sco.c",
+      "lineno": 412,
+      "content": "if (sk->sk_state != BT_CONNECTED)",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/bluetooth/sco.c",
+      "lineno": 415,
+      "content": "if (!sock_queue_rcv_skb(sk, skb))",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the Bluetooth SCO subsystem, sco_recv_frame() accessed conn->sk after releasing sco_conn_lock() without first taking a socket reference, allowing a concurrent close() to free the struct sock and cause a use-after-free.",
+      "evidence_points": "The patch changes `sk = conn->sk;` to `sk = sco_sock_hold(conn);` under `sco_conn_lock(conn)` and adds `sock_put(sk)` on all exit paths, while the CVE/commit explicitly states that releasing the lock without holding the socket let a concurrent `close()` free it before `sk->sk_state` was accessed."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/bluetooth/sco.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/bluetooth/sco.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use `sco_sock_hold(conn)` instead of directly reading `conn->sk` so the receive path safely holds a valid socket reference after unlocking the connection.",
+        "what": "The local assignment in `sco_recv_frame()` was changed from directly reading `conn->sk` under `sco_conn_lock()` to calling `sco_sock_hold(conn)` and assigning its return value to `sk`, with the surrounding lock and unlock remaining in place.",
+        "how": "At runtime, this changes socket retrieval from a plain pointer fetch to a helper-based acquisition that likely takes a reference on the socket before it is used after the connection lock is released, reducing the risk of using a socket that is concurrently detached or freed."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the socket reference in all `sco_recv_frame()` exit paths to fix a socket reference leak while keeping existing packet drop behavior.",
+        "what": "The function changes the non-connected-socket error path from jumping directly to `drop` to jumping to a new `drop_put` label, adds a `sock_put(sk);` call before returning when `sock_queue_rcv_skb(sk, skb)` succeeds, and introduces the `drop_put` label to call `sock_put(sk)` before falling through to `drop`, which still frees `skb` with `kfree_skb(skb)`.",
+        "how": "This ensures the socket reference is released on both the successful receive-queue path and the disconnected/drop path, preventing leaked socket references while preserving packet dropping behavior for invalid states and freeing the skb on failure paths."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Release the socket reference in all `sco_recv_frame()` exit paths to fix a socket reference leak while keeping existing packet drop behavior."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Safely manage socket references in sco_recv_frame by acquiring a held socket reference and releasing it on all exit paths to prevent leaks and use-after-unlock issues.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause in sco_recv_frame by taking a safe held socket reference before releasing the connection lock and dropping that reference on all exit paths, preventing the conn->sk use-after-free during concurrent close()."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 404,
+            "content": "sk = conn->sk;",
+            "rationale": "This directly reads conn->sk under the lock without taking a socket reference. After the subsequent unlock, a concurrent close() can free the referenced struct sock, leading to use-after-free in later accesses."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 405,
+            "content": "sco_conn_unlock(conn);",
+            "rationale": "Unlocking immediately after copying conn->sk leaves sk unprotected because no reference was acquired before the lock was released, enabling concurrent teardown of the socket."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 412,
+            "content": "if (sk->sk_state != BT_CONNECTED)",
+            "rationale": "This dereferences sk after the connection lock was released and without a held socket reference, making the use-after-free observable if close() freed the socket concurrently."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/bluetooth/sco.c",
+            "lineno": 415,
+            "content": "if (!sock_queue_rcv_skb(sk, skb))",
+            "rationale": "This uses sk after unlock without a socket reference, so concurrent socket destruction can make this call operate on freed memory."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/bluetooth/sco.c",
+            "stmt_text": "sk = conn->sk;",
+            "location": "hunk 0",
+            "explanation": "This is the core vulnerable statement: it copies conn->sk while holding the connection lock but does not take a socket reference. After the subsequent unlock, a concurrent close() can free the struct sock, making later uses of sk in sco_recv_frame() a use-after-free."
+          },
+          {
+            "vuln_file": "net/bluetooth/sco.c",
+            "stmt_text": "sco_conn_unlock(conn);",
+            "location": "hunk 0",
+            "explanation": "Releasing the connection lock immediately after copying conn->sk leaves sk unprotected because no reference was acquired first. This unlock enables concurrent teardown and freeing of the socket before later dereferences."
+          },
+          {
+            "vuln_file": "net/bluetooth/sco.c",
+            "stmt_text": "if (sk->sk_state != BT_CONNECTED)",
+            "location": "hunk 1",
+            "explanation": "This statement dereferences sk after the connection lock has been released and without a held socket reference, making the use-after-free manifest if the socket was concurrently freed."
+          },
+          {
+            "vuln_file": "net/bluetooth/sco.c",
+            "stmt_text": "if (!sock_queue_rcv_skb(sk, skb))",
+            "location": "hunk 1",
+            "explanation": "This call uses sk after unlock without a protective socket reference. If close() concurrently destroyed the socket, this operation can act on freed memory and trigger the vulnerability."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c65bd945d1c0",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 404
+        },
+        "commit": "eb5a4de80f266d0bb7edd43c61894da74faaa91a",
+        "commit_short": "eb5a4de80f26",
+        "commit_msg": "Bluetooth: Remove sco_chan_get helper function\n\nThe sco_chan_get helper function is only used in two places and really\no",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 303,
+        "code_snippet": "commit eb5a4de80f266d0bb7edd43c61894da74faaa91a\nAuthor: Marcel Holtmann <marcel@holtmann.org>\nDate:   Mon Jul 14 01:30:15 2014 +0200\n\n    Bluetooth: Remove sco_chan_get helper function\n    \n    The sco_chan_get helper function is only used in two places and really\n    only protects conn->sk with a lock. So instead of hiding that fact,\n    just put the actual code in place where it is used.\n    \n    Signed-off-by: Marcel Holtmann <marcel@holtmann.org>\n    Signed-off-by: Johan Hedberg <johan.hedbe",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact logic in the relevant function `sco_recv_frame()`. In this commit, `sco_recv_frame()` does: `sco_conn_lock(conn); sk = conn->sk; sco_conn_unlock(conn);` and then uses `sk` afterward. This matches the stated root cause: `conn->sk` is read under `sco_conn_lock()` but the lock is released before the socket is used, and there is no socket reference being taken (no `sock_hold()`, no equivalent refcount protection). Therefore a concurrent close can free the `struct sock` after unlock and before later use, causing a use-after-free. The commit message/diff also shows that the old helper `sco_chan_get()` merely did the same locked load/unlock sequence, and this commit inlines that same behavior rather than fixing it. So the vulnerable construct is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5a54e7c85b83",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 303
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 268,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable logic is clearly present in this snippet. In `sco_recv_frame()`, the socket is obtained via `struct sock *sk = sco_chan_get(conn);`. The helper `sco_chan_get()` does `sco_conn_lock(conn); sk = conn->sk; sco_conn_unlock(conn); return sk;`, which means it reads `conn->sk` and releases `sco_conn_lock()` without taking any reference on `sk`. Then `sco_recv_frame()` continues to use `sk` after that unlock: `if (sk->sk_state != BT_CONNECTED)`, and `if (!sock_queue_rcv_skb(sk, skb))`. This matches the root cause exactly: `conn->sk` is accessed under the connection lock, but the returned `struct sock *` is used after the lock is dropped and without `sock_hold()`/equivalent reference protection, allowing concurrent close/free. The close path is also visible: `sco_sock_release()` calls `sco_sock_close(sk)`, then `sock_orphan(sk); sco_sock_kill(sk);`, and `sco_sock_kill()` can ultimately `sock_put(sk)`, so concurrent teardown can free the socket. There is no fix present here such as taking a socket reference before unlocking and later dropping it."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c65bd945d1c0",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 405
+        },
+        "commit": "eb5a4de80f266d0bb7edd43c61894da74faaa91a",
+        "commit_short": "eb5a4de80f26",
+        "commit_msg": "Bluetooth: Remove sco_chan_get helper function\n\nThe sco_chan_get helper function is only used in two places and really\no",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 304,
+        "code_snippet": "commit eb5a4de80f266d0bb7edd43c61894da74faaa91a\nAuthor: Marcel Holtmann <marcel@holtmann.org>\nDate:   Mon Jul 14 01:30:15 2014 +0200\n\n    Bluetooth: Remove sco_chan_get helper function\n    \n    The sco_chan_get helper function is only used in two places and really\n    only protects conn->sk with a lock. So instead of hiding that fact,\n    just put the actual code in place where it is used.\n    \n    Signed-off-by: Marcel Holtmann <marcel@holtmann.org>\n    Signed-off-by: Johan Hedberg <johan.hedbe",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact logic in the affected function `sco_recv_frame()` and how `conn->sk` is obtained. In this commit, `sco_recv_frame()` does: `sco_conn_lock(conn); sk = conn->sk; sco_conn_unlock(conn);` and then uses `sk` afterward. This matches the root cause: `conn->sk` is read under `sco_conn_lock()` but no socket reference is taken before unlocking. Therefore a concurrent close can free the `struct sock` after `sco_conn_unlock(conn)` and before later use, creating a use-after-free risk. The old helper `sco_chan_get()` was removed, but the replacement code is functionally the same: it only protects the pointer fetch with a lock and does not call any reference-taking primitive such as `sock_hold()`. Since the code still releases the connection lock before using `sk`, the vulnerable construct is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5a54e7c85b83",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 304
+        },
+        "commit": "6039aa73a1323edc2d6d93a22505d4dc28f38e3f",
+        "commit_short": "6039aa73a132",
+        "commit_msg": "Bluetooth: Remove most of the inline usage\n\nOnly obvious cases were left as inline, mostly oneline functions.\n\nSigned-of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 258,
+        "code_snippet": "commit 6039aa73a1323edc2d6d93a22505d4dc28f38e3f\nAuthor: Gustavo Padovan <gustavo.padovan@collabora.co.uk>\nDate:   Wed May 23 04:04:18 2012 -0300\n\n    Bluetooth: Remove most of the inline usage\n    \n    Only obvious cases were left as inline, mostly oneline functions.\n    \n    Signed-off-by: Gustavo Padovan <gustavo.padovan@collabora.co.uk>\n    Signed-off-by: Marcel Holtmann <marcel@holtmann.org>\n\ndiff --git a/net/bluetooth/sco.c b/net/bluetooth/sco.c\nindex 78473ff7cc8d..824ae2fd15eb 100644\n--- a",
+        "exists": true,
+        "reason": "The function body is sufficient because it shows the exact access pattern around obtaining and using the socket reference. At line 260, `struct sock *sk = sco_chan_get(conn);` retrieves the socket from the connection. The vulnerability root cause is that `sco_recv_frame()` used `conn->sk` after releasing the connection lock without first taking a socket reference, allowing concurrent `close()` to free the `struct sock`. This function then dereferences and uses `sk` multiple times: line 267 checks `sk->sk_state`, and line 270 calls `sock_queue_rcv_skb(sk, skb)`. There is no visible reference acquisition such as `sock_hold(sk)`/equivalent before these uses, nor any matching release indicating protected lifetime management. Therefore the vulnerable construct is present, and the fix is not yet present in this version."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "4f42a8cd4905",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 258
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 270,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable logic is visible directly in this snippet. `sco_recv_frame()` does `struct sock *sk = sco_chan_get(conn);` and `sco_chan_get()` is defined as: `sco_conn_lock(conn); sk = conn->sk; sco_conn_unlock(conn); return sk;`. This means the function reads `conn->sk` while holding `sco_conn_lock(conn)` but returns the raw socket pointer after unlocking, without taking any reference on the socket. `sco_recv_frame()` then dereferences that unlocked pointer (`if (sk->sk_state != BT_CONNECTED)` and `sock_queue_rcv_skb(sk, skb)`). That matches the root cause: access to `conn->sk` after releasing the connection lock without first taking a socket reference, allowing concurrent close/free. The close path is also present: `sco_sock_release()` -> `sco_sock_close()` -> `sco_chan_del()`, and `sco_sock_kill()` can ultimately `sock_put(sk)`, so concurrent teardown can free the `struct sock`. No fix is present here: there is no `sock_hold(sk)`, no extra reference acquisition in `sco_chan_get()` or `sco_recv_frame()`, and no deferred `sock_put()` around the receive path."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c65bd945d1c0",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 412
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 278,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable pattern is directly present in `sco_recv_frame()` and `sco_chan_get()`. `sco_recv_frame()` does `struct sock *sk = sco_chan_get(conn);` and then uses `sk` after `sco_chan_get()` has already released the connection lock. In `sco_chan_get()`, the code is: `sco_conn_lock(conn); sk = conn->sk; sco_conn_unlock(conn); return sk;` — this returns `conn->sk` without taking any socket reference. Then `sco_recv_frame()` dereferences that pointer after unlock: `if (sk->sk_state != BT_CONNECTED)` and `if (!sock_queue_rcv_skb(sk, skb))`. This matches the root cause exactly: access to `conn->sk` after releasing `sco_conn_lock()` without first taking a socket reference, so a concurrent close path could free the `struct sock`. No protective fix is present here such as `sock_hold()/sock_put()` or equivalent refcounting around the unlocked use."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c65bd945d1c0",
+          "anchor_file": "net/bluetooth/sco.c",
+          "anchor_lineno": 415
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/bluetooth/sco.c",
+        "display_lineno": 281,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable logic is directly visible in this snippet. `sco_recv_frame()` obtains the socket via `struct sock *sk = sco_chan_get(conn);`. The helper `sco_chan_get()` does `sco_conn_lock(conn); sk = conn->sk; sco_conn_unlock(conn); return sk;`, which returns `conn->sk` after releasing `sco_conn_lock()` and without taking any reference on the socket. `sco_recv_frame()` then dereferences that pointer after the lock is dropped: `if (sk->sk_state != BT_CONNECTED)` and `sock_queue_rcv_skb(sk, skb)`. This matches the root cause exactly: access to `conn->sk` after unlocking, with no `sock_hold()`/reference acquisition, so a concurrent close path can free the `struct sock` and cause a use-after-free. No fix is present here; there is no reference increment before unlock and no corresponding put after use."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_votes": {
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 4
+      },
+      "bic_candidates": [
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,399 @@
+{
+  "cveid": "CVE-2026-22995",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "f0d385f6689f37a2828c686fb279121df006b4cb"
+  ],
+  "ground_truth_bic": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+  "predicted_bic": [
+    "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 36465,
+  "root_cause": {
+    "text": "The ublk block-device partition scan worker dereferenced `ub->ub_disk` without holding a reference, so concurrent device teardown could NULL out and free the `gendisk` before `ublk_partition_scan_work()` used it, causing a use-after-free.",
+    "evidence": "The patch replaces direct `ub->ub_disk` access in `ublk_partition_scan_work()` with `ublk_get_disk()`/`ublk_put_disk()` to pin the `gendisk`, and the commit message explicitly states the race: `ublk_stop_dev_unlocked()` does `del_gendisk()`, `ublk_detach_disk()` sets `ub->ub_disk = NULL`, `put_disk()` may free it, after which the worker dereferences `ub->ub_disk`; it also changes `flush_work()` to `cancel_work_sync()` to avoid running the work after detach.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/block/ublk_drv.c",
+      "lineno": 263,
+      "content": "if (WARN_ON_ONCE(!test_and_clear_bit(GD_SUPPRESS_PART_SCAN,",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/block/ublk_drv.c",
+      "lineno": 264,
+      "content": "&ub->ub_disk->state)))",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/block/ublk_drv.c",
+      "lineno": 267,
+      "content": "mutex_lock(&ub->ub_disk->open_mutex);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/block/ublk_drv.c",
+      "lineno": 268,
+      "content": "bdev_disk_changed(ub->ub_disk, false);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The ublk block-device partition scan worker dereferenced `ub->ub_disk` without holding a reference, so concurrent device teardown could NULL out and free the `gendisk` before `ublk_partition_scan_work()` used it, causing a use-after-free.",
+      "evidence_points": "The patch replaces direct `ub->ub_disk` access in `ublk_partition_scan_work()` with `ublk_get_disk()`/`ublk_put_disk()` to pin the `gendisk`, and the commit message explicitly states the race: `ublk_stop_dev_unlocked()` does `del_gendisk()`, `ublk_detach_disk()` sets `ub->ub_disk = NULL`, `put_disk()` may free it, after which the worker dereferences `ub->ub_disk`; it also changes `flush_work()` to `cancel_work_sync()` to avoid running the work after detach."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/block/ublk_drv.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/block/ublk_drv.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/block/ublk_drv.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Remove the partition-scan work helper that triggered disk change notification and partition rescanning from this code path.",
+        "what": "The diff removes the entire static function `ublk_partition_scan_work(struct work_struct *work)`, which previously derived `struct ublk_device *ub` from `work`, checked and cleared `GD_SUPPRESS_PART_SCAN` with `test_and_clear_bit()`, and if successful locked `ub->ub_disk->open_mutex`, called `bdev_disk_changed(ub->ub_disk, false)`, then unlocked the mutex.",
+        "how": "At runtime, the code no longer schedules or performs this partition-scan work path from this location, so the associated disk-change notification and partition rescan trigger are no longer executed here. This removes the suppression-bit check and the mutex-protected `bdev_disk_changed()` call that would have notified the block layer of a changed disk state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a safe deferred partition-scan work item for ublk disks to rescan partitions without risking teardown races.",
+        "what": "A new workqueue callback function, `ublk_partition_scan_work()`, was added. It retrieves the enclosing `ublk_device`, obtains a reference to the associated `gendisk` via `ublk_get_disk()`, checks and clears `GD_SUPPRESS_PART_SCAN` with `test_and_clear_bit()`, locks `disk->open_mutex`, calls `bdev_disk_changed(disk, false)`, then unlocks and drops the disk reference with `ublk_put_disk()`. The function also includes a `WARN_ON_ONCE()` if the suppress-partition-scan flag was not set.",
+        "how": "This enables deferred partition rescanning for the ublk disk while protecting against use-after-free during teardown by holding a disk reference. At runtime, it triggers a disk change notification only once after the suppress flag is cleared, causing the block layer to re-evaluate partitions safely under the disk open mutex."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Make ublk device shutdown safely cancel pending partition scan work before teardown continues.",
+        "what": "In ublk_stop_dev(), the call to flush_work(&ub->partition_scan_work) was replaced with cancel_work_sync(&ub->partition_scan_work) before ublk_cancel_dev(ub) is called.",
+        "how": "This changes the shutdown path so any pending partition scan work is not only flushed but also synchronously cancelled if it is queued or running, ensuring the work item cannot execute after device teardown proceeds."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove the partition-scan work helper that triggered disk change notification and partition rescanning from this code path."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Make ublk device shutdown safely cancel pending partition scan work before teardown continues."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Ensure ublk disk teardown is safe by managing deferred partition scan work to avoid races during shutdown.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The root cause is a use-after-free in the ublk partition scan worker caused by dereferencing ub->ub_disk during teardown. Removing the partition-scan work helper directly addresses that code path and prevents the unsafe access."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly target the reported race in ublk partition scan work by adding safer deferred scan handling and cancelling pending scan work during teardown, which addresses the use-after-free caused by dereferencing ub->ub_disk without a valid reference."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 263,
+            "content": "if (WARN_ON_ONCE(!test_and_clear_bit(GD_SUPPRESS_PART_SCAN,",
+            "rationale": "This dereferences ub->ub_disk implicitly in the test_and_clear_bit() call without first taking a reference or otherwise preventing teardown, so the disk can be freed concurrently before the scan work completes."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 264,
+            "content": "&ub->ub_disk->state)))",
+            "rationale": "This is the direct dereference of ub->ub_disk->state in the partition-scan worker; if teardown NULLs or frees ub->ub_disk concurrently, this access becomes a use-after-free."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 267,
+            "content": "mutex_lock(&ub->ub_disk->open_mutex);",
+            "rationale": "The worker uses ub->ub_disk again here without any reference protection, so a concurrent device teardown could free the gendisk before this lock operation."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/block/ublk_drv.c",
+            "lineno": 268,
+            "content": "bdev_disk_changed(ub->ub_disk, false);",
+            "rationale": "This call operates on ub->ub_disk after the unsafe dereference pattern in the worker; if the disk was torn down meanwhile, it will dereference freed memory."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/block/ublk_drv.c",
+            "stmt_text": "if (WARN_ON_ONCE(!test_and_clear_bit(GD_SUPPRESS_PART_SCAN,",
+            "location": "hunk",
+            "explanation": "This statement implicitly dereferences ub->ub_disk via the test_and_clear_bit() operand before any reference is held, matching the root cause where concurrent teardown could free the gendisk before the partition scan worker uses it."
+          },
+          {
+            "vuln_file": "drivers/block/ublk_drv.c",
+            "stmt_text": "&ub->ub_disk->state)))",
+            "location": "hunk",
+            "explanation": "This is the direct access to ub->ub_disk->state in the partition-scan worker; if teardown clears and frees ub->ub_disk concurrently, this becomes a use-after-free."
+          },
+          {
+            "vuln_file": "drivers/block/ublk_drv.c",
+            "stmt_text": "mutex_lock(&ub->ub_disk->open_mutex);",
+            "location": "hunk",
+            "explanation": "The worker dereferences ub->ub_disk again without a protective reference, so the gendisk may have been freed by the time this lock is taken."
+          },
+          {
+            "vuln_file": "drivers/block/ublk_drv.c",
+            "stmt_text": "bdev_disk_changed(ub->ub_disk, false);",
+            "location": "hunk",
+            "explanation": "This call uses ub->ub_disk after the unsafe dereference pattern in the worker; concurrent teardown can make this a use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9670db22e7ab",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 263
+        },
+        "commit": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+        "commit_short": "7fc4da6a304b",
+        "commit_msg": "ublk: scan partition in async way\n\nImplement async partition scan to avoid IO hang when reading partition\ntables. Simila",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 263,
+        "code_snippet": "commit 7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Tue Dec 23 11:27:40 2025 +0800\n\n    ublk: scan partition in async way\n    \n    Implement async partition scan to avoid IO hang when reading partition\n    tables. Similar to nvme_partition_scan_work(), partition scanning is\n    deferred to a work queue to prevent deadlocks.\n    \n    When partition scan happens synchronously during add_disk(), IO errors\n    can cause the partition scan to wait while hold",
+        "exists": true,
+        "reason": "The snippet shows the async scan worker dereferencing the disk pointer directly: `test_and_clear_bit(GD_SUPPRESS_PART_SCAN, &ub->ub_disk->state)` and `mutex_lock(&ub->ub_disk->open_mutex); bdev_disk_changed(ub->ub_disk, false);`. There is no reference acquisition or lifetime protection for `ub->ub_disk` in `ublk_partition_scan_work()`, so if teardown can NULL/free the gendisk before the work runs, this is the vulnerable use-after-free pattern described. The later `flush_work(&ub->partition_scan_work);` in `ublk_stop_dev()` helps stop pending work during device shutdown, but it does not add a ref or otherwise protect `ub->ub_disk` inside the worker itself, so the fix for the UAF is not present here."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "04bdb1a04d8a",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 263
+        },
+        "commit": "29802d7ca33bc0a75c9da2a143eeed4f9e99fca4",
+        "commit_short": "29802d7ca33b",
+        "commit_msg": "ublk: enable zoned storage support\n\nAdd zoned storage support to ublk: report_zones and operations:\n - REQ_OP_ZONE_OPEN\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 202,
+        "code_snippet": "commit 29802d7ca33bc0a75c9da2a143eeed4f9e99fca4\nAuthor: Andreas Hindborg <a.hindborg@kernel.org>\nDate:   Fri Aug 4 13:46:10 2023 +0200\n\n    ublk: enable zoned storage support\n    \n    Add zoned storage support to ublk: report_zones and operations:\n     - REQ_OP_ZONE_OPEN\n     - REQ_OP_ZONE_CLOSE\n     - REQ_OP_ZONE_FINISH\n     - REQ_OP_ZONE_RESET\n     - REQ_OP_ZONE_APPEND\n    \n    The zone append feature uses the `addr` field of `struct ublksrv_io_cmd` to\n    communicate ALBA back to the kernel. ",
+        "exists": false,
+        "reason": "The shown function is only `ublk_dev_is_zoned()` and contains no partition-scan worker logic, no `ub->ub_disk` dereference, and no teardown/reference-handling code. The vulnerable construct described in the root cause is absent from this snippet, so this body is not sufficient to determine the bug or the fix."
+      }
+    },
+    {
+      "bic_found": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9670db22e7ab",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 264
+        },
+        "commit": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+        "commit_short": "7fc4da6a304b",
+        "commit_msg": "ublk: scan partition in async way\n\nImplement async partition scan to avoid IO hang when reading partition\ntables. Simila",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 264,
+        "code_snippet": "commit 7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Tue Dec 23 11:27:40 2025 +0800\n\n    ublk: scan partition in async way\n    \n    Implement async partition scan to avoid IO hang when reading partition\n    tables. Similar to nvme_partition_scan_work(), partition scanning is\n    deferred to a work queue to prevent deadlocks.\n    \n    When partition scan happens synchronously during add_disk(), IO errors\n    can cause the partition scan to wait while hold",
+        "exists": true,
+        "reason": "The vulnerable construct is present in `ublk_partition_scan_work()`: it dereferences `ub->ub_disk` directly in `test_and_clear_bit(GD_SUPPRESS_PART_SCAN, &ub->ub_disk->state)` and again in `mutex_lock(&ub->ub_disk->open_mutex); bdev_disk_changed(ub->ub_disk, false);` without taking any reference or otherwise protecting `ub->ub_disk` from concurrent teardown. This matches the root cause described: the async partition-scan worker uses `ub->ub_disk` without holding a reference, so device teardown can NULL/free the gendisk before the work runs. The snippet does not show any fix for that lifetime issue; it only adds async work and a later `flush_work(&ub->partition_scan_work)` in `ublk_stop_dev()`, which helps ordering during stop but does not establish a reference on `ub->ub_disk` inside the worker."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "04bdb1a04d8a",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 264
+        },
+        "commit": "29802d7ca33bc0a75c9da2a143eeed4f9e99fca4",
+        "commit_short": "29802d7ca33b",
+        "commit_msg": "ublk: enable zoned storage support\n\nAdd zoned storage support to ublk: report_zones and operations:\n - REQ_OP_ZONE_OPEN\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 203,
+        "code_snippet": "commit 29802d7ca33bc0a75c9da2a143eeed4f9e99fca4\nAuthor: Andreas Hindborg <a.hindborg@kernel.org>\nDate:   Fri Aug 4 13:46:10 2023 +0200\n\n    ublk: enable zoned storage support\n    \n    Add zoned storage support to ublk: report_zones and operations:\n     - REQ_OP_ZONE_OPEN\n     - REQ_OP_ZONE_CLOSE\n     - REQ_OP_ZONE_FINISH\n     - REQ_OP_ZONE_RESET\n     - REQ_OP_ZONE_APPEND\n    \n    The zone append feature uses the `addr` field of `struct ublksrv_io_cmd` to\n    communicate ALBA back to the kernel. ",
+        "exists": false,
+        "reason": "The provided function body is only a tiny flag-check helper: `return ub->dev_info.flags & UBLK_F_ZONED;`. It does not show `ub->ub_disk`, the partition scan worker, any reference handling, or teardown interactions. The reported vulnerability concerns `ublk_partition_scan_work()` dereferencing `ub->ub_disk` without a reference, which is completely absent here. Therefore the snippet is insufficient to determine presence or fix of the bug in this function."
+      }
+    },
+    {
+      "bic_found": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9670db22e7ab",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 267
+        },
+        "commit": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+        "commit_short": "7fc4da6a304b",
+        "commit_msg": "ublk: scan partition in async way\n\nImplement async partition scan to avoid IO hang when reading partition\ntables. Simila",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 267,
+        "code_snippet": "commit 7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Tue Dec 23 11:27:40 2025 +0800\n\n    ublk: scan partition in async way\n    \n    Implement async partition scan to avoid IO hang when reading partition\n    tables. Similar to nvme_partition_scan_work(), partition scanning is\n    deferred to a work queue to prevent deadlocks.\n    \n    When partition scan happens synchronously during add_disk(), IO errors\n    can cause the partition scan to wait while hold",
+        "exists": true,
+        "reason": "The vulnerable logic is present in `ublk_partition_scan_work()`: it directly dereferences `ub->ub_disk` twice, e.g. `test_and_clear_bit(GD_SUPPRESS_PART_SCAN, &ub->ub_disk->state)` and `mutex_lock(&ub->ub_disk->open_mutex); bdev_disk_changed(ub->ub_disk, false);`, with no reference taken on the gendisk or NULL/teardown protection. This matches the root cause where concurrent teardown can NULL out/free `ub->ub_disk` before the worker runs. The commit adds async scheduling via `schedule_work(&ub->partition_scan_work);` and `flush_work()` in stop, but nothing here fixes the missing lifetime protection in the worker itself."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "04bdb1a04d8a",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 267
+        },
+        "commit": "29802d7ca33bc0a75c9da2a143eeed4f9e99fca4",
+        "commit_short": "29802d7ca33b",
+        "commit_msg": "ublk: enable zoned storage support\n\nAdd zoned storage support to ublk: report_zones and operations:\n - REQ_OP_ZONE_OPEN\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 206,
+        "code_snippet": "commit 29802d7ca33bc0a75c9da2a143eeed4f9e99fca4\nAuthor: Andreas Hindborg <a.hindborg@kernel.org>\nDate:   Fri Aug 4 13:46:10 2023 +0200\n\n    ublk: enable zoned storage support\n    \n    Add zoned storage support to ublk: report_zones and operations:\n     - REQ_OP_ZONE_OPEN\n     - REQ_OP_ZONE_CLOSE\n     - REQ_OP_ZONE_FINISH\n     - REQ_OP_ZONE_RESET\n     - REQ_OP_ZONE_APPEND\n    \n    The zone append feature uses the `addr` field of `struct ublksrv_io_cmd` to\n    communicate ALBA back to the kernel. ",
+        "exists": false,
+        "reason": "The provided snippet only shows the start of a different function, `static inline bool ublk_queue_is_zoned(struct ublk_queue *ubq)`, and does not include `ublk_partition_scan_work()` or any access to `ub->ub_disk`. The vulnerable construct described in the root cause is therefore absent from the shown code, and there is not enough context here to determine whether this specific commit version contains or fixes the use-after-free."
+      }
+    },
+    {
+      "bic_found": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9670db22e7ab",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 268
+        },
+        "commit": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+        "commit_short": "7fc4da6a304b",
+        "commit_msg": "ublk: scan partition in async way\n\nImplement async partition scan to avoid IO hang when reading partition\ntables. Simila",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 268,
+        "code_snippet": "commit 7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Tue Dec 23 11:27:40 2025 +0800\n\n    ublk: scan partition in async way\n    \n    Implement async partition scan to avoid IO hang when reading partition\n    tables. Similar to nvme_partition_scan_work(), partition scanning is\n    deferred to a work queue to prevent deadlocks.\n    \n    When partition scan happens synchronously during add_disk(), IO errors\n    can cause the partition scan to wait while hold",
+        "exists": true,
+        "reason": "The vulnerable construct is present in `ublk_partition_scan_work()`: it dereferences `ub->ub_disk` directly multiple times without taking a reference, e.g. `&ub->ub_disk->state` in `test_and_clear_bit(GD_SUPPRESS_PART_SCAN, &ub->ub_disk->state)` and `ub->ub_disk->open_mutex` / `bdev_disk_changed(ub->ub_disk, false)`. The root cause says the worker could run concurrently with teardown and use `ub->ub_disk` after it was NULLed/freed. This snippet does not show any reference counting, RCU protection, or revalidation beyond the `WARN_ON_ONCE(!test_and_clear_bit(...))`, so the fix for the use-after-free is not present here. The added `flush_work(&ub->partition_scan_work);` in `ublk_stop_dev()` helps ordering during stop, but it does not change the worker itself to safely hold a disk reference while dereferencing `ub->ub_disk`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "04bdb1a04d8a",
+          "anchor_file": "drivers/block/ublk_drv.c",
+          "anchor_lineno": 268
+        },
+        "commit": "3443bab2f8e44e00adaf76ba677d4219416376f2",
+        "commit_short": "3443bab2f8e4",
+        "commit_msg": "ublk: pass const pointer to ublk_queue_is_zoned()\n\nPass const pointer to ublk_queue_is_zoned() because it is readonly.\n\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/block/ublk_drv.c",
+        "display_lineno": 268,
+        "code_snippet": "commit 3443bab2f8e44e00adaf76ba677d4219416376f2\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Fri Nov 21 09:58:27 2025 +0800\n\n    ublk: pass const pointer to ublk_queue_is_zoned()\n    \n    Pass const pointer to ublk_queue_is_zoned() because it is readonly.\n    \n    Reviewed-by: Caleb Sander Mateos <csander@purestorage.com>\n    Signed-off-by: Ming Lei <ming.lei@redhat.com>\n    Signed-off-by: Jens Axboe <axboe@kernel.dk>\n\ndiff --git a/drivers/block/ublk_drv.c b/drivers/block/ublk_drv.c\nindex 4d2d",
+        "exists": false,
+        "reason": "The shown function body is only `ublk_queue_is_zoned(const struct ublk_queue *ubq)` and returns `ubq->flags & UBLK_F_ZONED;`. This code does not touch `ub->ub_disk`, does not perform partition scanning, and does not show any reference-handling or teardown interaction. The reported bug is in `ublk_partition_scan_work()` dereferencing `ub->ub_disk` without holding a reference, which is not present here. Therefore this snippet is insufficient to determine the vulnerability or fix status for the root cause."
+      }
+    },
+    {
+      "bic_found": "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a": 4
+      },
+      "bic_candidates": [
+        "7fc4da6a304bdcd3de14fc946dc2c19437a9cc5a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,195 @@
+{
+  "cveid": "CVE-2026-46181",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "c9341307ea16b9395c2e4c9c94d8499d91fe31d0"
+  ],
+  "ground_truth_bic": "30353bfc43a1602c020f31d95cf27182ffd23824",
+  "predicted_bic": [
+    "225c7b1feef1b41170f7037a5b10a65cd8a42c54"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 13,
+  "llm_tokens": 9379,
+  "root_cause": {
+    "text": "`mlx4_srq_event()` incorrectly used an RCU read-side lookup on `mlx4_srq_table->radix_tree` even though `struct mlx4_srq` objects were not freed via RCU and could be found before full initialization, allowing a use of a partially initialized or stale SRQ object.",
+    "evidence": "The patch replaces `rcu_read_lock()/rcu_read_unlock()` with `spin_lock_irqsave(&srq_table->lock, flags)` around `radix_tree_lookup()`, changes `refcount_inc(&srq->refcount)` to `refcount_inc_not_zero(&srq->refcount)` to avoid grabbing a reference to an uninitialized object, and moves `refcount_set()` in `mlx4_srq_alloc()` to after `init_completion()` via `refcount_set_release(&srq->refcount, 1)`, matching the commit message stating “nothing ever frees the mlx4_srq struct with RCU” and that it “will crash if an event is delivered before the srq object is finished initializing.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+      "lineno": 49,
+      "content": "srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`mlx4_srq_event()` incorrectly used an RCU read-side lookup on `mlx4_srq_table->radix_tree` even though `struct mlx4_srq` objects were not freed via RCU and could be found before full initialization, allowing a use of a partially initialized or stale SRQ object.",
+      "evidence_points": "The patch replaces `rcu_read_lock()/rcu_read_unlock()` with `spin_lock_irqsave(&srq_table->lock, flags)` around `radix_tree_lookup()`, changes `refcount_inc(&srq->refcount)` to `refcount_inc_not_zero(&srq->refcount)` to avoid grabbing a reference to an uninitialized object, and moves `refcount_set()` in `mlx4_srq_alloc()` to after `init_completion()` via `refcount_set_release(&srq->refcount, 1)`, matching the commit message stating “nothing ever frees the mlx4_srq struct with RCU” and that it “will crash if an event is delivered before the srq object is finished initializing.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix SRQ event handling by locking the table lookup and safely acquiring a live SRQ reference before processing asynchronous events.",
+        "what": "In mlx4_srq_event(), the code replaces an RCU read-side critical section with spin_lock_irqsave/spin_unlock_irqrestore on srq_table->lock, adds an unsigned long flags variable, and changes the SRQ reference acquisition from an unconditional refcount_inc() after lookup to a combined check using !srq || !refcount_inc_not_zero(&srq->refcount), treating the SRQ as invalid if either the lookup fails or the refcount cannot be incremented safely.",
+        "how": "At runtime, the SRQ table lookup is now serialized under a lock instead of relying on RCU, and the event handler only proceeds if it can safely take a live reference to the SRQ. This prevents races where an SRQ could be freed or become invalid between lookup and refcount increment, avoiding use-after-free or stale pointer handling and causing bogus events to be rejected more reliably."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize the SRQ completion before publishing its refcount using release semantics to fix a race in object setup.",
+        "what": "The code changes the order of initialization in `mlx4_srq_alloc()`: `refcount_set(&srq->refcount, 1);` is replaced with `refcount_set_release(&srq->refcount, 1);`, and it is moved to occur after `init_completion(&srq->free);`.",
+        "how": "This ensures the SRQ reference count is published with release semantics only after the completion object has been initialized, preventing other threads from observing a fully referenced SRQ before its `free` completion is ready and avoiding potential races during concurrent teardown or access."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix SRQ event handling by locking the table lookup and safely acquiring a live SRQ reference before processing asynchronous events."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize the SRQ completion before publishing its refcount using release semantics to fix a race in object setup."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it fixes `mlx4_srq_event()` lookup semantics by avoiding unsafe RCU-style access and ensuring a valid, live SRQ object is obtained before event handling, which addresses use of partially initialized or stale SRQ objects."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change addresses an initialization/publication race for SRQ setup, not the root cause in mlx4_srq_event() where an RCU lookup was incorrectly used on SRQ objects that were not RCU-freed and could be observed before full initialization or after becoming stale."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "lineno": 48,
+            "content": "rcu_read_lock();",
+            "rationale": "This begins an RCU lookup path for SRQ objects even though SRQs were not protected by RCU freeing. It allowed mlx4_srq_event() to fetch a pointer that could be stale or only partially initialized."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "lineno": 49,
+            "content": "srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));",
+            "rationale": "This is the direct vulnerable lookup: it retrieves an SRQ pointer from the radix tree under RCU assumptions, which could return an object not yet fully initialized or already invalid, leading to unsafe event handling."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "lineno": 50,
+            "content": "rcu_read_unlock();",
+            "rationale": "This closes the incorrect RCU critical section but does not provide object lifetime guarantees; the lookup result remains unsafe because the SRQ is not freed via RCU."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+            "stmt_text": "srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));",
+            "location": "hunk",
+            "explanation": "This is the unsafe SRQ lookup performed under an incorrect RCU read-side assumption. Because mlx4_srq objects were not freed via RCU and could be observed before full initialization, this statement could return a stale or partially initialized SRQ pointer, causing the vulnerability."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c54c7e4cb679",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+          "anchor_lineno": 49
+        },
+        "commit": "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+        "commit_short": "225c7b1feef1",
+        "commit_msg": "IB/mlx4: Add a driver Mellanox ConnectX InfiniBand adapters\n\nAdd an InfiniBand driver for Mellanox ConnectX adapters.  B",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx4/srq.c",
+        "display_lineno": 67,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function clearly performs the problematic lookup and immediate use pattern: `srq = radix_tree_lookup(&srq_table->tree, srqn & (dev->caps.num_srqs - 1));` followed by `if (srq) atomic_inc(&srq->refcount);` and then `srq->event(srq, event_type);`. This matches the root cause because the object is retrieved from the tree and used without any shown initialization/safety guarantee beyond the lookup. There is no indication here of an RCU-safe scheme, no validation that the SRQ is fully initialized before use, and no fix such as protected lifetime management or deferred freeing. The vulnerable construct is present, and the fix is not present in this function body."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "225c7b1feef1b41170f7037a5b10a65cd8a42c54",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "225c7b1feef1b41170f7037a5b10a65cd8a42c54": 1
+      },
+      "bic_candidates": [
+        "225c7b1feef1b41170f7037a5b10a65cd8a42c54"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

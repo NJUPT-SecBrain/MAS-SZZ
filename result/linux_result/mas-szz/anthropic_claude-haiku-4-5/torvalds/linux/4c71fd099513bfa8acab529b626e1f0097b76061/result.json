@@ -1,0 +1,284 @@
+{
+  "cveid": "CVE-2026-31656",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4c71fd099513bfa8acab529b626e1f0097b76061"
+  ],
+  "ground_truth_bic": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+  "predicted_bic": [
+    "058179e72e0956a2dfe4927db6cbe5fbfb2406aa"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 30455,
+  "root_cause": {
+    "text": "Non-atomic read-modify-write of the `engine->heartbeat.systole` pointer allows two concurrent code paths (the heartbeat worker and `intel_engine_park_heartbeat()`) to both obtain and release the same request object, causing a double-decrement of its refcount.",
+    "evidence": "The patch replaces three separate non-atomic operations (`read engine->heartbeat.systole`, `call i915_request_put()`, `write NULL to engine->heartbeat.systole`) with atomic `xchg()` operations in both racing paths. The CVE description explicitly states: \"The heartbeat worker reads engine->heartbeat.systole and calls i915_request_put() on it when the request is complete, but clears the pointer in a separate, non-atomic step. Concurrently, a request retirement on another CPU can drop the engine wakeref to zero, triggering __engine_park() -> intel_engine_park_heartbeat()... intel_engine_park_heartbeat() reads the stale non-NULL systole pointer and calls i915_request_put() on it again, causing a refcount underflow.\" The fix uses `xchg()` which is \"a single indivisible hardware instruction that atomically reads the old pointer and writes NULL,\" guaranteeing only one caller obtains the non-NULL pointer.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+      "lineno": 151,
+      "content": "rq = engine->heartbeat.systole;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+      "lineno": 154,
+      "content": "engine->heartbeat.systole = NULL;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Non-atomic read-modify-write of the `engine->heartbeat.systole` pointer allows two concurrent code paths (the heartbeat worker and `intel_engine_park_heartbeat()`) to both obtain and release the same request object, causing a double-decrement of its refcount.",
+      "evidence_points": "The patch replaces three separate non-atomic operations (`read engine->heartbeat.systole`, `call i915_request_put()`, `write NULL to engine->heartbeat.systole`) with atomic `xchg()` operations in both racing paths. The CVE description explicitly states: \"The heartbeat worker reads engine->heartbeat.systole and calls i915_request_put() on it when the request is complete, but clears the pointer in a separate, non-atomic step. Concurrently, a request retirement on another CPU can drop the engine wakeref to zero, triggering __engine_park() -> intel_engine_park_heartbeat()... intel_engine_park_heartbeat() reads the stale non-NULL systole pointer and calls i915_request_put() on it again, causing a refcount underflow.\" The fix uses `xchg()` which is \"a single indivisible hardware instruction that atomically reads the old pointer and writes NULL,\" guaranteeing only one caller obtains the non-NULL pointer."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition in heartbeat systole handling by using atomic exchange and properly restoring incomplete requests.",
+        "what": "Replaced direct read of engine->heartbeat.systole with atomic xchg() operation, and restructured the completion check logic to restore the request pointer if it has not completed.",
+        "how": "The change uses xchg() to atomically swap the systole pointer with NULL, eliminating a potential race condition where the pointer could be modified between the read and the NULL assignment. The nested if-statement now checks completion and either releases the request (if completed) or restores it to systole (if not completed), ensuring the request is not lost if the heartbeat fires before completion."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add explicit null check after atomic exchange to guard against null pointer dereference in i915_request_put().",
+        "what": "Replaced `fetch_and_zero(&engine->heartbeat.systole)` with an explicit `xchg()` call followed by a null check before `i915_request_put()`. The single-line conditional statement is now expanded into a multi-line block with intermediate variable assignment.",
+        "how": "The change separates the atomic exchange operation from the immediate function call, allowing explicit null validation before dereferencing. This prevents potential null pointer dereference in `i915_request_put()` if `xchg()` returns NULL, and makes the null-safety contract explicit rather than relying on `fetch_and_zero()` macro behavior."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add explicit null check before releasing heartbeat request to prevent potential null pointer dereference.",
+        "what": "Replaced a single-line conditional statement with an expanded block that introduces a local variable `rq`, uses `xchg()` instead of `fetch_and_zero()`, and adds an explicit null check before calling `i915_request_put()`.",
+        "how": "The change separates the atomic exchange operation from the request release into distinct steps. Instead of unconditionally calling `i915_request_put()` on the result of `fetch_and_zero()`, it now explicitly checks if the exchanged pointer is non-null before dereferencing it. This prevents potential null pointer dereferences and makes the null-handling logic explicit and visible in the control flow."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix race condition in heartbeat systole handling by using atomic exchange and properly restoring incomplete requests."
+        },
+        {
+          "group_id": 1,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Add explicit null check before releasing heartbeat request to prevent potential null pointer dereference."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Add explicit null checks to guard against null pointer dereferences in request lifecycle management.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by fixing the non-atomic read-modify-write race condition in heartbeat systole handling. It uses atomic exchange operations to prevent concurrent access issues and properly manages request restoration, which directly prevents the double-decrement of refcount that occurs when two code paths simultaneously obtain and release the same request object."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group adds null pointer checks as defensive programming, but does not address the core vulnerability: the non-atomic read-modify-write race condition on `engine->heartbeat.systole`. The root cause is concurrent access by two code paths obtaining and releasing the same request object, leading to double-decrement. Null checks prevent crashes from null dereferences but do not prevent the double-decrement that occurs when both paths successfully obtain a non-null request. The fix requires synchronization (e.g., atomic operations or locking) to ensure only one code path can obtain and release the request, not additional null checks."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 151,
+            "content": "rq = engine->heartbeat.systole;",
+            "rationale": "This non-atomic read of engine->heartbeat.systole is the root cause. Without atomicity, a concurrent thread (heartbeat worker) can read the same pointer value while intel_engine_park_heartbeat() is also reading it, leading to both code paths operating on the same request object and causing a double-decrement of its refcount."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 154,
+            "content": "engine->heartbeat.systole = NULL;",
+            "rationale": "This non-atomic write to engine->heartbeat.systole without synchronization allows a race condition where the heartbeat worker may have already read the pointer before this NULL assignment, resulting in both code paths holding references to the same request and causing a double-decrement when both attempt to release it."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "lineno": 152,
+            "content": "if (rq && i915_request_completed(rq)) {",
+            "rationale": "The check-then-act pattern (reading rq, checking completion, then modifying engine->heartbeat.systole) is non-atomic. Between the read at line 151 and the write at line 154, another thread can read the same pointer, creating a window for the double-decrement vulnerability."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "stmt_text": "rq = engine->heartbeat.systole;",
+            "location": "hunk",
+            "explanation": "This non-atomic read of engine->heartbeat.systole is the primary vulnerable statement. It allows a race condition where two concurrent code paths (heartbeat worker and intel_engine_park_heartbeat()) can both read the same request pointer value. Without atomic synchronization, this read-modify-write sequence is not atomic, enabling both threads to obtain references to the same request object."
+          },
+          {
+            "vuln_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+            "stmt_text": "engine->heartbeat.systole = NULL;",
+            "location": "hunk",
+            "explanation": "This non-atomic write to engine->heartbeat.systole completes the vulnerable read-modify-write sequence. The gap between the non-atomic read at line 151 and this write at line 154 creates a race window where the heartbeat worker can read the pointer before it is set to NULL, causing both code paths to hold references to the same request and leading to double-decrement of its refcount."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75519f5df2a9",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 151
+        },
+        "commit": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+        "commit_short": "058179e72e09",
+        "commit_msg": "drm/i915/gt: Replace hangcheck by heartbeats\n\nReplace sampling the engine state every so often with a periodic\nheartbeat",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 69,
+        "code_snippet": "commit 058179e72e0956a2dfe4927db6cbe5fbfb2406aa\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Wed Oct 23 14:31:08 2019 +0100\n\n    drm/i915/gt: Replace hangcheck by heartbeats\n    \n    Replace sampling the engine state every so often with a periodic\n    heartbeat request to measure the health of an engine. This is coupled\n    with the forced-preemption to allow long running requests to survive so\n    long as they do not block other users.\n    \n    Signed-off-by: Chris Wilson <chris@chri",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the `heartbeat()` function. At line 26-29, there is a non-atomic read-modify-write sequence: `rq = engine->heartbeat.systole;` followed by a conditional check and `i915_request_put(rq); engine->heartbeat.systole = NULL;`. This read-modify-write is not protected by any lock. Concurrently, `intel_engine_park_heartbeat()` at line 103 performs `i915_request_put(fetch_and_zero(&engine->heartbeat.systole));` without synchronization. Two concurrent code paths can both read the same `engine->heartbeat.systole` pointer value before either writes NULL, causing both to call `i915_request_put()` on the same request object, resulting in a double-decrement of its refcount. The code lacks atomic operations or locking to prevent this race condition."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2e0986a58cc4",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 69
+        },
+        "commit": "b5e8e954eb672e7128e50589c43817b0ffce6f75",
+        "commit_short": "b5e8e954eb67",
+        "commit_msg": "drm/i915/gt: Introduce barrier pulses along engines\n\nTo flush idle barriers, and even inflight requests, we want to send",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 69,
+        "code_snippet": "commit b5e8e954eb672e7128e50589c43817b0ffce6f75\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Mon Oct 21 18:43:39 2019 +0100\n\n    drm/i915/gt: Introduce barrier pulses along engines\n    \n    To flush idle barriers, and even inflight requests, we want to send a\n    preemptive 'pulse' along an engine. We use a no-op request along the\n    pinned kernel_context at high priority so that it should run or else\n    kick off the stuck requests. We can use this to ensure idle barriers are\n    im",
+        "exists": false,
+        "reason": "The provided code snippet shows a function that creates a request and calls idle_pulse(), but the vulnerability root cause describes a non-atomic read-modify-write race condition on the `engine->heartbeat.systole` pointer between the heartbeat worker and `intel_engine_park_heartbeat()`. The snippet does not show: (1) the implementation of idle_pulse() function, (2) any access to engine->heartbeat.systole, (3) the heartbeat worker code, (4) the intel_engine_park_heartbeat() function, or (5) any synchronization mechanisms. Without seeing the actual code that reads and writes to engine->heartbeat.systole and how it's protected (or not protected), it's impossible to determine if this commit introduces the vulnerability or contains the fix. The critical context of the race condition and the systole pointer manipulation is completely missing from this snippet."
+      }
+    },
+    {
+      "bic_found": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "75519f5df2a9",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 154
+        },
+        "commit": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+        "commit_short": "058179e72e09",
+        "commit_msg": "drm/i915/gt: Replace hangcheck by heartbeats\n\nReplace sampling the engine state every so often with a periodic\nheartbeat",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 72,
+        "code_snippet": "commit 058179e72e0956a2dfe4927db6cbe5fbfb2406aa\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Wed Oct 23 14:31:08 2019 +0100\n\n    drm/i915/gt: Replace hangcheck by heartbeats\n    \n    Replace sampling the engine state every so often with a periodic\n    heartbeat request to measure the health of an engine. This is coupled\n    with the forced-preemption to allow long running requests to survive so\n    long as they do not block other users.\n    \n    Signed-off-by: Chris Wilson <chris@chri",
+        "exists": true,
+        "reason": "The vulnerability is present in the `heartbeat()` function. The root cause is a non-atomic read-modify-write of `engine->heartbeat.systole`. Specifically:\n\n1. Line 27: `rq = engine->heartbeat.systole;` - reads the pointer\n2. Lines 28-30: checks if completed and calls `i915_request_put(rq)` then sets to NULL\n3. Line 35: `if (engine->heartbeat.systole)` - reads again without synchronization\n\nThe critical issue is that between line 27 (reading `engine->heartbeat.systole`) and line 30 (setting it to NULL), another concurrent code path like `intel_engine_park_heartbeat()` (line 101: `i915_request_put(fetch_and_zero(&engine->heartbeat.systole))`) can execute, causing both paths to obtain and release the same request object. This leads to a double-decrement of the refcount.\n\nAdditionally, line 35 reads `engine->heartbeat.systole` again without any locking mechanism, and line 78 assigns to it (`engine->heartbeat.systole = i915_request_get(rq)`) without atomicity guarantees. The code uses `fetch_and_zero()` in `intel_engine_park_heartbeat()` but the `heartbeat()` function itself performs non-atomic read-modify-write operations without proper synchronization (no locks, no atomic operations, no memory barriers)."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2e0986a58cc4",
+          "anchor_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+          "anchor_lineno": 72
+        },
+        "commit": "b5e8e954eb672e7128e50589c43817b0ffce6f75",
+        "commit_short": "b5e8e954eb67",
+        "commit_msg": "drm/i915/gt: Introduce barrier pulses along engines\n\nTo flush idle barriers, and even inflight requests, we want to send",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/gpu/drm/i915/gt/intel_engine_heartbeat.c",
+        "display_lineno": 72,
+        "code_snippet": "commit b5e8e954eb672e7128e50589c43817b0ffce6f75\nAuthor: Chris Wilson <chris@chris-wilson.co.uk>\nDate:   Mon Oct 21 18:43:39 2019 +0100\n\n    drm/i915/gt: Introduce barrier pulses along engines\n    \n    To flush idle barriers, and even inflight requests, we want to send a\n    preemptive 'pulse' along an engine. We use a no-op request along the\n    pinned kernel_context at high priority so that it should run or else\n    kick off the stuck requests. We can use this to ensure idle barriers are\n    im",
+        "exists": false,
+        "reason": "The provided code snippet shows a function that creates and adds a request, but does not contain the vulnerable construct described in the root cause. The vulnerability involves non-atomic read-modify-write of `engine->heartbeat.systole` pointer and concurrent access between the heartbeat worker and `intel_engine_park_heartbeat()`. This snippet does not show any manipulation of `engine->heartbeat.systole`, nor does it show the heartbeat worker logic or the `intel_engine_park_heartbeat()` function. To properly assess whether this commit introduces the vulnerability, we would need to see: (1) where `engine->heartbeat.systole` is being read and written, (2) the synchronization (or lack thereof) protecting these operations, and (3) how both the heartbeat worker and `intel_engine_park_heartbeat()` interact with this pointer. The current snippet is insufficient to determine if the vulnerable pattern exists."
+      }
+    },
+    {
+      "bic_found": "058179e72e0956a2dfe4927db6cbe5fbfb2406aa",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "058179e72e0956a2dfe4927db6cbe5fbfb2406aa": 2
+      },
+      "bic_candidates": [
+        "058179e72e0956a2dfe4927db6cbe5fbfb2406aa"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

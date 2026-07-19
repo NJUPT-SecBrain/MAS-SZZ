@@ -1,0 +1,303 @@
+{
+  "cveid": "CVE-2026-31446",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "d15e4b0a418537aafa56b2cb80d44add83e83697"
+  ],
+  "ground_truth_bic": "b98535d091795a79336f520b0708457aacf55c67",
+  "predicted_bic": [
+    "d578b99443fde0968246cc7cbf3bc3016123c2f4",
+    "ebd173beb8db5b8b315fa1c5bbac86c54059397a"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 25,
+  "llm_tokens": 25356,
+  "root_cause": {
+    "text": "A race condition between `update_super_work` calling `ext4_notify_error_sysfs()` and the umount path calling `ext4_unregister_sysfs()`, where the sysfs kobject's kernfs_node is freed by `kobject_del()` before `sysfs_notify()` attempts to access it, resulting in use-after-free.",
+    "evidence": "The patch diff shows that the vulnerability stems from an earlier commit (b98535d09179) that reordered teardown to call `ext4_unregister_sysfs()` before flushing `s_sb_upd_work`. This creates a window where `kobject_del()` sets `kobj->sd = NULL` and frees the kernfs_node via `kernfs_put()`, but the deferred `update_super_work` still executes and calls `sysfs_notify(&sbi->s_kobj)`, which dereferences the stale `kobj->sd` pointer. The fix adds a mutex (`s_error_notify_mutex`) and checks `s_kobj.state_in_sysfs` before calling `sysfs_notify()` to prevent accessing freed memory, serializing the check-and-notify operation against `kobject_del()` to eliminate the TOCTOU race window.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/ext4/sysfs.c",
+      "lineno": 600,
+      "content": "sysfs_notify(&sbi->s_kobj, NULL, \"errors_count\");",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/ext4/sysfs.c",
+      "lineno": 647,
+      "content": "kobject_del(&sbi->s_kobj);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition between `update_super_work` calling `ext4_notify_error_sysfs()` and the umount path calling `ext4_unregister_sysfs()`, where the sysfs kobject's kernfs_node is freed by `kobject_del()` before `sysfs_notify()` attempts to access it, resulting in use-after-free.",
+      "evidence_points": "The patch diff shows that the vulnerability stems from an earlier commit (b98535d09179) that reordered teardown to call `ext4_unregister_sysfs()` before flushing `s_sb_upd_work`. This creates a window where `kobject_del()` sets `kobj->sd = NULL` and frees the kernfs_node via `kernfs_put()`, but the deferred `update_super_work` still executes and calls `sysfs_notify(&sbi->s_kobj)`, which dereferences the stale `kobj->sd` pointer. The fix adds a mutex (`s_error_notify_mutex`) and checks `s_kobj.state_in_sysfs` before calling `sysfs_notify()` to prevent accessing freed memory, serializing the check-and-notify operation against `kobject_del()` to eliminate the TOCTOU race window."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/ext4/ext4.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/ext4/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/ext4/sysfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/ext4/sysfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "fs/ext4/sysfs.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add mutex to protect sysfs_notify operations from racing with kobject_del in ext4 superblock info structure.",
+        "what": "Added a new struct member `struct mutex s_error_notify_mutex` with a comment explaining its purpose to the `ext4_sb_info` structure, positioned after the `s_kobj_unregister` completion field.",
+        "how": "This introduces a new mutex lock that will serialize access between sysfs_notify operations and kobject_del operations at runtime, preventing potential race conditions where concurrent notification and object deletion could corrupt state or cause use-after-free issues."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize the error notification mutex during superblock setup to prevent undefined behavior from uninitialized lock usage.",
+        "what": "Added a single line `mutex_init(&sbi->s_error_notify_mutex);` after the `spin_lock_init(&sbi->s_error_lock);` call in the `__ext4_fill_super` function during superblock initialization.",
+        "how": "This change initializes a mutex lock (`s_error_notify_mutex`) in the ext4 superblock info structure during filesystem mount. The mutex is now properly initialized before any code path could potentially attempt to acquire it, preventing undefined behavior from using an uninitialized synchronization primitive."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add mutex protection and state validation to prevent race conditions when notifying sysfs of ext4 errors.",
+        "what": "Wrapped the sysfs_notify() call with mutex locking (s_error_notify_mutex) and added a conditional check for sbi->s_kobj.state_in_sysfs before calling sysfs_notify().",
+        "how": "This change prevents race conditions where sysfs_notify() could be called on a kobject that is not yet registered in sysfs or is being unregistered. The mutex serializes concurrent calls to ext4_notify_error_sysfs(), and the state check ensures sysfs_notify() is only invoked when the kobject is actually in a valid sysfs state, avoiding potential null pointer dereferences or use-after-free issues."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "guard",
+        "intent_summary": "Protect kobject initialization and sysfs registration with mutex locking to prevent concurrent access race conditions.",
+        "what": "Added mutex_lock(&sbi->s_error_notify_mutex) before kobject_init_and_add() call and mutex_unlock(&sbi->s_error_notify_mutex) after it, wrapping the kobject initialization in a critical section.",
+        "how": "This change serializes access to the kobject initialization and addition operation by acquiring and releasing a mutex. It prevents concurrent access to the sysfs kobject registration, ensuring that only one thread can execute this critical section at a time, which protects against race conditions during the kobject setup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "guard",
+        "intent_summary": "Protect kobject deletion with mutex locking to prevent race conditions during sysfs unregistration.",
+        "what": "Added mutex locking around kobject_del() call in ext4_unregister_sysfs(). The mutex_lock(&sbi->s_error_notify_mutex) is called before kobject_del() and mutex_unlock() is called after it, with a blank line added before the lock for readability.",
+        "how": "This change serializes access to the kobject deletion with respect to other code that holds s_error_notify_mutex. It prevents concurrent modification or access to sbi->s_kobj during its deletion, ensuring that any error notification handlers or other code paths that acquire this mutex cannot race with the kobject teardown."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 3,
+          "intent": "Protect kobject initialization and sysfs registration with mutex locking to prevent concurrent access race conditions."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize the error notification mutex during superblock setup to prevent undefined behavior from uninitialized lock usage."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Protect kobject deletion with mutex locking to prevent race conditions during sysfs unregistration."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Protect kobject initialization, sysfs registration, and sysfs_notify operations with mutex locking to prevent concurrent access race conditions in ext4.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the race condition root cause by adding mutex protection around sysfs operations. Specifically: (1) Hunk 0 adds a mutex to protect sysfs_notify operations from racing with kobject_del, (2) Hunk 2 adds mutex protection and state validation when notifying sysfs of errors (the update_super_work path), and (3) Hunk 3 protects kobject initialization and sysfs registration. These changes prevent concurrent access between ext4_notify_error_sysfs() and ext4_unregister_sysfs(), directly mitigating the use-after-free vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group addresses mutex initialization for undefined behavior prevention, but the root cause is a race condition between sysfs_notify() accessing a freed kernfs_node and kobject_del() freeing it during umount. Initializing a mutex does not prevent the use-after-free race condition that occurs when the sysfs kobject is deleted while notification is in progress."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by adding mutex locking protection around kobject deletion during sysfs unregistration. This prevents the race condition where `ext4_notify_error_sysfs()` could access the freed kernfs_node after `kobject_del()` has freed it in the umount path. The mutex synchronization ensures these operations cannot occur concurrently."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "fs/ext4/sysfs.c",
+            "lineno": 600,
+            "content": "sysfs_notify(&sbi->s_kobj, NULL, \"errors_count\");",
+            "rationale": "This is the vulnerable statement that accesses the sysfs kobject without synchronization. It can race with kobject_del() in the umount path, causing use-after-free when sysfs_notify() tries to access the freed kernfs_node."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "fs/ext4/sysfs.c",
+            "lineno": 647,
+            "content": "kobject_del(&sbi->s_kobj);",
+            "rationale": "This statement frees the kernfs_node associated with the kobject during umount. Without synchronization with ext4_notify_error_sysfs(), it can race and cause the kernfs_node to be freed while sysfs_notify() is still accessing it."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/ext4/ext4.h",
+            "lineno": 1571,
+            "content": "struct kobject s_kobj;",
+            "rationale": "The kobject field lacks protection mechanism (no associated mutex) in the superblock info structure, allowing concurrent access from update_super_work and umount paths without synchronization."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/ext4/sysfs.c",
+            "stmt_text": "sysfs_notify(&sbi->s_kobj, NULL, \"errors_count\");",
+            "location": "hunk",
+            "explanation": "This statement in ext4_notify_error_sysfs() accesses the sysfs kobject without synchronization. It races with kobject_del() in the umount path, which frees the kernfs_node. When sysfs_notify() attempts to access the kobject's kernfs_node, it may already be freed, causing use-after-free."
+          },
+          {
+            "vuln_file": "fs/ext4/sysfs.c",
+            "stmt_text": "kobject_del(&sbi->s_kobj);",
+            "location": "hunk",
+            "explanation": "This statement in ext4_unregister_sysfs() frees the kernfs_node associated with the kobject during umount without holding any lock. It can race with sysfs_notify() called from update_super_work, causing the kernfs_node to be freed while still being accessed, resulting in use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "496bb99b7e66",
+          "anchor_file": "fs/ext4/sysfs.c",
+          "anchor_lineno": 600
+        },
+        "commit": "d578b99443fde0968246cc7cbf3bc3016123c2f4",
+        "commit_short": "d578b99443fd",
+        "commit_msg": "ext4: notify sysfs on errors_count value change\n\nAfter s_error_count is incremented, signal the change in the\ncorrespond",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/ext4/sysfs.c",
+        "display_lineno": 511,
+        "code_snippet": "commit d578b99443fde0968246cc7cbf3bc3016123c2f4\nAuthor: Jonathan Davies <jonathan.davies@nutanix.com>\nDate:   Fri Jun 11 14:02:08 2021 +0000\n\n    ext4: notify sysfs on errors_count value change\n    \n    After s_error_count is incremented, signal the change in the\n    corresponding sysfs attribute via sysfs_notify. This allows userspace to\n    poll() on changes to /sys/fs/ext4/*/errors_count.\n    \n    [ Moved call of ext4_notify_error_sysfs() to flush_stashed_error_work()\n      to avoid BUG's cau",
+        "exists": false,
+        "reason": "The provided code snippet is insufficient to make a determination. Only a single line (511) calling sysfs_notify() is shown, which is the vulnerable construct itself. However, to properly assess whether this commit introduces the race condition vulnerability, we need to see: (1) the complete function context including its name and parameters, (2) where this function is called from (update_super_work), (3) what synchronization mechanisms (if any) protect access to sbi->s_kobj, (4) the umount path code showing ext4_unregister_sysfs() and kobject_del(), and (5) whether there are any locks or reference counting that prevent the kobject from being freed during sysfs_notify(). The vulnerability is a race condition between two code paths, which cannot be determined from a single isolated sysfs_notify() call. A larger view of the synchronization context is needed."
+      }
+    },
+    {
+      "bic_found": "d578b99443fde0968246cc7cbf3bc3016123c2f4",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "496bb99b7e66",
+          "anchor_file": "fs/ext4/sysfs.c",
+          "anchor_lineno": 647
+        },
+        "commit": "ebd173beb8db5b8b315fa1c5bbac86c54059397a",
+        "commit_short": "ebd173beb8db",
+        "commit_msg": "ext4: move procfs registration code to fs/ext4/sysfs.c\n\nThis allows us to refactor the procfs code, which saves a bit of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/ext4/sysfs.c",
+        "display_lineno": 417,
+        "code_snippet": "commit ebd173beb8db5b8b315fa1c5bbac86c54059397a\nAuthor: Theodore Ts'o <tytso@mit.edu>\nDate:   Wed Sep 23 12:46:17 2015 -0400\n\n    ext4: move procfs registration code to fs/ext4/sysfs.c\n    \n    This allows us to refactor the procfs code, which saves a bit of\n    compiled space.  More importantly it isolates most of the procfs\n    support code into a single file, so it's easier to #ifdef it out if\n    the proc file system has been disabled.\n    \n    Signed-off-by: Theodore Ts'o <tytso@mit.edu>\n\nd",
+        "exists": false,
+        "reason": "The function body shows `kobject_del(&sbi->s_kobj)` at line 417, which is the operation that frees the kernfs_node. However, this function itself does NOT contain the vulnerable construct described in the root cause. The vulnerability is a RACE CONDITION between this function (called during umount via `ext4_unregister_sysfs()`) and `update_super_work` calling `ext4_notify_error_sysfs()`. The vulnerable construct would be `sysfs_notify()` being called WITHOUT proper synchronization/locking AFTER `kobject_del()` has freed the kernfs_node. This snippet shows only the `kobject_del()` call but does NOT show the `sysfs_notify()` call that would access the freed memory. The race condition vulnerability exists in the interaction between two separate code paths, not within this single function. Since the vulnerable `sysfs_notify()` call is not present in this snippet, has_bug=false. This is a Bug-Introducing Commit because it introduces the `kobject_del()` without proper synchronization, but the vulnerable construct (unsynchronized sysfs_notify after kobject_del) is not visible in this function body alone."
+      }
+    },
+    {
+      "bic_found": "ebd173beb8db5b8b315fa1c5bbac86c54059397a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "d578b99443fde0968246cc7cbf3bc3016123c2f4": 1,
+        "ebd173beb8db5b8b315fa1c5bbac86c54059397a": 1
+      },
+      "bic_candidates": [
+        "d578b99443fde0968246cc7cbf3bc3016123c2f4",
+        "ebd173beb8db5b8b315fa1c5bbac86c54059397a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

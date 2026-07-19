@@ -1,0 +1,339 @@
+{
+  "cveid": "CVE-2026-46113",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "0cb2af2ea66ad8ff195c156ea690f11216285bdf"
+  ],
+  "ground_truth_bic": "6aa8b732ca01c3d7a54e93f4d701b8aabbe60fb7",
+  "predicted_bic": [
+    "0cd8dc739833080aa0813cbd94d907a93e3a14c3",
+    "0378739401cfc2fd2a50a2a337a4f394e8493008"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 22371,
+  "root_cause": {
+    "text": "KVM’s x86 shadow MMU assumed that any present SPTE it encountered for a direct-mapped shadow page belonged to the expected GFN range (`sp->gfn + index`), so guest page-table changes could leave a leaf SPTE/rmap entry attached to a different GFN and later `rmap_remove()` would miss it, leaving a stale reverse-mapping to a freed `kvm_mmu_page`.",
+    "evidence": "The patch changes `kvm_mmu_get_child_sp()` to only reuse a child shadow page when `spte_to_child_sp(*sptep)->gfn == gfn`, and in `__link_shadow_page()` it stops blindly dropping “large” SPTEs and instead zaps any existing present SPTE via `mmu_page_zap_pte()`; the CVE text explains the bug occurs because `rmap_remove()` only scans `[sp->gfn, sp->gfn + 511]` even though the recorded rmap can be outside that range after a guest write changes the mapping.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/x86/kvm/mmu/mmu.c",
+      "lineno": 2469,
+      "content": "if (is_shadow_present_pte(*sptep) && !is_large_pte(*sptep))",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kvm/mmu/mmu.c",
+      "lineno": 2552,
+      "content": "if (is_shadow_present_pte(*sptep))",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/x86/kvm/mmu/mmu.c",
+      "lineno": 2553,
+      "content": "drop_large_spte(kvm, sptep, flush);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "KVM’s x86 shadow MMU assumed that any present SPTE it encountered for a direct-mapped shadow page belonged to the expected GFN range (`sp->gfn + index`), so guest page-table changes could leave a leaf SPTE/rmap entry attached to a different GFN and later `rmap_remove()` would miss it, leaving a stale reverse-mapping to a freed `kvm_mmu_page`.",
+      "evidence_points": "The patch changes `kvm_mmu_get_child_sp()` to only reuse a child shadow page when `spte_to_child_sp(*sptep)->gfn == gfn`, and in `__link_shadow_page()` it stops blindly dropping “large” SPTEs and instead zaps any existing present SPTE via `mmu_page_zap_pte()`; the CVE text explains the bug occurs because `rmap_remove()` only scans `[sp->gfn, sp->gfn + 511]` even though the recorded rmap can be outside that range after a guest write changes the mapping."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/x86/kvm/mmu/mmu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "arch/x86/kvm/mmu/mmu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "arch/x86/kvm/mmu/mmu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "arch/x86/kvm/mmu/mmu.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "refactor",
+        "intent_summary": "Add a forward declaration for `mmu_page_zap_pte` so it can be used before its definition.",
+        "what": "A new forward declaration was added for the function `mmu_page_zap_pte(struct kvm *kvm, struct kvm_mmu_page *sp, u64 *spte, struct list_head *invalid_list)` immediately after the existing declaration of `mmu_spte_set(u64 *sptep, u64 spte);`.",
+        "how": "This does not change runtime behavior by itself; it only makes the `mmu_page_zap_pte` function visible to code earlier in the file so it can be referenced before its definition, avoiding implicit-declaration or ordering issues."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Remove the unused drop_large_spte helper and fold its behavior into other SPTE handling paths.",
+        "what": "The static function drop_large_spte(struct kvm *kvm, u64 *sptep, bool flush) was removed entirely, including its local sp variable, the WARN_ON_ONCE check for PG_LEVEL_4K, the call to drop_spte(kvm, sptep), and the conditional kvm_flush_remote_tlbs_sptep(kvm, sptep) call.",
+        "how": "At runtime, this eliminates a dedicated helper that dropped a non-4K SPTE and optionally flushed remote TLBs; any code path that previously relied on this wrapper must now use other logic, with the same drop and flush behavior no longer encapsulated here."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix duplicate-child detection in kvm_mmu_get_child_sp() so -EEXIST is returned only when an existing child shadow page matches the requested gfn.",
+        "what": "The conditional in kvm_mmu_get_child_sp() was expanded: it now only returns -EEXIST when the shadow PTE is present, not large, and the existing child shadow page pointer from spte_to_child_sp(*sptep) is non-NULL and has a gfn matching the requested gfn. The old check only tested that the SPTE was present and not large.",
+        "how": "This change prevents treating any existing non-large shadow PTE as a duplicate child page unless it actually points to the same guest frame number. As a result, the function can create or select a child shadow page for a different gfn instead of incorrectly rejecting it with -EEXIST."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace large-SPTE dropping with explicit parent-page zapping and remote invalidation handling when installing a new shadow page.",
+        "what": "In __link_shadow_page(), the old single call to drop_large_spte(kvm, sptep, flush) inside the is_shadow_present_pte(*sptep) check was replaced with a block that derives parent_sp from sptep_to_sp(sptep), declares a local invalid_list, warns if parent_sp->role.level == PG_LEVEL_4K, zaps the PTE via mmu_page_zap_pte(kvm, parent_sp, sptep, &invalid_list), and then processes the invalidations with kvm_mmu_remote_flush_or_zap(kvm, &invalid_list, true).",
+        "how": "At runtime, present shadow PTEs are no longer removed through the old large-SPTE drop helper; instead, they are explicitly zapped through the parent shadow page and any resulting invalidations are flushed or zapped remotely. This makes the handling more precise for the parent MMU page, adds a runtime warning if the entry is unexpectedly at 4K level, and ensures stale mappings are invalidated through the invalidation list path."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Add a forward declaration for `mmu_page_zap_pte` so it can be used before its definition."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove the unused drop_large_spte helper and fold its behavior into other SPTE handling paths."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix duplicate-child detection in kvm_mmu_get_child_sp() so -EEXIST is returned only when an existing child shadow page matches the requested gfn."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Replace large-SPTE dropping with explicit parent-page zapping and remote invalidation handling when installing a new shadow page."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change is only a forward declaration for a helper function and does not alter KVM shadow MMU/rmap handling, SPTE-GFN validation, or the stale reverse-mapping issue described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change is a cleanup/refactor that removes an unused helper and folds its behavior into existing SPTE handling, but it does not address the shadow MMU reverse-mapping mismatch or the stale rmap issue described in the vulnerability root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The change only fixes duplicate-child detection in kvm_mmu_get_child_sp() by checking that an existing child shadow page matches the requested GFN. The root cause is a stale reverse-mapping issue from mismatched SPTE/GFN assumptions in direct-mapped shadow pages and rmap_remove() missing entries, which is a different mechanism."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": false,
+        "reason": "The change focuses on handling large SPTE replacement via parent-page zapping and remote invalidation when installing shadow pages, not on the root cause of stale reverse mappings caused by mismatched GFNs in direct-mapped shadow pages and missed rmap removal."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "arch/x86/kvm/mmu/mmu.c",
+            "lineno": 2552,
+            "content": "if (is_shadow_present_pte(*sptep))",
+            "rationale": "This assumption treats any already-present SPTE at the slot as something safe to drop/reuse when installing a new shadow page. The root cause is that a present SPTE could still be tied to a different GFN, so blindly handling it this way can leave stale reverse-mapping state attached to the freed shadow page."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "arch/x86/kvm/mmu/mmu.c",
+            "lineno": 2553,
+            "content": "drop_large_spte(kvm, sptep, flush);",
+            "rationale": "This call embodies the vulnerable behavior of removing the existing SPTE without explicitly zapping the parent-page mapping for the correct GFN. Because the SPTE may not belong to the expected GFN range, reverse-mapping cleanup can miss it and leave a stale rmap entry."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "arch/x86/kvm/mmu/mmu.c",
+            "lineno": 2469,
+            "content": "if (is_shadow_present_pte(*sptep) && !is_large_pte(*sptep))",
+            "rationale": "This duplicate-child check assumes a present non-large SPTE is sufficient to conclude a duplicate child exists. The bug is about mismatched GFN ownership of an existing SPTE, so this kind of presence-based assumption can incorrectly bypass the need to validate the child against the requested GFN."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/x86/kvm/mmu/mmu.c",
+            "stmt_text": "if (is_shadow_present_pte(*sptep) && !is_large_pte(*sptep))",
+            "location": "hunk",
+            "explanation": "This presence-based duplicate-child test can treat any existing non-large SPTE as the expected child without verifying that it matches the requested GFN, which is the core assumption that allows a mismatched leaf SPTE/rmap entry to persist."
+          },
+          {
+            "vuln_file": "arch/x86/kvm/mmu/mmu.c",
+            "stmt_text": "if (is_shadow_present_pte(*sptep))",
+            "location": "hunk",
+            "explanation": "This condition assumes any present SPTE in the slot is safe to handle as belonging to the intended shadow page, but the root cause is that a present SPTE may actually map a different GFN and later reverse-mapping cleanup can miss it."
+          },
+          {
+            "vuln_file": "arch/x86/kvm/mmu/mmu.c",
+            "stmt_text": "drop_large_spte(kvm, sptep, flush);",
+            "location": "hunk",
+            "explanation": "This line performs the vulnerable removal path by dropping the existing SPTE without explicitly zapping the correct parent-page mapping for the owning GFN, which can leave stale rmap state attached to the freed shadow page."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "0aec99f9bf02",
+          "anchor_file": "arch/x86/kvm/mmu/mmu.c",
+          "anchor_lineno": 2469
+        },
+        "commit": "0cd8dc739833080aa0813cbd94d907a93e3a14c3",
+        "commit_short": "0cd8dc739833",
+        "commit_msg": "KVM: x86/mmu: pull call to drop_large_spte() into __link_shadow_page()\n\nBefore allocating a child shadow page table, all",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/mmu/mmu.c",
+        "display_lineno": 2214,
+        "code_snippet": "commit 0cd8dc739833080aa0813cbd94d907a93e3a14c3\nAuthor: Paolo Bonzini <pbonzini@redhat.com>\nDate:   Wed Jun 22 15:27:07 2022 -0400\n\n    KVM: x86/mmu: pull call to drop_large_spte() into __link_shadow_page()\n    \n    Before allocating a child shadow page table, all callers check\n    whether the parent already points to a huge page and, if so, they\n    drop that SPTE.  This is done by drop_large_spte().\n    \n    However, dropping the large SPTE is really only necessary before the\n    sp is install",
+        "exists": false,
+        "reason": "The shown diff already contains the fix for the root cause. The vulnerable condition was a present shadow SPTE that was treated as safe to overwrite/link without first dropping a large leaf and flushing, which could leave stale reverse mappings. In this version, `__link_shadow_page()` now explicitly handles that case: `if (is_shadow_present_pte(*sptep)) drop_large_spte(kvm, sptep);` and the comment says, `If an SPTE is present already, it must be a leaf and therefore a large one. Drop it and flush the TLB before installing sp.` Also, `kvm_mmu_get_child_sp()` now returns `ERR_PTR(-EEXIST)` when `is_shadow_present_pte(*sptep) && !is_large_pte(*sptep)`, preventing double-linking of an existing non-leaf. Because the fix is already present, the vulnerable construct is not present in this commit version."
+      }
+    },
+    {
+      "bic_found": "0cd8dc739833080aa0813cbd94d907a93e3a14c3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "0aec99f9bf02",
+          "anchor_file": "arch/x86/kvm/mmu/mmu.c",
+          "anchor_lineno": 2552
+        },
+        "commit": "0cd8dc739833080aa0813cbd94d907a93e3a14c3",
+        "commit_short": "0cd8dc739833",
+        "commit_msg": "KVM: x86/mmu: pull call to drop_large_spte() into __link_shadow_page()\n\nBefore allocating a child shadow page table, all",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/mmu/mmu.c",
+        "display_lineno": 2296,
+        "code_snippet": "commit 0cd8dc739833080aa0813cbd94d907a93e3a14c3\nAuthor: Paolo Bonzini <pbonzini@redhat.com>\nDate:   Wed Jun 22 15:27:07 2022 -0400\n\n    KVM: x86/mmu: pull call to drop_large_spte() into __link_shadow_page()\n    \n    Before allocating a child shadow page table, all callers check\n    whether the parent already points to a huge page and, if so, they\n    drop that SPTE.  This is done by drop_large_spte().\n    \n    However, dropping the large SPTE is really only necessary before the\n    sp is install",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the exact shadow-page linking and large-SPTE handling logic. The vulnerable construct is present in the sense that this code still operates on present SPTEs in the direct-mapped shadow path and relies on a caller to handle them, e.g. the old flow in __direct_map() had `drop_large_spte(vcpu, it.sptep); if (is_shadow_present_pte(*it.sptep)) continue;` before `kvm_mmu_get_child_sp()`. However, this commit already contains the fix: the drop is moved into `__link_shadow_page()` with `if (is_shadow_present_pte(*sptep)) drop_large_spte(kvm, sptep);`, and `kvm_mmu_get_child_sp()` now returns `ERR_PTR(-EEXIST)` when a shadow-present non-large PTE already exists. That prevents relinking over an existing non-leaf SPTE and ensures large SPTEs are dropped before installing the child page, which addresses the stale rmap / mismatched GFN issue described in the root cause."
+      }
+    },
+    {
+      "bic_found": "0cd8dc739833080aa0813cbd94d907a93e3a14c3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "0aec99f9bf02",
+          "anchor_file": "arch/x86/kvm/mmu/mmu.c",
+          "anchor_lineno": 2553
+        },
+        "commit": "0378739401cfc2fd2a50a2a337a4f394e8493008",
+        "commit_short": "0378739401cf",
+        "commit_msg": "KVM: x86/mmu: Avoid unnecessary flush on eager page split\n\nThe TLB flush before installing the newly-populated lower lev",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/x86/kvm/mmu/mmu.c",
+        "display_lineno": 2300,
+        "code_snippet": "commit 0378739401cfc2fd2a50a2a337a4f394e8493008\nAuthor: Paolo Bonzini <pbonzini@redhat.com>\nDate:   Wed Jun 22 15:27:10 2022 -0400\n\n    KVM: x86/mmu: Avoid unnecessary flush on eager page split\n    \n    The TLB flush before installing the newly-populated lower level\n    page table is unnecessary if the lower-level page table maps\n    the huge page identically.  KVM knows it is if it did not reuse\n    an existing shadow page table, tell drop_large_spte() to skip\n    the flush in that case.\n    \n ",
+        "exists": false,
+        "reason": "The shown function body contains the split-page logic and the fix for the flush behavior, but not the vulnerable stale-rmap construct described in the root cause. In `shadow_mmu_split_huge_page()`, the code now tracks whether any existing SPTE is a non-leaf with `flush |= !is_last_spte(*sptep, sp->role.level);` and then passes that into `__link_shadow_page(kvm, cache, huge_sptep, sp, flush);`. The callee also conditionally flushes: `if (flush) kvm_flush_remote_tlbs_with_address(...)`. This is the corrected handling for partially populated lower-level page tables. The vulnerable issue was about a present SPTE/rmap entry attached to the wrong GFN and `rmap_remove()` missing it later, but this snippet only shows the flush-skip optimization and its safeguards; it does not show the faulty stale reverse-mapping condition itself. Therefore the vulnerable construct is absent here, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "0378739401cfc2fd2a50a2a337a4f394e8493008",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "0cd8dc739833080aa0813cbd94d907a93e3a14c3": 2,
+        "0378739401cfc2fd2a50a2a337a4f394e8493008": 1
+      },
+      "bic_candidates": [
+        "0cd8dc739833080aa0813cbd94d907a93e3a14c3",
+        "0378739401cfc2fd2a50a2a337a4f394e8493008"
+      ]
+    }
+  ],
+  "used_fallback": true,
+  "error": ""
+}

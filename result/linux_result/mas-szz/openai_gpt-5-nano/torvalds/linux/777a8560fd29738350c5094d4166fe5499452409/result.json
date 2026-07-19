@@ -1,0 +1,412 @@
+{
+  "cveid": "CVE-2026-23002",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "777a8560fd29738350c5094d4166fe5499452409"
+  ],
+  "ground_truth_bic": "ad41251c290dfe3c01472c94d2439a59de23fe97",
+  "predicted_bic": [
+    "de3ec364c3c37971dbba1e37a55ae5b646c6f24e",
+    "bd7525dacd7e204f8cae061941fb9001c89d6988"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 38800,
+  "root_cause": {
+    "text": "The sleepable buildid file reader in lib/buildid incorrectly accessed file contents through direct page-cache folio loading with read_cache_folio()/filemap paths instead of the standard __kernel_read() interface, exposing an unsafe faulting path that could dereference NULL in filemap_read_folio.",
+    "evidence": "The fix removes the sleepable-context logic from freader_get_folio() that did `read_cache_folio(...)` when `r->may_fault` was set, and replaces it in `freader_fetch()` with `__kernel_read(r->file, r->buf, sz, &file_off)`, while the CVE/commit message explicitly says this change is to “Prevent a ‘BUG: unable to handle kernel NULL pointer dereference in filemap_read_folio’” and that `__kernel_read()` “handles all the complexity of reading file data.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "lib/buildid.c",
+      "lineno": 58,
+      "content": "r->folio = read_cache_folio(r->file->f_mapping, file_off >> PAGE_SHIFT,",
+      "confidence": 1.0
+    },
+    {
+      "file": "lib/buildid.c",
+      "lineno": 101,
+      "content": "r->err = freader_get_folio(r, file_off);",
+      "confidence": 1.0
+    },
+    {
+      "file": "lib/buildid.c",
+      "lineno": 56,
+      "content": "if (r->may_fault && (IS_ERR(r->folio) || !folio_test_uptodate(r->folio))) {",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The sleepable buildid file reader in lib/buildid incorrectly accessed file contents through direct page-cache folio loading with read_cache_folio()/filemap paths instead of the standard __kernel_read() interface, exposing an unsafe faulting path that could dereference NULL in filemap_read_folio.",
+      "evidence_points": "The fix removes the sleepable-context logic from freader_get_folio() that did `read_cache_folio(...)` when `r->may_fault` was set, and replaces it in `freader_fetch()` with `__kernel_read(r->file, r->buf, sz, &file_off)`, while the CVE/commit message explicitly says this change is to “Prevent a ‘BUG: unable to handle kernel NULL pointer dereference in filemap_read_folio’” and that `__kernel_read()` “handles all the complexity of reading file data.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "lib/buildid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "lib/buildid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "lib/buildid.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add the missing `linux/fs.h` header so filesystem-related symbols are available and the file builds correctly.",
+        "what": "A single include directive was added to the file: `#include <linux/fs.h>` immediately after the existing `#include <linux/pagemap.h>` line.",
+        "how": "This makes filesystem-related declarations, types, and macros from `linux/fs.h` available to this compilation unit, allowing references to those symbols to compile correctly and resolving missing dependency issues at build time without directly changing runtime logic."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Restrict freader_get_folio() to page-cache-only lookups by removing on-demand folio reads and failing immediately when the folio is not already cached and uptodate.",
+        "what": "The change removes the explicit secretmem_mapping() rejection and deletes the conditional fallback path that, when may_fault was true and the folio lookup failed or returned a non-uptodate folio, took the invalidate lock and called read_cache_folio(); the function now only performs filemap_get_folio() and then errors out if the result is invalid or not uptodate.",
+        "how": "At runtime, freader_get_folio() no longer faults in or reads missing page-cache folios from storage and instead succeeds only when the target folio is already present and uptodate in page cache. This prevents blocking/page-fault-style cache population in this path and causes uncached or stale folios to fail immediately. The removed secretmem check no longer returns a dedicated early error, but such mappings will also fail unless a usable uptodate folio is already obtainable through the cache lookup."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle secretmem files safely and use __kernel_read() in sleepable contexts to avoid invalid folio-based access.",
+        "what": "The change inserts two new conditional paths in freader_fetch() before the existing folio-based fetch logic: one checks secretmem_mapping(r->file->f_mapping) and, if true, sets r->err to -EFAULT and returns NULL; the other checks r->may_fault and, if true, reads sz bytes into r->buf using __kernel_read(r->file, r->buf, sz, &file_off), returning the buffer on exact-size success or setting r->err to either the negative read error or -EIO and returning NULL on short/failed reads.",
+        "how": "At runtime, this prevents the function from attempting to access secretmem-backed file mappings, which are intentionally inaccessible, and adds an alternate read path for sleepable contexts so data can be fetched with __kernel_read() instead of the existing folio/pagemap mechanism. This avoids invalid access for secret memory and enables safe reading when page faults or sleeping are allowed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add the missing `linux/fs.h` header so filesystem-related symbols are available and the file builds correctly."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Handle secretmem files safely and use __kernel_read() in sleepable contexts to avoid invalid folio-based access."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "REJECT",
+        "core_intent": "Handle secretmem files safely and avoid invalid folio-based access by switching sleepable reads to __kernel_read().",
+        "outliers": [
+          1
+        ],
+        "reason": "Hunk 2 matches the secretmem-safe read-path change, while Hunk 1 changes freader_get_folio() semantics to only allow page-cache hits and stop performing on-demand folio reads, which is a broader page-cache behavior change not required by the same shared purpose."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "This change only adds a missing filesystem header for build correctness. It does not alter the buildid file-reading logic, replace page-cache folio access with __kernel_read(), or address the unsafe faulting path behind the NULL dereference."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly changes the sleepable file-reading path to use __kernel_read() instead of folio/page-cache based access, and adds safe handling for secretmem files. This matches the root cause of unsafe direct folio loading in lib/buildid leading to NULL dereference in filemap_read_folio."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly modifies the unsafe folio-based file reading path in lib/buildid by removing on-demand page-cache reads and only allowing cached, uptodate folios, which is a direct mitigation of the vulnerable read_cache_folio/filemap access path described in the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "lib/buildid.c",
+            "lineno": 58,
+            "content": "r->folio = read_cache_folio(r->file->f_mapping, file_off >> PAGE_SHIFT,",
+            "rationale": "This is the direct page-cache folio read path identified in the root cause. In sleepable contexts it performs on-demand folio loading instead of using __kernel_read(), exposing the unsafe filemap_read_folio path."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "lib/buildid.c",
+            "lineno": 101,
+            "content": "r->err = freader_get_folio(r, file_off);",
+            "rationale": "This call is the sleepable buildid reader entry into the vulnerable folio-based access path. It directly triggers the unsafe freader_get_folio logic rather than using the safer __kernel_read() interface."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "lib/buildid.c",
+            "lineno": 56,
+            "content": "if (r->may_fault && (IS_ERR(r->folio) || !folio_test_uptodate(r->folio))) {",
+            "rationale": "This condition explicitly enables the faulting/sleepable path that attempts to populate folios on demand, which is the behavior the fix removes in favor of __kernel_read()."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "lib/buildid.c",
+            "stmt_text": "r->folio = read_cache_folio(r->file->f_mapping, file_off >> PAGE_SHIFT,",
+            "location": "hunk",
+            "explanation": "This statement performs direct page-cache folio loading for the sleepable buildid reader, invoking the unsafe on-demand filemap/read_folio path identified in the root cause instead of using the safe __kernel_read() interface."
+          },
+          {
+            "vuln_file": "lib/buildid.c",
+            "stmt_text": "r->err = freader_get_folio(r, file_off);",
+            "location": "hunk",
+            "explanation": "This statement is the call site that routes sleepable buildid reads into the vulnerable folio-based access path, thereby triggering the unsafe direct page-cache loading behavior."
+          },
+          {
+            "vuln_file": "lib/buildid.c",
+            "stmt_text": "if (r->may_fault && (IS_ERR(r->folio) || !folio_test_uptodate(r->folio))) {",
+            "location": "hunk",
+            "explanation": "This condition gates the sleepable faulting path and enables on-demand folio population when the folio is missing or not uptodate, which is the unsafe behavior removed by the fix."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6ac166a0c8b8",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 58
+        },
+        "commit": "ad41251c290dfe3c01472c94d2439a59de23fe97",
+        "commit_short": "ad41251c290d",
+        "commit_msg": "lib/buildid: implement sleepable build_id_parse() API\n\nExtend freader with a flag specifying whether it's OK to cause pa",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 72,
+        "code_snippet": "commit ad41251c290dfe3c01472c94d2439a59de23fe97\nAuthor: Andrii Nakryiko <andrii@kernel.org>\nDate:   Thu Aug 29 10:42:28 2024 -0700\n\n    lib/buildid: implement sleepable build_id_parse() API\n    \n    Extend freader with a flag specifying whether it's OK to cause page\n    fault to fetch file data that is not already physically present in\n    memory. With this, it's now easy to wait for data if the caller is\n    running in sleepable (faultable) context.\n    \n    We utilize read_cache_folio() to bri",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact newly introduced sleepable file-reading path inside `freader_get_folio()` and how `build_id_parse()` enables it via `may_fault=true`. The vulnerable construct is present: when `r->may_fault` is true, the code does direct page-cache folio loading using `read_cache_folio()` instead of using `__kernel_read()`. Specifically: `r->folio = filemap_get_folio(r->file->f_mapping, file_off >> PAGE_SHIFT);` and then `if (r->may_fault && (IS_ERR(r->folio) || !folio_test_uptodate(r->folio))) { ... r->folio = read_cache_folio(r->file->f_mapping, file_off >> PAGE_SHIFT, NULL, r->file); ... }`. The root cause says the vulnerability is that the sleepable buildid reader accesses file contents through direct page-cache folio loading with `read_cache_folio()/filemap` paths rather than the standard `__kernel_read()` interface, exposing an unsafe faulting path. This commit introduces exactly that behavior for the sleepable API: `build_id_parse()` now calls `__build_id_parse(..., true /* may_fault */)`, and `freader_init_from_file()` stores `struct file *file` plus `bool may_fault`, enabling the unsafe path. There is no sign of the fix here because the code still uses `read_cache_folio()`/`filemap_get_folio()` and does not switch the sleepable reader to `__kernel_read()` or any equivalent safe kernel read interface. Therefore this commit version contains the bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "45b8fc309654",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 72
+        },
+        "commit": "de3ec364c3c37971dbba1e37a55ae5b646c6f24e",
+        "commit_short": "de3ec364c3c3",
+        "commit_msg": "lib/buildid: add single folio-based file reader abstraction\n\nAdd freader abstraction that transparently manages fetching",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 70,
+        "code_snippet": "commit de3ec364c3c37971dbba1e37a55ae5b646c6f24e\nAuthor: Andrii Nakryiko <andrii@kernel.org>\nDate:   Thu Aug 29 10:42:24 2024 -0700\n\n    lib/buildid: add single folio-based file reader abstraction\n    \n    Add freader abstraction that transparently manages fetching and local\n    mapping of the underlying file page(s) and provides a simple direct data\n    access interface.\n    \n    freader_fetch() is the only and single interface necessary. It accepts\n    file offset and desired number of bytes th",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the entire new file-reading abstraction and how build_id_parse() reads file-backed data. The root cause is use of direct page-cache/folio access instead of the safe __kernel_read() interface. That vulnerable construct is clearly present here: freader_get_folio() does `r->folio = filemap_get_folio(r->mapping, file_off >> PAGE_SHIFT);` and then directly maps it with `r->addr = kmap_local_folio(r->folio, 0);`. The commit message also describes this as a \"single folio-based file reader abstraction,\" confirming the design. In build_id_parse(), file-backed parsing is initialized with `freader_init_from_file(&r, buf, sizeof(buf), vma->vm_file->f_mapping);` and all subsequent reads go through `freader_fetch()`, which in turn uses the folio/filemap path. There is no use of `__kernel_read()` anywhere in the shown code, so the fix described in the root cause is not present. Although this commit switched from older page-based helpers to folio-based helpers (`filemap_get_folio` instead of previous page-cache loading), it still retains the same unsafe class of direct page-cache access rather than standard kernel file reading, so the vulnerable construct remains."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "905415ff3ffb",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 70
+        },
+        "commit": "7eaf3cf3b7c5a49b3ca60e1ceb3d1d7430cc9d0e",
+        "commit_short": "7eaf3cf3b7c5",
+        "commit_msg": "buildid: add API to parse build ID out of buffer\n\nAdd an API that can parse the build ID out of a buffer, instead of a v",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 63,
+        "code_snippet": "commit 7eaf3cf3b7c5a49b3ca60e1ceb3d1d7430cc9d0e\nAuthor: Stephen Boyd <swboyd@chromium.org>\nDate:   Wed Jul 7 18:09:10 2021 -0700\n\n    buildid: add API to parse build ID out of buffer\n    \n    Add an API that can parse the build ID out of a buffer, instead of a vma,\n    to support printing a kernel module's build ID for stack traces.\n    \n    Link: https://lkml.kernel.org/r/20210511003845.2429846-3-swboyd@chromium.org\n    Signed-off-by: Stephen Boyd <swboyd@chromium.org>\n    Cc: Jiri Olsa <jolsa@",
+        "exists": false,
+        "reason": "The root cause described is specifically the sleepable file reader using direct page-cache folio loading via read_cache_folio()/filemap paths instead of __kernel_read(). This diff does not introduce or show any such file-reading logic. The added code is only a buffer-parsing helper: `static int parse_build_id_buf(unsigned char *build_id, __u32 *size, const void *note_start, Elf32_Word note_size)` and the wrapper `int build_id_parse_buf(const void *buf, unsigned char *build_id, u32 buf_size) { return parse_build_id_buf(build_id, NULL, buf, buf_size); }`. The existing `build_id_parse(struct vm_area_struct *vma, ...)` is shown only at its tail (`put_page(page); return ret;`), and there is no evidence in this snippet of the vulnerable construct involving `read_cache_folio()` or a fix replacing it with `__kernel_read()`. Therefore, within this function body set, the vulnerable construct is absent, so `has_bug=false`. Likewise, the fix is not present here either, because there is no `__kernel_read()`-based handling shown."
+      }
+    },
+    {
+      "bic_found": "de3ec364c3c37971dbba1e37a55ae5b646c6f24e",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6ac166a0c8b8",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 101
+        },
+        "commit": "de3ec364c3c37971dbba1e37a55ae5b646c6f24e",
+        "commit_short": "de3ec364c3c3",
+        "commit_msg": "lib/buildid: add single folio-based file reader abstraction\n\nAdd freader abstraction that transparently manages fetching",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 102,
+        "code_snippet": "commit de3ec364c3c37971dbba1e37a55ae5b646c6f24e\nAuthor: Andrii Nakryiko <andrii@kernel.org>\nDate:   Thu Aug 29 10:42:24 2024 -0700\n\n    lib/buildid: add single folio-based file reader abstraction\n    \n    Add freader abstraction that transparently manages fetching and local\n    mapping of the underlying file page(s) and provides a simple direct data\n    access interface.\n    \n    freader_fetch() is the only and single interface necessary. It accepts\n    file offset and desired number of bytes th",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact file-reading abstraction introduced by this commit and how build ID parsing accesses file contents. The vulnerability root cause is use of direct page-cache folio/filemap access instead of the standard __kernel_read() interface. That vulnerable construct is present here: `freader_get_folio()` does `r->folio = filemap_get_folio(r->mapping, file_off >> PAGE_SHIFT);` and then directly maps it with `r->addr = kmap_local_folio(r->folio, 0);`. `build_id_parse()` initializes this file-backed reader with `freader_init_from_file(&r, buf, sizeof(buf), vma->vm_file->f_mapping);` and then all ELF/buildid parsing goes through `freader_fetch()`, which calls `freader_get_folio()` for file-backed access. So this commit clearly uses page-cache folio access/filemap paths rather than `__kernel_read()`. There is no fix present replacing this with `__kernel_read()` or another safe buffered read path; instead the newly added abstraction is explicitly folio-based (`add single folio-based file reader abstraction`). Therefore the vulnerable construct is present and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "905415ff3ffb",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 102
+        },
+        "commit": "bd7525dacd7e204f8cae061941fb9001c89d6988",
+        "commit_short": "bd7525dacd7e",
+        "commit_msg": "bpf: Move stack_map_get_build_id into lib\n\nMoving stack_map_get_build_id into lib with\ndeclaration in linux/buildid.h he",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 71,
+        "code_snippet": "commit bd7525dacd7e204f8cae061941fb9001c89d6988\nAuthor: Jiri Olsa <jolsa@kernel.org>\nDate:   Thu Jan 14 14:40:42 2021 +0100\n\n    bpf: Move stack_map_get_build_id into lib\n    \n    Moving stack_map_get_build_id into lib with\n    declaration in linux/buildid.h header:\n    \n      int build_id_parse(struct vm_area_struct *vma, unsigned char *build_id);\n    \n    This function returns build id for given struct vm_area_struct.\n    There is no functional change to stack_map_get_build_id function.\n    \n ",
+        "exists": true,
+        "reason": "The function body is sufficient because it fully shows how build ID data is obtained from the mapped file. The vulnerable construct is present: `build_id_parse()` directly accesses page-cache contents via `page = find_get_page(vma->vm_file->f_mapping, 0);` and then maps that page with `page_addr = kmap_atomic(page);` to parse ELF data. This is exactly the unsafe page-cache/filemap-based access pattern described in the root cause, instead of using the safe standard file-reading interface like `__kernel_read()`. The code never calls `__kernel_read()` or any equivalent safe reader; it relies on direct page lookup and mapping. Therefore the bug is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "bd7525dacd7e204f8cae061941fb9001c89d6988",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6ac166a0c8b8",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 56
+        },
+        "commit": "ad41251c290dfe3c01472c94d2439a59de23fe97",
+        "commit_short": "ad41251c290d",
+        "commit_msg": "lib/buildid: implement sleepable build_id_parse() API\n\nExtend freader with a flag specifying whether it's OK to cause pa",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 70,
+        "code_snippet": "commit ad41251c290dfe3c01472c94d2439a59de23fe97\nAuthor: Andrii Nakryiko <andrii@kernel.org>\nDate:   Thu Aug 29 10:42:28 2024 -0700\n\n    lib/buildid: implement sleepable build_id_parse() API\n    \n    Extend freader with a flag specifying whether it's OK to cause page\n    fault to fetch file data that is not already physically present in\n    memory. With this, it's now easy to wait for data if the caller is\n    running in sleepable (faultable) context.\n    \n    We utilize read_cache_folio() to bri",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact new sleepable file-reading path introduced in this commit. In `freader_get_folio()`, the sleepable path is implemented with direct page-cache folio access: `r->folio = filemap_get_folio(r->file->f_mapping, file_off >> PAGE_SHIFT);` and then, when `r->may_fault` is true, `r->folio = read_cache_folio(r->file->f_mapping, file_off >> PAGE_SHIFT, NULL, r->file);`. The root cause says the vulnerable behavior is using `read_cache_folio()/filemap` paths instead of the standard `__kernel_read()` interface for the sleepable buildid reader. That exact construct is present here. The new sleepable API `build_id_parse()` calls `__build_id_parse(..., true /* may_fault */)`, which flows into `freader_init_from_file(..., vma->vm_file, may_fault)` and then into `freader_get_folio()` where the `read_cache_folio()` path is used. There is no use of `__kernel_read()` or any alternative safe buffered file-read interface in this function body/diff, so the fix is not present. Therefore this commit version introduces the vulnerable construct."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "45b8fc309654",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 70
+        },
+        "commit": "de3ec364c3c37971dbba1e37a55ae5b646c6f24e",
+        "commit_short": "de3ec364c3c3",
+        "commit_msg": "lib/buildid: add single folio-based file reader abstraction\n\nAdd freader abstraction that transparently manages fetching",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 68,
+        "code_snippet": "commit de3ec364c3c37971dbba1e37a55ae5b646c6f24e\nAuthor: Andrii Nakryiko <andrii@kernel.org>\nDate:   Thu Aug 29 10:42:24 2024 -0700\n\n    lib/buildid: add single folio-based file reader abstraction\n    \n    Add freader abstraction that transparently manages fetching and local\n    mapping of the underlying file page(s) and provides a simple direct data\n    access interface.\n    \n    freader_fetch() is the only and single interface necessary. It accepts\n    file offset and desired number of bytes th",
+        "exists": true,
+        "reason": "The diff is sufficient because it shows the complete new file-reading abstraction and how build_id_parse() now accesses file-backed data. The vulnerable construct described in the root cause is direct page-cache/folio access instead of using __kernel_read(), and that logic is clearly present here. Specifically, freader_get_folio() does direct page-cache access with `r->folio = filemap_get_folio(r->mapping, file_off >> PAGE_SHIFT);`, checks `folio_test_uptodate()`, and then maps it with `r->addr = kmap_local_folio(r->folio, 0);`. The higher-level reader `freader_fetch()` relies on this path for file-backed reads, and `build_id_parse()` initializes file mode with `freader_init_from_file(&r, buf, sizeof(buf), vma->vm_file->f_mapping);` and then reads ELF data through `freader_fetch(&r, ...)`. There is no use of `__kernel_read()` or any standard buffered file-read helper in this function body. Because the root cause says the bug is the sleepable buildid reader using direct folio/page-cache loading through filemap/read_cache_folio-style paths rather than `__kernel_read()`, this commit contains that vulnerable design. The fix is not present, since the code still performs direct folio retrieval/mapping via `filemap_get_folio()`/`kmap_local_folio()` instead of replacing it with `__kernel_read()`-based reading."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "905415ff3ffb",
+          "anchor_file": "lib/buildid.c",
+          "anchor_lineno": 68
+        },
+        "commit": "7eaf3cf3b7c5a49b3ca60e1ceb3d1d7430cc9d0e",
+        "commit_short": "7eaf3cf3b7c5",
+        "commit_msg": "buildid: add API to parse build ID out of buffer\n\nAdd an API that can parse the build ID out of a buffer, instead of a v",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "lib/buildid.c",
+        "display_lineno": 61,
+        "code_snippet": "commit 7eaf3cf3b7c5a49b3ca60e1ceb3d1d7430cc9d0e\nAuthor: Stephen Boyd <swboyd@chromium.org>\nDate:   Wed Jul 7 18:09:10 2021 -0700\n\n    buildid: add API to parse build ID out of buffer\n    \n    Add an API that can parse the build ID out of a buffer, instead of a vma,\n    to support printing a kernel module's build ID for stack traces.\n    \n    Link: https://lkml.kernel.org/r/20210511003845.2429846-3-swboyd@chromium.org\n    Signed-off-by: Stephen Boyd <swboyd@chromium.org>\n    Cc: Jiri Olsa <jolsa@",
+        "exists": false,
+        "reason": "The provided snippet only shows a small helper that validates note buffer bounds and then calls `parse_build_id_buf(build_id, size, note_start, note_size);` after checking `if (note_start < page_addr || note_start + note_size < note_start)` and `if (note_start + note_size > page_addr + PAGE_SIZE)`. The root cause, however, is specifically about the sleepable file reader using direct page-cache access via `read_cache_folio()`/filemap paths instead of `__kernel_read()`. None of that file-reading logic is present in this function body. This snippet does not show whether the vulnerable direct folio/page-cache read path exists, nor whether it has been replaced by the fixed `__kernel_read()`-based handling. Therefore the shown code is insufficient to determine the vulnerability status of the commit."
+      }
+    },
+    {
+      "bic_found": "de3ec364c3c37971dbba1e37a55ae5b646c6f24e",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "de3ec364c3c37971dbba1e37a55ae5b646c6f24e": 2,
+        "bd7525dacd7e204f8cae061941fb9001c89d6988": 1
+      },
+      "bic_candidates": [
+        "de3ec364c3c37971dbba1e37a55ae5b646c6f24e",
+        "bd7525dacd7e204f8cae061941fb9001c89d6988"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

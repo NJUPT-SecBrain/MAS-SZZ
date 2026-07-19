@@ -1,0 +1,197 @@
+{
+  "cveid": "CVE-2026-31703",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6689f01d6740cf358932b3e97ee968c6099800d9"
+  ],
+  "ground_truth_bic": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+  "predicted_bic": [
+    "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 9,
+  "llm_tokens": 15079,
+  "root_cause": {
+    "text": "inode_switch_wbs_work_fn() in the writeback subsystem incorrectly looped over wb->switch_wbs_ctxs, allowing wb->switch_work to remain pending after all switch_wbs_ctxs entries were removed, so the wb_writeback could lose its last isw-held reference and be freed before the work function finished.",
+    "evidence": "The commit message explicitly states that “because inode_switch_wbs_work_fn() loops ... it can happen that wb->switch_work is pending while wb->switch_wbs_ctxs is empty,” and that this lets “wb get freed (no isw items -> no wb reference) while the work is still pending”; the patch removes the while-loop, fetches the list once, and adds WARN_ON_ONCE(!list) to enforce that queued work always has a corresponding list entry holding the wb reference.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 578,
+      "content": "while (1) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 579,
+      "content": "list = llist_del_all(&new_wb->switch_wbs_ctxs);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "inode_switch_wbs_work_fn() in the writeback subsystem incorrectly looped over wb->switch_wbs_ctxs, allowing wb->switch_work to remain pending after all switch_wbs_ctxs entries were removed, so the wb_writeback could lose its last isw-held reference and be freed before the work function finished.",
+      "evidence_points": "The commit message explicitly states that “because inode_switch_wbs_work_fn() loops ... it can happen that wb->switch_work is pending while wb->switch_wbs_ctxs is empty,” and that this lets “wb get freed (no isw items -> no wb reference) while the work is still pending”; the patch removes the while-loop, fetches the list once, and adds WARN_ON_ONCE(!list) to enforce that queued work always has a corresponding list entry holding the wb reference."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/fs-writeback.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Warn and exit if the inode switch worker runs with no queued contexts, while processing a single captured batch of pending switch requests under one wb reference.",
+        "what": "The function now removes the pending switch context list from new_wb->switch_wbs_ctxs once at the start with llist_del_all(), stores it in list, adds a WARN_ON_ONCE(!list) check that returns early if the list is empty, updates the comment to say \"Grab our reference to wb\", and replaces the previous while loop that repeatedly fetched and processed lists with a single synchronize_rcu() call followed by one llist_for_each_entry_safe() traversal over the initially captured list.",
+        "how": "At runtime, the worker now expects to be invoked only when there is at least one pending inode switch context and warns if that invariant is violated. It processes exactly the batch of contexts present when the worker starts, holding a wb reference across that batch and performing one RCU synchronization before processing, instead of looping until the list becomes empty. This prevents silently doing nothing in an unexpected empty-work case and makes the worker operate on a single captured work batch."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Warn and exit if the inode switch worker runs with no queued contexts, while processing a single captured batch of pending switch requests under one wb reference."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause in inode_switch_wbs_work_fn(): they handle the case where the worker runs with no queued contexts and process only a single captured batch under one wb reference, preventing switch_work from remaining pending after the list is emptied and avoiding premature wb_writeback freeing."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 578,
+            "content": "while (1) {",
+            "rationale": "The unbounded loop rechecks switch_wbs_ctxs and can continue running after the queued contexts that justified the wb reference have been removed, matching the root cause that the worker looped incorrectly and could outlive the last isw-held reference."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 579,
+            "content": "list = llist_del_all(&new_wb->switch_wbs_ctxs);",
+            "rationale": "This repeatedly drains the shared switch_wbs_ctxs list inside the loop, enabling the worker to process newly arriving/removing entries across iterations instead of a single captured batch, which is the core lifetime bug described."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 581,
+            "content": "if (!list)",
+            "rationale": "The empty-list check only breaks after an iteration has already re-entered the loop, allowing the work item to remain pending despite all prior contexts being removed and contributing to the race where wb can be freed before the function finishes."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 582,
+            "content": "break;",
+            "rationale": "Breaking only when a subsequent llist_del_all() returns empty reflects the flawed looping behavior; the worker can still be running with no captured work, which is precisely what the fix changes to avoid."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "while (1) {",
+            "location": "hunk",
+            "explanation": "This unconditional loop is the core bug: it lets inode_switch_wbs_work_fn() keep rechecking and draining switch_wbs_ctxs beyond the original captured batch, so the worker can continue running after all contexts that held the wb reference are gone, enabling the wb_writeback to be freed before the function returns."
+          },
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "list = llist_del_all(&new_wb->switch_wbs_ctxs);",
+            "location": "hunk",
+            "explanation": "By repeatedly deleting all pending switch contexts from the shared list inside the loop, this statement makes the worker operate on newly observed state across iterations rather than a single batch protected by one wb reference, directly contributing to the lifetime mismatch in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c03ce4173c7b",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 578
+        },
+        "commit": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+        "commit_short": "e1b849cfa6b6",
+        "commit_msg": "writeback: Avoid contention on wb->list_lock when switching inodes\n\nThere can be multiple inode switch works that are tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 556,
+        "code_snippet": "commit e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 9 17:12:59 2025 +0200\n\n    writeback: Avoid contention on wb->list_lock when switching inodes\n    \n    There can be multiple inode switch works that are trying to switch\n    inodes to / from the same wb. This can happen in particular if some\n    cgroup exits which owns many (thousands) inodes and we need to switch\n    them all. In this case several inode_switch_wbs_work_fn() instances will\n    be just",
+        "exists": false,
+        "reason": "The provided code is sufficient because it shows the full rewritten `inode_switch_wbs_work_fn()` logic and the queuing path feeding `wb->switch_wbs_ctxs`. The root cause was that `inode_switch_wbs_work_fn()` 'incorrectly looped over `wb->switch_wbs_ctxs`, allowing `wb->switch_work` to remain pending after all `switch_wbs_ctxs` entries were removed, so the `wb_writeback` could lose its last isw-held reference and be freed before the work function finished.' In this commit, the function explicitly takes a self-reference at entry: `wb_get(new_wb);` with the comment `Grab out reference to wb so that it cannot get freed under us after we process all the isw items.` It then processes queued contexts in a loop using `list = llist_del_all(&new_wb->switch_wbs_ctxs);` and exits only when `!list`, after which it drops the self-reference with `wb_put(new_wb);`. This is exactly the protective handling needed to prevent the wb from being freed while the worker is still running, even if all queue entries have been removed and no isw-held references remain. The work is also queued per-wb via `wb_queue_isw()` using `queue_work(isw_wq, &wb->switch_work);`, matching the fixed design of one work item per wb managing a queue. Therefore the vulnerable construct is absent in this version, and the fix is present."
+      }
+    },
+    {
+      "bic_found": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c03ce4173c7b",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 579
+        },
+        "commit": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+        "commit_short": "e1b849cfa6b6",
+        "commit_msg": "writeback: Avoid contention on wb->list_lock when switching inodes\n\nThere can be multiple inode switch works that are tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 557,
+        "code_snippet": "commit e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 9 17:12:59 2025 +0200\n\n    writeback: Avoid contention on wb->list_lock when switching inodes\n    \n    There can be multiple inode switch works that are trying to switch\n    inodes to / from the same wb. This can happen in particular if some\n    cgroup exits which owns many (thousands) inodes and we need to switch\n    them all. In this case several inode_switch_wbs_work_fn() instances will\n    be just",
+        "exists": false,
+        "reason": "The snippet is sufficient because it shows the full relevant logic of `inode_switch_wbs_work_fn()` and the queuing path that feeds it. The root cause says the vulnerable version 'incorrectly looped over `wb->switch_wbs_ctxs`, allowing `wb->switch_work` to remain pending after all `switch_wbs_ctxs` entries were removed, so the `wb_writeback` could lose its last isw-held reference and be freed before the work function finished.' In this commit, `inode_switch_wbs_work_fn()` explicitly protects against that by taking a wb reference at the start: `wb_get(new_wb);` with the comment `Grab out reference to wb so that it cannot get freed under us after we process all the isw items.` It then drains the queue in a loop: `while (1) { list = llist_del_all(&new_wb->switch_wbs_ctxs); if (!list) break; ... llist_for_each_entry_safe(isw, next_isw, list, list) process_inode_switch_wbs(new_wb, isw); }` and finally releases the reference with `wb_put(new_wb);`. The work item is also queued through `wb_queue_isw()`, which uses `if (llist_add(&isw->list, &wb->switch_wbs_ctxs)) queue_work(isw_wq, &wb->switch_work);`, meaning only one work item per wb is used and contexts are accumulated on the wb-local list. This is the fixed design: one `switch_work` per wb, queue draining, and an explicit wb lifetime reference held across the whole work function. Therefore the vulnerable construct is not present in this function, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b": 2
+      },
+      "bic_candidates": [
+        "e1b849cfa6b61f1c866a908c9e8dd9b5aaab820b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

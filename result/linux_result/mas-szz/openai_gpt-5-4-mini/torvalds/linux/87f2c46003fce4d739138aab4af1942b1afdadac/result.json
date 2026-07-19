@@ -1,0 +1,262 @@
+{
+  "cveid": "CVE-2026-43359",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "87f2c46003fce4d739138aab4af1942b1afdadac"
+  ],
+  "ground_truth_bic": "dd5f9615fc5c5e8d3751aab3a17b92768fb1ce70",
+  "predicted_bic": [
+    "8ea05e3a4262b9e6871c349fa3486bcfc72ffd1a"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 17403,
+  "root_cause": {
+    "text": "The Btrfs `set received` ioctl tried to insert a `BTRFS_UUID_KEY_RECEIVED_SUBVOL` into the UUID tree after already making metadata updates in the same transaction, so an item-size overflow in `btrfs_uuid_tree_add()` could return `-EOVERFLOW` and force a transaction abort/RO remount instead of being rejected up front.",
+    "evidence": "The patch says the overflow happens “when attempting to add the `BTRFS_UUID_KEY_RECEIVED_SUBVOL`” and that “we have to abort the transaction since we did some metadata updates before”; it fixes this by adding `btrfs_uuid_tree_check_overflow()` “before starting a transaction” in `_btrfs_ioctl_set_received_subvol()`, specifically to avoid the `btrfs_uuid_tree_add()` `-EOVERFLOW` path that “would… result in a transaction abort.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/btrfs/ioctl.c",
+      "lineno": 3929,
+      "content": "goto out;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The Btrfs `set received` ioctl tried to insert a `BTRFS_UUID_KEY_RECEIVED_SUBVOL` into the UUID tree after already making metadata updates in the same transaction, so an item-size overflow in `btrfs_uuid_tree_add()` could return `-EOVERFLOW` and force a transaction abort/RO remount instead of being rejected up front.",
+      "evidence_points": "The patch says the overflow happens “when attempting to add the `BTRFS_UUID_KEY_RECEIVED_SUBVOL`” and that “we have to abort the transaction since we did some metadata updates before”; it fixes this by adding `btrfs_uuid_tree_check_overflow()` “before starting a transaction” in `_btrfs_ioctl_set_received_subvol()`, specifically to avoid the `btrfs_uuid_tree_add()` `-EOVERFLOW` path that “would… result in a transaction abort.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/btrfs/ioctl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/btrfs/ioctl.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/btrfs/uuid-tree.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "fs/btrfs/uuid-tree.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Pre-check received UUID tree overflow before inserting a new received subvolume UUID to avoid transaction aborts and read-only filesystem fallout.",
+        "what": "The code now computes `received_uuid_changed` by comparing `root_item->received_uuid` with `sa->uuid`, and if the received UUID is changing and the new UUID is not empty, it calls `btrfs_uuid_tree_check_overflow(fs_info, sa->uuid, BTRFS_UUID_KEY_RECEIVED_SUBVOL)` before proceeding to add the UUID tree entry. A new comment explains that this pre-check avoids a later `btrfs_uuid_tree_add()` `-EOVERFLOW` failure and transaction abort.",
+        "how": "At runtime, the function now detects when updating a received subvolume UUID would require adding a UUID tree item that may exceed the maximum item size. By checking for overflow early, it can return an error before starting work that would otherwise abort the transaction and potentially force the filesystem read-only. This prevents a malicious or pathological UUID-tree growth case from escalating into a transaction abort."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove the redundant `received_uuid_changed` comparison so the received-subvolume UUID handling uses the correct existing state.",
+        "what": "The diff removes the assignment of `received_uuid_changed` that compared `root_item->received_uuid` against `sa->uuid` with `memcmp()` before the existing conditional block.",
+        "how": "At runtime, the function no longer updates `received_uuid_changed` at this point, so the subsequent `if (received_uuid_changed && !btrfs_is_empty_uuid(...))` check will rely on a value set elsewhere or an earlier state. This changes whether the code enters the UUID-tree removal path for the received subvolume UUID."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a UUID tree overflow check to prevent extending an existing UUID item beyond the leaf size limit.",
+        "what": "A new function, `btrfs_uuid_tree_check_overflow()`, was added. It allocates a Btrfs path, validates that `fs_info->uuid_root` exists with `WARN_ON_ONCE()`, converts the UUID/type into a Btrfs key, searches the UUID tree for that key, and if the item already exists, reads its current size and checks whether adding one more `u64` would exceed `BTRFS_LEAF_DATA_SIZE(fs_info)`. It returns `0` when insertion would fit, `-EOVERFLOW` when it would not, or propagates allocation/search errors.",
+        "how": "At runtime, this provides a pre-insertion capacity check for UUID tree items. It allows callers to detect whether appending another root ID to an existing UUID entry would overflow the leaf before attempting the update, preventing oversized items from being created and avoiding later failure during insertion or modification."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Expose a UUID tree overflow check helper for use by other Btrfs code.",
+        "what": "A new function prototype, `btrfs_uuid_tree_check_overflow(struct btrfs_fs_info *fs_info, const u8 *uuid, u8 type)`, was added to the header alongside the existing UUID tree add/remove/iterate/create declarations.",
+        "how": "This change makes the overflow-checking helper available to other code in the Btrfs UUID tree subsystem, allowing callers to test for UUID tree overflow conditions before or during UUID tree operations."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Pre-check received UUID tree overflow before inserting a new received subvolume UUID to avoid transaction aborts and read-only filesystem fallout."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove the redundant `received_uuid_changed` comparison so the received-subvolume UUID handling uses the correct existing state."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add a UUID tree overflow check to prevent extending an existing UUID item beyond the leaf size limit."
+        },
+        {
+          "group_id": 3,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Expose a UUID tree overflow check helper for use by other Btrfs code."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it adds a pre-check for received UUID tree overflow before inserting the received subvolume UUID, preventing the late -EOVERFLOW path that could abort the transaction and remount the filesystem read-only."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change only removes a redundant comparison in received-subvolume UUID state handling. It does not address the root cause of the vulnerability, which was the late UUID-tree insertion in set-received leading to an -EOVERFLOW transaction abort instead of an early rejection."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly addresses the reported root cause: it adds an upfront UUID tree overflow check to prevent btrfs_uuid_tree_add() from failing with -EOVERFLOW after metadata updates have already been made in the transaction."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The change exposes a UUID tree overflow check helper, which is directly tied to the root cause where btrfs_uuid_tree_add() could hit an item-size overflow and abort a transaction. Making overflow checking available upstream is part of preventing that failure mode."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/btrfs/ioctl.c",
+            "lineno": 3929,
+            "content": "goto out;",
+            "rationale": "This is the pre-fix control flow that occurs after the received-subvolume setup work has already proceeded far enough to need cleanup. The root cause is that the ioctl did not reject a UUID-tree overflow before performing transaction-side metadata updates, so later failure here can still leave the transaction in an aborting state instead of failing up front."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/btrfs/ioctl.c",
+            "lineno": 3930,
+            "content": "}",
+            "rationale": "This closing brace is part of the pre-fix block where the ioctl continues past the point that should have been guarded by a pre-check. It is not the direct bug itself, but it marks the vulnerable path where the operation proceeds without first checking UUID-tree space."
+          }
+        ],
+        "confidence": "low",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 0
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/btrfs/ioctl.c",
+            "stmt_text": "goto out;",
+            "location": "hunk",
+            "explanation": "This control-flow statement is part of the pre-fix path where the ioctl had already proceeded with transaction-side metadata updates before rejecting UUID-tree overflow. Because the overflow was not checked up front, failure only surfaced here after the transaction could already be aborting, matching the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e1b18b959025",
+          "anchor_file": "fs/btrfs/ioctl.c",
+          "anchor_lineno": 3929
+        },
+        "commit": "8ea05e3a4262b9e6871c349fa3486bcfc72ffd1a",
+        "commit_short": "8ea05e3a4262",
+        "commit_msg": "Btrfs: introduce subvol uuids and times\n\nThis patch introduces uuids for subvolumes. Each\nsubvolume has it's own uuid. I",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/btrfs/ioctl.c",
+        "display_lineno": 3433,
+        "code_snippet": "commit 8ea05e3a4262b9e6871c349fa3486bcfc72ffd1a\nAuthor: Alexander Block <ablock84@googlemail.com>\nDate:   Wed Jul 25 17:35:53 2012 +0200\n\n    Btrfs: introduce subvol uuids and times\n    \n    This patch introduces uuids for subvolumes. Each\n    subvolume has it's own uuid. In case it was snapshotted,\n    it also contains parent_uuid. In case it was received,\n    it also contains received_uuid.\n    \n    It also introduces subvolume ctime/otime/stime/rtime. The\n    first two are comparable to the t",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is not present in this snippet. The new ioctl `btrfs_ioctl_set_received_subvol()` updates the root item and commits the transaction: `ret = btrfs_update_root(trans, root->fs_info->tree_root, &root->root_key, &root->root_item);` followed by `btrfs_commit_transaction(trans, root);`. There is no call here to `btrfs_uuid_tree_add()` and no UUID-tree insertion logic at all, so the specific overflow/late-rejection path cannot be observed in this function body. Because the code shown already performs the metadata updates directly on the root item and does not show the later UUID-tree insertion step from the vulnerable path, this snippet is sufficient to conclude that the vulnerable construct is absent here, but not to attribute the bug to this function."
+      }
+    },
+    {
+      "bic_found": "8ea05e3a4262b9e6871c349fa3486bcfc72ffd1a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "8ea05e3a4262b9e6871c349fa3486bcfc72ffd1a": 1
+      },
+      "bic_candidates": [
+        "8ea05e3a4262b9e6871c349fa3486bcfc72ffd1a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

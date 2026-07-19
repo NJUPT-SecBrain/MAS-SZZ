@@ -1,0 +1,215 @@
+{
+  "cveid": "CVE-2026-43216",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "983512f3a87fd8dc4c94dfa6b596b6e57df5aad7"
+  ],
+  "ground_truth_bic": "b245be1f4db1a0394e4b6eb66059814b46670ac3",
+  "predicted_bic": [
+    "b245be1f4db1a0394e4b6eb66059814b46670ac3"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 11351,
+  "root_cause": {
+    "text": "`skb_may_tx_timestamp()` in the net timestamping path incorrectly took `sock::sk_callback_lock` while running from contexts that can be IRQ-driven, creating an in-IRQ lock acquisition/deadlock hazard on the same CPU when the socket callback lock was already held.",
+    "evidence": "The patch removes `read_lock_bh(&sk->sk_callback_lock)` from `skb_may_tx_timestamp()` and replaces it with `rcu_read_lock()` plus `READ_ONCE()` access to `sk->sk_socket`/`sock->file`, while the commit message explicitly states the lock “must not be taken in IRQ context” and that some drivers complete TX timestamping from a dedicated interrupt, which “will lead to a deadlock” if the lock is already write-locked.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/core/skbuff.c",
+      "lineno": 5598,
+      "content": "read_lock_bh(&sk->sk_callback_lock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`skb_may_tx_timestamp()` in the net timestamping path incorrectly took `sock::sk_callback_lock` while running from contexts that can be IRQ-driven, creating an in-IRQ lock acquisition/deadlock hazard on the same CPU when the socket callback lock was already held.",
+      "evidence_points": "The patch removes `read_lock_bh(&sk->sk_callback_lock)` from `skb_may_tx_timestamp()` and replaces it with `rcu_read_lock()` plus `READ_ONCE()` access to `sk->sk_socket`/`sock->file`, while the commit message explicitly states the lock “must not be taken in IRQ context” and that some drivers complete TX timestamping from a dedicated interrupt, which “will lead to a deadlock” if the lock is already write-locked."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/sock.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/core/skbuff.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/socket.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use WRITE_ONCE for sk->sk_socket assignment to ensure safe concurrent visibility of the socket pointer.",
+        "what": "In sk_set_socket(), the direct assignment `sk->sk_socket = sock;` was replaced with `WRITE_ONCE(sk->sk_socket, sock);` while the rest of the function remains unchanged.",
+        "how": "This makes updates to `sk->sk_socket` use an atomic/once semantics write, preventing the compiler from splitting or reordering the store and ensuring other concurrent readers observe a consistent pointer value."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Make skb_may_tx_timestamp() safely handle concurrent socket/file teardown by switching to RCU-based pointer access for the capability check.",
+        "what": "The function skb_may_tx_timestamp() was changed to initialize ret to false, replace the sk_callback_lock read-lock section with an RCU read-side critical section, and access sk->sk_socket and sock->file via READ_ONCE() into local sock and file pointers. It now returns early through a labeled out path if either pointer is NULL, and then calls file_ns_capable(file, &init_user_ns, CAP_NET_RAW) before unlocking RCU.",
+        "how": "The runtime check for whether transmit timestamping is allowed now tolerates concurrent socket/file teardown without relying on sk_callback_lock, reducing the chance of dereferencing a socket or file pointer after it has been cleared during close. This preserves the permission check while making it safe under RCU-protected lifetime rules and returning false if the socket or file is no longer available."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use WRITE_ONCE() when clearing sock->file to make the release path concurrency-safe.",
+        "what": "In __sock_release(), the direct assignment `sock->file = NULL;` was replaced with `WRITE_ONCE(sock->file, NULL);`.",
+        "how": "This changes the store to use the kernel's single-copy atomic access primitive, ensuring the NULL assignment to `sock->file` is performed with proper compiler and concurrency semantics and reducing the risk of torn or reordered access in concurrent paths."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use WRITE_ONCE for sk->sk_socket assignment to ensure safe concurrent visibility of the socket pointer."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Make skb_may_tx_timestamp() safely handle concurrent socket/file teardown by switching to RCU-based pointer access for the capability check."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Use WRITE_ONCE() when clearing sock->file to make the release path concurrency-safe."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The change only makes sk->sk_socket assignment use WRITE_ONCE for concurrent visibility. It does not address skb_may_tx_timestamp(), sk_callback_lock usage, or the IRQ-deadlock hazard described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change targets skb_may_tx_timestamp() in the timestamping path and alters how it accesses socket state to avoid unsafe locking during concurrent contexts. This is directly related to the reported lock acquisition/deadlock hazard in IRQ-driven paths."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The changes address concurrency safety when clearing sock->file in the socket release path, while the vulnerability root cause is an IRQ-context deadlock caused by skb_may_tx_timestamp() taking sk_callback_lock. These are different code paths and issues."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/core/skbuff.c",
+            "lineno": 5598,
+            "content": "read_lock_bh(&sk->sk_callback_lock);",
+            "rationale": "This acquires sk_callback_lock in the timestamping path, which can run from IRQ-driven contexts and can deadlock if the lock is already held on the same CPU."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/core/skbuff.c",
+            "stmt_text": "read_lock_bh(&sk->sk_callback_lock);",
+            "location": "hunk",
+            "explanation": "This statement takes sock::sk_callback_lock inside skb_may_tx_timestamp() in the timestamping path. The root cause is that this path can execute from IRQ-driven contexts, so acquiring the callback lock here can deadlock or otherwise misbehave if the same lock is already held on the current CPU."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "82aec772fca2",
+          "anchor_file": "net/core/skbuff.c",
+          "anchor_lineno": 5598
+        },
+        "commit": "b245be1f4db1a0394e4b6eb66059814b46670ac3",
+        "commit_short": "b245be1f4db1",
+        "commit_msg": "net-timestamp: no-payload only sysctl\n\nTx timestamps are looped onto the error queue on top of an skb. This\nmechanism le",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skbuff.c",
+        "display_lineno": 3702,
+        "code_snippet": "commit b245be1f4db1a0394e4b6eb66059814b46670ac3\nAuthor: Willem de Bruijn <willemb@google.com>\nDate:   Fri Jan 30 13:29:32 2015 -0500\n\n    net-timestamp: no-payload only sysctl\n    \n    Tx timestamps are looped onto the error queue on top of an skb. This\n    mechanism leaks packet headers to processes unless the no-payload\n    options SOF_TIMESTAMPING_OPT_TSONLY is set.\n    \n    Add a sysctl that optionally drops looped timestamp with data. This\n    only affects processes without CAP_NET_RAW.\n   ",
+        "exists": false,
+        "reason": "The shown code is about Tx timestamp policy filtering, not the lock-deadlock root cause. The new helper `skb_may_tx_timestamp()` explicitly takes `read_lock_bh(&sk->sk_callback_lock);` and checks `file_ns_capable(...)`, but the vulnerability described is specifically that `skb_may_tx_timestamp()` incorrectly took `sock::sk_callback_lock` in IRQ-capable contexts, creating a deadlock hazard. In this snippet, that problematic lock acquisition is present, but there is no fix for avoiding the lock in IRQ contexts or otherwise restructuring the check. However, the commit context is a different feature (\"no-payload only sysctl\"), and the diff itself does not show the later deadlock fix logic. Since the vulnerable construct (taking `sk_callback_lock` in `skb_may_tx_timestamp`) is present and no remedy is shown, the code does not contain the fix."
+      }
+    },
+    {
+      "bic_found": "b245be1f4db1a0394e4b6eb66059814b46670ac3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "b245be1f4db1a0394e4b6eb66059814b46670ac3": 1
+      },
+      "bic_candidates": [
+        "b245be1f4db1a0394e4b6eb66059814b46670ac3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

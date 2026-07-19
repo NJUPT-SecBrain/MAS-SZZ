@@ -1,0 +1,226 @@
+{
+  "cveid": "CVE-2026-43216",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "983512f3a87fd8dc4c94dfa6b596b6e57df5aad7"
+  ],
+  "ground_truth_bic": "b245be1f4db1a0394e4b6eb66059814b46670ac3",
+  "predicted_bic": [
+    "37846ef0188335e49f2491a5bbf4e0dc7d407ea0"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 15,
+  "llm_tokens": 16480,
+  "root_cause": {
+    "text": "skb_may_tx_timestamp() could be called from hard IRQ context (e.g., by drivers handling TX timestamp interrupts) while acquiring sock::sk_callback_lock, which is forbidden because that lock is not safe for use in IRQ context, leading to a potential deadlock when the lock is already write-locked on the same CPU.",
+    "evidence": "The commit message explicitly states: \"skb_may_tx_timestamp() may acquire sock::sk_callback_lock. The lock must not be taken in IRQ context, only softirq is okay. A few drivers receive the timestamp via a dedicated interrupt and complete the TX timestamp from that handler. This will lead to a deadlock if the lock is already write-locked on the same CPU.\" The patch removes the `read_lock_bh(&sk->sk_callback_lock)` and `read_unlock_bh(&sk->sk_callback_lock)` calls in `skb_may_tx_timestamp()` and replaces them with RCU protection and `READ_ONCE()` accesses.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/core/skbuff.c",
+      "lineno": 5598,
+      "content": "read_lock_bh(&sk->sk_callback_lock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "skb_may_tx_timestamp() could be called from hard IRQ context (e.g., by drivers handling TX timestamp interrupts) while acquiring sock::sk_callback_lock, which is forbidden because that lock is not safe for use in IRQ context, leading to a potential deadlock when the lock is already write-locked on the same CPU.",
+      "evidence_points": "The commit message explicitly states: \"skb_may_tx_timestamp() may acquire sock::sk_callback_lock. The lock must not be taken in IRQ context, only softirq is okay. A few drivers receive the timestamp via a dedicated interrupt and complete the TX timestamp from that handler. This will lead to a deadlock if the lock is already write-locked on the same CPU.\" The patch removes the `read_lock_bh(&sk->sk_callback_lock)` and `read_unlock_bh(&sk->sk_callback_lock)` calls in `skb_may_tx_timestamp()` and replaces them with RCU protection and `READ_ONCE()` accesses."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/sock.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/core/skbuff.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/socket.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use WRITE_ONCE when setting sk->sk_socket to prevent data races, consistent with other fields in sk_set_socket.",
+        "what": "Replaced direct assignment sk->sk_socket = sock with WRITE_ONCE(sk->sk_socket, sock) in sk_set_socket.",
+        "how": "Ensures that the write to sk->sk_socket is performed atomically and prevents compiler optimizations that could cause data races, matching the existing use of WRITE_ONCE for other fields in the same function."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix potential use-after-free by switching to RCU-protected access with proper NULL checks when checking timestamp capabilities.",
+        "what": "Replaced read_lock_bh/read_unlock_bh with rcu_read_lock/rcu_read_unlock, added local sock and file pointers with READ_ONCE, added NULL checks for both before calling file_ns_capable, and initialized ret to false.",
+        "how": "Changes locking from a spinlock to an RCU read section, allowing concurrent access while ensuring RCU-freed structures are not accessed after free. NULL checks prevent dereferencing a socket or file pointer that may have been set to NULL due to socket closure, and the function now returns false in such cases instead of potentially causing a use-after-free."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Use WRITE_ONCE for writing sock->file to prevent potential data races with concurrent readers.",
+        "what": "Replaced plain assignment `sock->file = NULL` with `WRITE_ONCE(sock->file, NULL)`.",
+        "how": "Ensures the store to `sock->file` is atomic and properly ordered, avoiding compiler optimizations that could cause data races with concurrent readers using READ_ONCE."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Use WRITE_ONCE for writing sock->file to prevent potential data races with concurrent readers."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix potential use-after-free by switching to RCU-protected access with proper NULL checks when checking timestamp capabilities."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Use WRITE_ONCE for writing socket-related fields to prevent data races with concurrent readers.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group's changes focus on using WRITE_ONCE for data race prevention, which does not address the core issue of skb_may_tx_timestamp() being called from hard IRQ context and acquiring a lock not safe for IRQ context, leading to potential deadlock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group's changes focus on preventing use-after-free via RCU-protected access, not on the lock context issue (using sk_callback_lock in hard IRQ) that causes the deadlock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/core/skbuff.c",
+            "lineno": 5598,
+            "content": "read_lock_bh(&sk->sk_callback_lock);",
+            "rationale": "Acquires sock::sk_callback_lock using read_lock_bh, which only disables softirqs. This function may be invoked from hard IRQ context (e.g., TX timestamp interrupt handlers), and using a lock that does not disable hard interrupts in that context can cause a deadlock if the lock is already write-locked on the same CPU."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/core/skbuff.c",
+            "stmt_text": "read_lock_bh(&sk->sk_callback_lock);",
+            "location": "hunk",
+            "explanation": "This statement acquires sock::sk_callback_lock using read_lock_bh(), which only disables softirqs. Since skb_may_tx_timestamp() can be called from hard IRQ context (e.g., TX timestamp interrupt handlers), the lock may be held with interrupts enabled, causing a deadlock if the lock is already write-locked on the same CPU."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "82aec772fca2",
+          "anchor_file": "net/core/skbuff.c",
+          "anchor_lineno": 5598
+        },
+        "commit": "b245be1f4db1a0394e4b6eb66059814b46670ac3",
+        "commit_short": "b245be1f4db1",
+        "commit_msg": "net-timestamp: no-payload only sysctl\n\nTx timestamps are looped onto the error queue on top of an skb. This\nmechanism le",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skbuff.c",
+        "display_lineno": 3702
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "49ca0d8bfaf3",
+          "anchor_file": "net/core/skbuff.c",
+          "anchor_lineno": 3702
+        },
+        "commit": "62bccb8cdb69051b95a55ab0c489e3cab261c8ef",
+        "commit_short": "62bccb8cdb69",
+        "commit_msg": "net-timestamp: Make the clone operation stand-alone from phy timestamping\n\nThe phy timestamping takes a different path t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skbuff.c",
+        "display_lineno": 3568
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "37846ef01883",
+          "anchor_file": "net/core/skbuff.c",
+          "anchor_lineno": 3568
+        },
+        "commit": "37846ef0188335e49f2491a5bbf4e0dc7d407ea0",
+        "commit_short": "37846ef01883",
+        "commit_msg": "net-timestamp: Merge shared code between phy and regular timestamping\n\nThis change merges the shared bits that exist bet",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/core/skbuff.c",
+        "display_lineno": 3568
+      }
+    },
+    {
+      "bic_found": "37846ef0188335e49f2491a5bbf4e0dc7d407ea0",
+      "note": "blame stable (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "37846ef0188335e49f2491a5bbf4e0dc7d407ea0": 1
+      },
+      "bic_candidates": [
+        "37846ef0188335e49f2491a5bbf4e0dc7d407ea0"
+      ]
+    }
+  ],
+  "used_fallback": true,
+  "error": ""
+}

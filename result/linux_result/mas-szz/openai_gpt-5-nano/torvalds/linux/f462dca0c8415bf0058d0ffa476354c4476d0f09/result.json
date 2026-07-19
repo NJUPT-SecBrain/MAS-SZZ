@@ -1,0 +1,205 @@
+{
+  "cveid": "CVE-2026-46319",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "f462dca0c8415bf0058d0ffa476354c4476d0f09"
+  ],
+  "ground_truth_bic": "138470a9b2cc2e26e6018300394afc3858a54e6a",
+  "predicted_bic": [
+    "138470a9b2cc2e26e6018300394afc3858a54e6a",
+    "88c67aeb14070bab61d3dd8be96c8b42ebcaf53a"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 10,
+  "llm_tokens": 17293,
+  "root_cause": {
+    "text": "In net/sched act_ct, tcf_ct_flow_table_get() used rhashtable_lookup_fast() so the RCU read-side protection ended before refcount_inc_not_zero() on the returned tcf_ct_flow_table, allowing the flow-table object to be freed in that gap and causing a use-after-free.",
+    "evidence": "The patch replaces `ct_ft = rhashtable_lookup_fast(&zones_ht, &key, zones_params); if (ct_ft && refcount_inc_not_zero(&ct_ft->ref))` with an explicit `rcu_read_lock(); ct_ft = rhashtable_lookup(...); if (ct_ft && refcount_inc_not_zero(&ct_ft->ref)) { rcu_read_unlock(); ... }`, and the CVE/commit text states `tcf_ct_flow_table_cleanup_work()` could free `ct_ft` before `refcount_inc_not_zero()` because `rhashtable_lookup_fast()` had already called `rcu_read_unlock()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/sched/act_ct.c",
+      "lineno": 332,
+      "content": "if (ct_ft && refcount_inc_not_zero(&ct_ft->ref))",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/sched/act_ct.c",
+      "lineno": 331,
+      "content": "ct_ft = rhashtable_lookup_fast(&zones_ht, &key, zones_params);",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In net/sched act_ct, tcf_ct_flow_table_get() used rhashtable_lookup_fast() so the RCU read-side protection ended before refcount_inc_not_zero() on the returned tcf_ct_flow_table, allowing the flow-table object to be freed in that gap and causing a use-after-free.",
+      "evidence_points": "The patch replaces `ct_ft = rhashtable_lookup_fast(&zones_ht, &key, zones_params); if (ct_ft && refcount_inc_not_zero(&ct_ft->ref))` with an explicit `rcu_read_lock(); ct_ft = rhashtable_lookup(...); if (ct_ft && refcount_inc_not_zero(&ct_ft->ref)) { rcu_read_unlock(); ... }`, and the CVE/commit text states `tcf_ct_flow_table_cleanup_work()` could free `ct_ft` before `refcount_inc_not_zero()` because `rhashtable_lookup_fast()` had already called `rcu_read_unlock()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/sched/act_ct.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect the zone hash lookup with RCU and release the read lock correctly before reusing an existing flow table entry.",
+        "what": "The code replaces a direct rhashtable_lookup_fast() call with an rhashtable_lookup() wrapped by rcu_read_lock()/rcu_read_unlock(), and adds braces so the early goto path releases the RCU read lock before jumping out when an existing entry is found and its refcount is successfully incremented.",
+        "how": "This makes the hash table lookup occur under proper RCU read-side protection, ensuring the returned ct_ft pointer is safely accessed while checking and incrementing its refcount, and prevents leaving the function with an RCU read lock still held on the successful fast-return path."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Protect the zone hash lookup with RCU and release the read lock correctly before reusing an existing flow table entry."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly adds RCU protection around the zone hash/flow-table lookup and fixes lock release timing when reusing an existing flow table entry, which matches the root cause of a use-after-free caused by the lookup result being used after RCU read-side protection ended."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/sched/act_ct.c",
+            "lineno": 331,
+            "content": "ct_ft = rhashtable_lookup_fast(&zones_ht, &key, zones_params);",
+            "rationale": "This lookup returns a flow-table pointer without holding RCU read-side protection across the subsequent refcount acquisition, creating the race window where the object can be freed before it is safely referenced."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/sched/act_ct.c",
+            "lineno": 332,
+            "content": "if (ct_ft && refcount_inc_not_zero(&ct_ft->ref))",
+            "rationale": "This refcount acquisition occurs after the unsafe lookup and outside the required RCU critical section, so it may dereference and increment the refcount of a flow-table object that was already freed."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/sched/act_ct.c",
+            "stmt_text": "if (ct_ft && refcount_inc_not_zero(&ct_ft->ref))",
+            "location": "hunk 0",
+            "explanation": "This statement performs the refcount acquisition on the flow-table object after it was obtained by an RCU-protected hash lookup, but without guaranteeing the RCU read-side critical section still protects the object. That creates the use-after-free window described in the root cause, where ct_ft may already have been freed before dereferencing ct_ft->ref."
+          },
+          {
+            "vuln_file": "net/sched/act_ct.c",
+            "stmt_text": "ct_ft = rhashtable_lookup_fast(&zones_ht, &key, zones_params);",
+            "location": "hunk 0",
+            "explanation": "This lookup returns a flow-table pointer without ensuring protection is held through the later refcount_inc_not_zero() operation. In combination with the subsequent refcounting statement, it enables the race where the returned object can be freed between lookup and reference acquisition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "372169fd9519",
+          "anchor_file": "net/sched/act_ct.c",
+          "anchor_lineno": 332
+        },
+        "commit": "138470a9b2cc2e26e6018300394afc3858a54e6a",
+        "commit_short": "138470a9b2cc",
+        "commit_msg": "net/sched: act_ct: fix lockdep splat in tcf_ct_flow_table_get\n\nConvert zones_lock spinlock to zones_mutex mutex,\nand str",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/act_ct.c",
+        "display_lineno": 69,
+        "code_snippet": "commit 138470a9b2cc2e26e6018300394afc3858a54e6a\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Sun Mar 8 14:27:48 2020 -0700\n\n    net/sched: act_ct: fix lockdep splat in tcf_ct_flow_table_get\n    \n    Convert zones_lock spinlock to zones_mutex mutex,\n    and struct (tcf_ct_flow_table)->ref to a refcount,\n    so that control path can use regular GFP_KERNEL allocations\n    from standard process context. This is more robust\n    in case of memory pressure.\n    \n    The refcount is needed because",
+        "exists": false,
+        "reason": "The shown function body is sufficient to assess the specific root cause because it includes the full lookup-and-ref acquisition logic in tcf_ct_flow_table_get(). The vulnerable construct described in the root cause was: using rhashtable_lookup_fast() under only RCU protection, then allowing the RCU read-side critical section to end before refcount_inc_not_zero(), creating a UAF window. That pattern is not present here. In this commit, tcf_ct_flow_table_get() does `mutex_lock(&zones_mutex);`, then `ct_ft = rhashtable_lookup_fast(&zones_ht, &params->zone, zones_params);`, and only succeeds on an existing entry if `ct_ft && refcount_inc_not_zero(&ct_ft->ref)`, all while still holding `zones_mutex`, followed by `goto out_unlock;` and only then `mutex_unlock(&zones_mutex);`. So the dangerous gap between lookup and ref acquisition is absent in this function body. However, this is not the later fix for the RCU/refcount race described in the root cause; the commit message and diff address a different issue ('fix lockdep splat', converting `zones_lock` to `zones_mutex` and `u32 ref` to `refcount_t`). The code still uses plain `rhashtable_lookup_fast()` rather than an RCU-safe + protected lifetime scheme tied to the eventual vulnerability fix. Therefore, for this commit version, the specific vulnerable construct is absent from the shown function, but the code does not already contain the later dedicated fix for the reported UAF root cause."
+      }
+    },
+    {
+      "bic_found": "138470a9b2cc2e26e6018300394afc3858a54e6a",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "372169fd9519",
+          "anchor_file": "net/sched/act_ct.c",
+          "anchor_lineno": 331
+        },
+        "commit": "88c67aeb14070bab61d3dd8be96c8b42ebcaf53a",
+        "commit_short": "88c67aeb1407",
+        "commit_msg": "sched: act_ct: add netns into the key of tcf_ct_flow_table\n\nzones_ht is a global hashtable for flow_table with zone as k",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/act_ct.c",
+        "display_lineno": 329,
+        "code_snippet": "commit 88c67aeb14070bab61d3dd8be96c8b42ebcaf53a\nAuthor: Xin Long <lucien.xin@gmail.com>\nDate:   Sat Jun 15 17:47:30 2024 -0400\n\n    sched: act_ct: add netns into the key of tcf_ct_flow_table\n    \n    zones_ht is a global hashtable for flow_table with zone as key. However,\n    it does not consider netns when getting a flow_table from zones_ht in\n    tcf_ct_init(), and it means an act_ct action in netns A may get a\n    flow_table that belongs to netns B if it has the same zone value.\n    \n    In S",
+        "exists": true,
+        "reason": "The provided function body is sufficient because it shows the exact lookup and refcounting pattern relevant to the root cause. In `tcf_ct_flow_table_get()`, the code does `ct_ft = rhashtable_lookup_fast(&zones_ht, &key, zones_params);` and then, after the lookup returns, performs `if (ct_ft && refcount_inc_not_zero(&ct_ft->ref))`. The vulnerability root cause states that using `rhashtable_lookup_fast()` allows the RCU read-side protection to end before `refcount_inc_not_zero()` on the returned object, creating a window where `ct_ft` can be freed and then dereferenced/refcounted, i.e. a use-after-free. That vulnerable construct is still present here exactly. The changes in this commit only alter the hashtable key from `zone` to `struct zones_ht_key { .net, .zone }` and assign `ct_ft->key = key;`; they do not change the lookup/refcount lifetime handling. There is no visible fix such as keeping the object protected across lookup and refcount acquisition or using an API designed for safe lookup+get semantics. Therefore this function still contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "2ebe8f840c74",
+          "anchor_file": "net/sched/act_ct.c",
+          "anchor_lineno": 329
+        },
+        "commit": "c34b961a249211bdb08d03bdecfb31ff22eb002f",
+        "commit_short": "c34b961a2492",
+        "commit_msg": "net/sched: act_ct: Create nf flow table per zone\n\nUse the NF flow tables infrastructure for CT offload.\n\nCreate a nf flo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/act_ct.c",
+        "display_lineno": 74,
+        "code_snippet": "commit c34b961a249211bdb08d03bdecfb31ff22eb002f\nAuthor: Paul Blakey <paulb@mellanox.com>\nDate:   Tue Mar 3 15:07:49 2020 +0200\n\n    net/sched: act_ct: Create nf flow table per zone\n    \n    Use the NF flow tables infrastructure for CT offload.\n    \n    Create a nf flow table per zone.\n    \n    Next patches will add FT entries to this table, and do\n    the software offload.\n    \n    Signed-off-by: Paul Blakey <paulb@mellanox.com>\n    Reviewed-by: Jiri Pirko <jiri@mellanox.com>\n    Signed-off-by: ",
+        "exists": false,
+        "reason": "The provided snippet is sufficient because it includes the full implementation of the relevant functions `tcf_ct_flow_table_get()` and `tcf_ct_flow_table_put()`, which show how flow-table lookup, reference acquisition, and destruction are handled. The root cause described is specifically that `tcf_ct_flow_table_get()` used `rhashtable_lookup_fast()` without holding RCU protection until after `refcount_inc_not_zero()`, creating a gap where the object could be freed. That vulnerable construct is not present here. In this commit, `tcf_ct_flow_table_get()` executes `ct_ft = rhashtable_lookup_fast(&zones_ht, &params->zone, zones_params);` while holding `spin_lock_bh(&zones_lock);`, and if found it immediately goes to `take_ref:` where it does `ct_ft->ref++;` before `spin_unlock_bh(&zones_lock);`. Likewise, `tcf_ct_flow_table_put()` decrements the same `ref` under the same `zones_lock`, removes from the hash table, and queues RCU cleanup only while still holding the lock. Because lookup and ref acquisition are serialized by `zones_lock`, there is no unlocked gap between lookup and taking the reference in this version. However, the code also does not contain the later fix pattern described in the root cause (e.g. RCU-safe lookup paired with `refcount_inc_not_zero()` on a proper refcount type). It uses a plain `u32 ref` and `ct_ft->ref++` / `--params->ct_ft->ref` under a spinlock instead. Therefore, this function does not contain the specific vulnerable construct, but it also does not already contain the eventual fix."
+      }
+    },
+    {
+      "bic_found": "88c67aeb14070bab61d3dd8be96c8b42ebcaf53a",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "138470a9b2cc2e26e6018300394afc3858a54e6a": 1,
+        "88c67aeb14070bab61d3dd8be96c8b42ebcaf53a": 1
+      },
+      "bic_candidates": [
+        "138470a9b2cc2e26e6018300394afc3858a54e6a",
+        "88c67aeb14070bab61d3dd8be96c8b42ebcaf53a"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

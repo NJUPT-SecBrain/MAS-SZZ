@@ -1,0 +1,210 @@
+{
+  "cveid": "CVE-2026-53222",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "627366c51145a07f675b1800fb5ea2ec960bd900"
+  ],
+  "ground_truth_bic": "a60fc3294a377204664b5484e4a487fa124155da",
+  "predicted_bic": [
+    "1aa66a3a135a25bd8ce25165b4e550159a3dc849"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 18,
+  "llm_tokens": 12906,
+  "root_cause": {
+    "text": "In the ptp_ocp driver’s detach path, `ptp_ocp_detach()` freed `bp->ptp_info.pin_config` and related pin resources before calling `ptp_clock_unregister()`, even though `ptp_clock_unregister()` had been changed to run `ptp_disable_all_events()` and reconfigure EXTTS-capable pins, causing a use-after-free.",
+    "evidence": "The CVE/commit explicitly states that commit `a60fc3294a37` made `ptp_clock_unregister()` call `ptp_disable_all_events()` which changes pin configuration, and the patch moves `ptp_clock_unregister(bp->ptp);` before `kfree(bp->ptp_info.pin_config);` while also disabling timestamp interrupts and synchronizing IRQs before unregistering.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/ptp/ptp_ocp.c",
+      "lineno": 4889,
+      "content": "kfree(bp->ptp_info.pin_config);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the ptp_ocp driver’s detach path, `ptp_ocp_detach()` freed `bp->ptp_info.pin_config` and related pin resources before calling `ptp_clock_unregister()`, even though `ptp_clock_unregister()` had been changed to run `ptp_disable_all_events()` and reconfigure EXTTS-capable pins, causing a use-after-free.",
+      "evidence_points": "The CVE/commit explicitly states that commit `a60fc3294a37` made `ptp_clock_unregister()` call `ptp_disable_all_events()` which changes pin configuration, and the patch moves `ptp_clock_unregister(bp->ptp);` before `kfree(bp->ptp_info.pin_config);` while also disabling timestamp interrupts and synchronizing IRQs before unregistering."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/ptp/ptp_ocp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/ptp/ptp_ocp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/ptp/ptp_ocp.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix the disable path by flushing interrupt-disabling register writes and synchronizing the IRQ so no stale interrupt handler runs after timestamp interrupts are turned off.",
+        "what": "In the disable path of ptp_ocp_ts_enable(), the code adds a local variable initialized with pci_irq_vector(bp->pdev, ext->irq_vec), keeps the existing writes that clear reg->intr_mask and reg->enable, then adds an ioread32(&reg->intr_mask) flush/readback and conditionally calls synchronize_irq(irq_vec) when irq_vec > 0.",
+        "how": "When timestamping is disabled, the new readback helps ensure the interrupt mask write is posted before proceeding, and synchronize_irq waits for any in-flight interrupt handler on that IRQ vector to finish. This prevents races where an interrupt could still be delivered or handled after the hardware has been disabled."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix detach cleanup by disabling timestamper interrupts, unregistering the PTP clock, and freeing pin configuration resources.",
+        "what": "In ptp_ocp_detach(), the code adds shutdown-time cleanup logic: it conditionally disables interrupts for timestamp sources bp->ts0 through bp->ts4 by calling ptp_ocp_ts_enable(..., 0, false), disables the PPS timestamper with ptp_ocp_ts_enable(bp->pps, ~0, false), unregisters the PTP clock if bp->ptp is present via ptp_clock_unregister(bp->ptp), and frees bp->ptp_info.pin_config with kfree().",
+        "how": "At detach time, the driver now explicitly turns off timestamper interrupts before continuing teardown, which prevents interrupt activity from persisting after device removal. It also unregisters the PTP clock and releases associated pin configuration memory, ensuring the PTP subsystem state and dynamically allocated resources are properly cleaned up."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid double or premature PTP clock and pin configuration cleanup in ptp_ocp_detach by removing direct unregister/free calls.",
+        "what": "The detach function removes two cleanup operations: the conditional call to ptp_clock_unregister(bp->ptp) and the call to kfree(bp->ptp_info.pin_config), leaving only device_unregister(&bp->dev) after IRQ/vector and clock cleanup.",
+        "how": "At runtime, detaching no longer directly unregisters the PTP clock or frees the pin_config array in this function, implying that this teardown is now expected to happen elsewhere, which avoids duplicate or premature cleanup during device removal."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Avoid double or premature PTP clock and pin configuration cleanup in ptp_ocp_detach by removing direct unregister/free calls."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "REJECT",
+        "core_intent": "Correct ptp_ocp_detach cleanup ownership by avoiding direct PTP clock unregister and pin resource freeing that would cause double or premature cleanup.",
+        "outliers": [
+          0,
+          1
+        ],
+        "reason": "Hunk 2 is about removing detach-time clock/pin cleanup to prevent double or premature teardown, while Hunk 1 performs that cleanup and Hunk 0 addresses interrupt disable synchronization behavior, which is a separate bug around IRQ quiescing rather than cleanup ownership."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix driver teardown/detach cleanup for the PTP timestamper by fully disabling interrupts and releasing associated clock and pin resources safely.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly targets the detach-path cleanup ordering/duplication around PTP clock unregister and pin configuration freeing, which is the root cause of the use-after-free in ptp_ocp_detach()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly modify the ptp_ocp teardown/detach sequence, including unregistering the PTP clock before freeing pin resources and disabling interrupts safely. This matches the root cause of a use-after-free caused by freeing pin_config before ptp_clock_unregister()."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/ptp/ptp_ocp.c",
+            "lineno": 4888,
+            "content": "ptp_clock_unregister(bp->ptp);",
+            "rationale": "This call is part of the faulty teardown ordering: ptp_clock_unregister() now accesses pin configuration during unregister, so its placement relative to pin cleanup is central to the use-after-free."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/ptp/ptp_ocp.c",
+            "lineno": 4889,
+            "content": "kfree(bp->ptp_info.pin_config);",
+            "rationale": "This directly frees the pin configuration that ptp_clock_unregister() may subsequently access via ptp_disable_all_events() and pin reconfiguration, causing the use-after-free."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/ptp/ptp_ocp.c",
+            "stmt_text": "kfree(bp->ptp_info.pin_config);",
+            "location": "hunk",
+            "explanation": "This statement frees the pin configuration in the detach path. Because ptp_clock_unregister() had been changed to disable events and reconfigure EXTTS-capable pins using that configuration, freeing it here before unregister leads directly to the use-after-free."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7f2fcff15e99",
+          "anchor_file": "drivers/ptp/ptp_ocp.c",
+          "anchor_lineno": 4889
+        },
+        "commit": "1aa66a3a135a25bd8ce25165b4e550159a3dc849",
+        "commit_short": "1aa66a3a135a",
+        "commit_msg": "ptp: ocp: Program the signal generators via PTP_CLK_REQ_PEROUT\n\nThe signal generators can be programmed either via the s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/ptp/ptp_ocp.c",
+        "display_lineno": 3325,
+        "code_snippet": "commit 1aa66a3a135a25bd8ce25165b4e550159a3dc849\nAuthor: Jonathan Lemon <jonathan.lemon@gmail.com>\nDate:   Thu Mar 10 12:19:09 2022 -0800\n\n    ptp: ocp: Program the signal generators via PTP_CLK_REQ_PEROUT\n    \n    The signal generators can be programmed either via the sysfs\n    file or through a PTP_CLK_REQ_PEROUT ioctl request.\n    \n    Signed-off-by: Jonathan Lemon <jonathan.lemon@gmail.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/drivers/ptp/ptp_ocp.c b/drivers/",
+        "exists": false,
+        "reason": "The provided diff is sufficient because it shows the detach ordering relevant to the root cause. In `ptp_ocp_detach(struct ptp_ocp *bp)`, the code does `if (bp->ptp) ptp_clock_unregister(bp->ptp);` and only afterward does `kfree(bp->ptp_info.pin_config);`. This is the safe order for the described bug, since `ptp_clock_unregister()` may access `bp->ptp_info.pin_config` during event disable / pin reconfiguration. The commit also introduces allocation of pin data in `ptp_ocp_fb_set_pins()`, where `bp->ptp_info.pin_config = config;` and `bp->ptp_info.n_pins = 4;`, making the lifetime of `pin_config` relevant. Because the free happens after unregister, the vulnerable construct described in the root cause (freeing `pin_config` before `ptp_clock_unregister()`) is absent, and the fix is already present in this commit."
+      }
+    },
+    {
+      "bic_found": "1aa66a3a135a25bd8ce25165b4e550159a3dc849",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "1aa66a3a135a25bd8ce25165b4e550159a3dc849": 1
+      },
+      "bic_candidates": [
+        "1aa66a3a135a25bd8ce25165b4e550159a3dc849"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

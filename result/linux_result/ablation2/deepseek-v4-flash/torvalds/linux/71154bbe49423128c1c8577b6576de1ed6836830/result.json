@@ -1,0 +1,533 @@
+{
+  "cveid": "CVE-2025-71088",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "71154bbe49423128c1c8577b6576de1ed6836830"
+  ],
+  "ground_truth_bic": "1e777f39b4d75e599a3aac8e0f67d739474f198c",
+  "predicted_bic": [
+    "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+    "f870fa0b5768842cb4690c1c11f19f28b731ae6d"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 30415,
+  "root_cause": {
+    "text": "A race condition in MPTCP where the simult-connect fallback check is performed too late (only in subflow_state_change, which is not invoked for TCP state transitions like * -> FIN_WAIT1), allowing the subflow to process a SYN-ACK after transitioning to FIN_WAIT1 and leaving the MPTCP socket in an inconsistent state without proper fallback.",
+    "evidence": "The commit message explicitly states: \"The TCP subflow can process the simult-connect syn-ack packet after transitioning to TCP_FIN1 state, bypassing the MPTCP fallback check, as the sk_state_change() callback is not invoked for * -> FIN_WAIT1 transitions.\" The patch moves the fallback check to mptcp_syn_options (syn-ack generation) and narrows `subflow_simultaneous_connect` to only `TCP_SYN_RECV` to prevent the race.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/mptcp/protocol.h",
+      "lineno": 1341,
+      "content": "(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING) &&",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/subflow.c",
+      "lineno": 1881,
+      "content": "if (subflow_simultaneous_connect(sk)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/subflow.c",
+      "lineno": 1882,
+      "content": "WARN_ON_ONCE(!mptcp_try_fallback(sk, MPTCP_MIB_SIMULTCONNFALLBACK));",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/subflow.c",
+      "lineno": 1883,
+      "content": "subflow->conn_finished = 1;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/mptcp/subflow.c",
+      "lineno": 1884,
+      "content": "mptcp_propagate_state(parent, sk, subflow, NULL);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition in MPTCP where the simult-connect fallback check is performed too late (only in subflow_state_change, which is not invoked for TCP state transitions like * -> FIN_WAIT1), allowing the subflow to process a SYN-ACK after transitioning to FIN_WAIT1 and leaving the MPTCP socket in an inconsistent state without proper fallback.",
+      "evidence_points": "The commit message explicitly states: \"The TCP subflow can process the simult-connect syn-ack packet after transitioning to TCP_FIN1 state, bypassing the MPTCP fallback check, as the sk_state_change() callback is not invoked for * -> FIN_WAIT1 transitions.\" The patch moves the fallback check to mptcp_syn_options (syn-ack generation) and narrows `subflow_simultaneous_connect` to only `TCP_SYN_RECV` to prevent the race."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/mptcp/options.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/mptcp/protocol.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/mptcp/subflow.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle simultaneous TCP connect in MPTCP by falling back to regular TCP to avoid a broken MPC handshake.",
+        "what": "Added an if-block inside `mptcp_syn_options` when `subflow->request_mptcp` is true, which checks for simultaneous connect via `subflow_simultaneous_connect(sk)`. If true, it calls `mptcp_try_fallback`, sets `subflow->request_mptcp = 0`, and returns `false` before setting MPC SYN options.",
+        "how": "This prevents MPTCP from including MPC SYN options in a SYN packet during a simultaneous connect scenario, triggering a fallback to plain TCP and avoiding incorrect processing by `mptcp_finish_connect()`."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix simultaneous connect detection in MPTCP subflows by restricting the check to the TCP_SYN_RECV state, which correctly identifies the simultaneous connect scenario.",
+        "what": "Changed the condition in subflow_simultaneous_connect from checking multiple TCP states (ESTABLISHED, FIN_WAIT1, FIN_WAIT2, CLOSING) along with is_active_ssk and !subflow->conn_finished to just checking sk->sk_state == TCP_SYN_RECV along with is_active_ssk, and added a comment noting that sk state implies !subflow->conn_finished.",
+        "how": "At runtime, the function now returns true only when the socket is in TCP_SYN_RECV state and the subflow is active, instead of returning true for several later connection states. This prevents false positives for simultaneous connect detection after the connection has progressed beyond the initial handshake."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove simultaneous connect fallback from subflow_state_change to avoid incorrect fallback behavior.",
+        "what": "Removed conditional block that checks for simultaneous connect and performs fallback to TCP, including WARN_ON_ONCE, setting conn_finished, and propagating state.",
+        "how": "Previously, when a simultaneous connect was detected in subflow_state_change, the code would attempt to fallback to TCP and signal completion. Now this path is removed, so simultaneous connect detection no longer triggers fallback in this function."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Remove simultaneous connect fallback from subflow_state_change to avoid incorrect fallback behavior."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "REJECT",
+        "core_intent": "Fix simultaneous connect detection in MPTCP subflows and remove incorrect fallback from subflow_state_change.",
+        "outliers": [
+          0
+        ],
+        "reason": "Hunk 0 proposes adding a fallback to regular TCP, which contradicts the core intent of removing the fallback."
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix simultaneous connect handling in MPTCP subflows by correcting detection and removing incorrect fallback behavior.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly fixes the race condition by correcting the detection of simultaneous connect and removing the late fallback check from subflow_state_change, which was the source of the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group's intent to add fallback handling for simultaneous TCP connect directly targets the root cause race condition where the fallback check was missing or performed too late in certain TCP state transitions."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/mptcp/protocol.h",
+            "lineno": 1341,
+            "content": "(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING) &&",
+            "rationale": "This condition includes FIN_WAIT1, which is a state that can be entered via a path that does not invoke subflow_state_change, making the check too late and missing necessary fallback."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/subflow.c",
+            "lineno": 1881,
+            "content": "if (subflow_simultaneous_connect(sk)) {",
+            "rationale": "This statement places the simultaneous connect fallback check only inside subflow_state_change, which is not called for state transitions like * -> FIN_WAIT1, allowing the race to leave the socket in an inconsistent state."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/subflow.c",
+            "lineno": 1882,
+            "content": "WARN_ON_ONCE(!mptcp_try_fallback(sk, MPTCP_MIB_SIMULTCONNFALLBACK));",
+            "rationale": "This fallback invocation is only reached via the condition in subflow_state_change, so it is not executed when the subflow transitions to FIN_WAIT1 from a non-state-change path, contributing to the race condition."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/subflow.c",
+            "lineno": 1883,
+            "content": "subflow->conn_finished = 1;",
+            "rationale": "This flag update is part of the fallback logic that should occur earlier; when missed, the subflow remains in an unfinished state, leading to inconsistent MPTCP handling."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/mptcp/subflow.c",
+            "lineno": 1884,
+            "content": "mptcp_propagate_state(parent, sk, subflow, NULL);",
+            "rationale": "This state propagation is part of the delayed fallback; without proper invocation upon entering FIN_WAIT1, the parent socket may not be correctly updated."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/mptcp/protocol.h",
+            "stmt_text": "(TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_FIN_WAIT2 | TCPF_CLOSING) &&",
+            "location": "hunk",
+            "explanation": "This condition includes TCPF_FIN_WAIT1, which can be entered without invoking subflow_state_change, causing the simultaneous connect check to be applied too late, missing the necessary fallback."
+          },
+          {
+            "vuln_file": "net/mptcp/subflow.c",
+            "stmt_text": "if (subflow_simultaneous_connect(sk)) {",
+            "location": "hunk",
+            "explanation": "This line places the simultaneous connect fallback inside subflow_state_change, which is not called for state transitions like * -> FIN_WAIT1, leading to the race condition."
+          },
+          {
+            "vuln_file": "net/mptcp/subflow.c",
+            "stmt_text": "WARN_ON_ONCE(!mptcp_try_fallback(sk, MPTCP_MIB_SIMULTCONNFALLBACK));",
+            "location": "hunk",
+            "explanation": "This fallback call is only reached via the if condition in subflow_state_change, so it is not executed when the subflow transitions to FIN_WAIT1 from a non-state-change path, leaving the socket inconsistent."
+          },
+          {
+            "vuln_file": "net/mptcp/subflow.c",
+            "stmt_text": "subflow->conn_finished = 1;",
+            "location": "hunk",
+            "explanation": "This flag update is part of the fallback logic that should occur earlier; when missed, the subflow remains in an unfinished state, leading to inconsistent MPTCP handling."
+          },
+          {
+            "vuln_file": "net/mptcp/subflow.c",
+            "stmt_text": "mptcp_propagate_state(parent, sk, subflow, NULL);",
+            "location": "hunk",
+            "explanation": "This state propagation is part of the delayed fallback; without proper invocation upon entering FIN_WAIT1, the parent socket may not be correctly updated, causing the race condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/protocol.h",
+          "anchor_lineno": 1341
+        },
+        "commit": "337cebbd850f94147cee05252778f8f78b8c337f",
+        "commit_short": "337cebbd850f",
+        "commit_msg": "mptcp: really cope with fastopen race\n\nFastopen and PM-trigger subflow shutdown can race, as reported by\nsyzkaller.\n\nIn ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/protocol.h",
+        "display_lineno": 1133
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "f012d796a6de",
+          "anchor_file": "net/mptcp/protocol.h",
+          "anchor_lineno": 1133
+        },
+        "commit": "70c708e82606f842dc1bcf0943b8acae30c4088f",
+        "commit_short": "70c708e82606",
+        "commit_msg": "mptcp: establish subflows from either end of connection\n\nThis change updates internal logic to permit subflows to be\nest",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/protocol.h",
+        "display_lineno": 924
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "d1ace2d9abf3",
+          "anchor_file": "net/mptcp/protocol.h",
+          "anchor_lineno": 924
+        },
+        "commit": "9466a1ccebbe54ac57fb8a89c2b4b854826546a8",
+        "commit_short": "9466a1ccebbe",
+        "commit_msg": "mptcp: enable JOIN requests even if cookies are in use\n\nJOIN requests do not work in syncookie mode -- for HMAC validati",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/protocol.h",
+        "display_lineno": 509
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "6fc8c827dd4f",
+          "anchor_file": "net/mptcp/protocol.h",
+          "anchor_lineno": 509
+        },
+        "commit": "f870fa0b5768842cb4690c1c11f19f28b731ae6d",
+        "commit_short": "f870fa0b5768",
+        "commit_msg": "mptcp: Add MPTCP socket stubs\n\nImplements the infrastructure for MPTCP sockets.\n\nMPTCP sockets open one in-kernel TCP so",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/protocol.h",
+        "display_lineno": 22
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "f870fa0b5768842cb4690c1c11f19f28b731ae6d",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1881
+        },
+        "commit": "8fd738049ac3d67a937d36577763b47180aae1ad",
+        "commit_short": "8fd738049ac3",
+        "commit_msg": "mptcp: fallback in case of simultaneous connect\n\nwhen a MPTCP client tries to connect to itself, tcp_finish_connect() is",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1131
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e1ff9e82e2ea",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1131
+        },
+        "commit": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+        "commit_short": "648ef4b88673",
+        "commit_msg": "mptcp: Implement MPTCP receive path\n\nParses incoming DSS options and populates outgoing MPTCP ACK\nfields. MPTCP fields a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 645
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1882
+        },
+        "commit": "c65c2e3bae6912b6baf8ea12eeace220e8e99b47",
+        "commit_short": "c65c2e3bae69",
+        "commit_msg": "mptcp: track fallbacks accurately via mibs\n\nAdd the mibs required to cover the few possible fallback causes still\nlackin",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1864
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5ec9b15d8dfa",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1864
+        },
+        "commit": "8fd738049ac3d67a937d36577763b47180aae1ad",
+        "commit_short": "8fd738049ac3",
+        "commit_msg": "mptcp: fallback in case of simultaneous connect\n\nwhen a MPTCP client tries to connect to itself, tcp_finish_connect() is",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1134
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "e1ff9e82e2ea",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1134
+        },
+        "commit": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+        "commit_short": "648ef4b88673",
+        "commit_msg": "mptcp: Implement MPTCP receive path\n\nParses incoming DSS options and populates outgoing MPTCP ACK\nfields. MPTCP fields a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 648
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 3"
+    },
+    {
+      "bic_found": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1883
+        },
+        "commit": "8fd738049ac3d67a937d36577763b47180aae1ad",
+        "commit_short": "8fd738049ac3",
+        "commit_msg": "mptcp: fallback in case of simultaneous connect\n\nwhen a MPTCP client tries to connect to itself, tcp_finish_connect() is",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1134
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e1ff9e82e2ea",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1134
+        },
+        "commit": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+        "commit_short": "648ef4b88673",
+        "commit_msg": "mptcp: Implement MPTCP receive path\n\nParses incoming DSS options and populates outgoing MPTCP ACK\nfields. MPTCP fields a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 648
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "932ac51d9953",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1884
+        },
+        "commit": "e4a0fa47e816e186f6b4c0055d07eeec42d11871",
+        "commit_short": "e4a0fa47e816",
+        "commit_msg": "mptcp: corner case locking for rx path fields initialization\n\nMost MPTCP-level related fields are under the mptcp data l",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 1767
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3f83d8a77eee",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 1767
+        },
+        "commit": "2e52213c79c0b94aff42ba898ad9ad57546be67d",
+        "commit_short": "2e52213c79c0",
+        "commit_msg": "mptcp: avoid work queue scheduling if possible\n\nWe can't lock_sock() the mptcp socket from the subflow data_ready callba",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 699
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "bfae9dae449d",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 699
+        },
+        "commit": "101f6f851ee6268a46e2dcec244a812fd9a9195a",
+        "commit_short": "101f6f851ee6",
+        "commit_msg": "mptcp: add and use mptcp_data_ready helper\n\nallows us to schedule the work queue to drain the ssk receive queue in\na fol",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 691
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "5cd129dd5e45",
+          "anchor_file": "net/mptcp/subflow.c",
+          "anchor_lineno": 691
+        },
+        "commit": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+        "commit_short": "648ef4b88673",
+        "commit_msg": "mptcp: Implement MPTCP receive path\n\nParses incoming DSS options and populates outgoing MPTCP ACK\nfields. MPTCP fields a",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/mptcp/subflow.c",
+        "display_lineno": 647
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+      "note": "blame failed (ablation2)"
+    },
+    {
+      "bic_votes": {
+        "f870fa0b5768842cb4690c1c11f19f28b731ae6d": 1,
+        "648ef4b88673dadb8463bf0d4b10fbf33d55def8": 4
+      },
+      "bic_candidates": [
+        "648ef4b88673dadb8463bf0d4b10fbf33d55def8",
+        "f870fa0b5768842cb4690c1c11f19f28b731ae6d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

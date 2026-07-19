@@ -1,0 +1,301 @@
+{
+  "cveid": "CVE-2026-43468",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "aed763abf0e905b4b8d747d1ba9e172961572f57"
+  ],
+  "ground_truth_bic": "f1bc646c9a06f09aad5d8bacb87103b5573ee45e",
+  "predicted_bic": [
+    "16fff98a7e827396eb68f9243636b7240f511f10"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 24837,
+  "root_cause": {
+    "text": "A lock-order inversion in the mlx5 eswitch event path caused deadlock because mlx5_eswitch_event_handler_unregister() flushed esw->work_queue while .eswitch_mode_set already held the devlink lock, and queued esw_vfs_changed_event_handler work also tried to acquire that same devlink lock.",
+    "evidence": "The CVE/commit explicitly describes “.eswitch_mode_set (acquires devlink lock in devlink_nl_pre_doit) -> ... mlx5_eswitch_event_handler_unregister -> flush_workqueue deadlocks when esw_vfs_changed_event_handler executes,” and the patch removes flush_workqueue(esw->work_queue) from mlx5_eswitch_event_handler_unregister() while adding a generation check to let stale queued work exit safely.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+      "lineno": 1078,
+      "content": "flush_workqueue(esw->work_queue);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A lock-order inversion in the mlx5 eswitch event path caused deadlock because mlx5_eswitch_event_handler_unregister() flushed esw->work_queue while .eswitch_mode_set already held the devlink lock, and queued esw_vfs_changed_event_handler work also tried to acquire that same devlink lock.",
+      "evidence_points": "The CVE/commit explicitly describes “.eswitch_mode_set (acquires devlink lock in devlink_nl_pre_doit) -> ... mlx5_eswitch_event_handler_unregister -> flush_workqueue deadlocks when esw_vfs_changed_event_handler executes,” and the patch removes flush_workqueue(esw->work_queue) from mlx5_eswitch_event_handler_unregister() while adding a generation check to let stale queued work exit safely."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch_offloads.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch_offloads.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch_offloads.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch_offloads.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Replace workqueue flushing on eswitch event handler unregister with a generation bump to invalidate stale work after notifier removal.",
+        "what": "The unregister function was changed to wrap the existing condition body in braces, keep the notifier unregistration inside that conditional block, remove the unconditional flush_workqueue(esw->work_queue) call, and add atomic_inc(&esw->esw_funcs.generation) after mlx5_eq_notifier_unregister(esw->dev, &esw->esw_funcs.nb).",
+        "how": "At runtime, when the eswitch is in offloads mode and the device is a funcs handler, unregistering the event handler now increments a generation counter instead of flushing the workqueue. This avoids forcing pending work to complete during unregister and instead marks previously queued or in-flight handler work as stale so later processing can detect that it belongs to an older registration state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "other",
+        "intent_summary": "Add generation counters to eswitch function state and host work structures to support versioning of asynchronous host work.",
+        "what": "The patch adds an integer field named work_gen to struct mlx5_host_work and adds an atomic_t field named generation to struct mlx5_esw_functions.",
+        "how": "This introduces per-work and shared generation state that can be used at runtime to track versions of queued host work against the current eswitch function state, enabling stale work detection or ordering control for asynchronous operations."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Ignore stale VF-change work after eswitch generation changes by validating the work generation under devlink lock and exiting through a safe unlock path.",
+        "what": "The function esw_vfs_changed_event_handler() was changed to take an additional int work_gen parameter, moved devlink initialization and devl_lock() to the start of the function, added a generation check against atomic_read(&esw->esw_funcs.generation) with an early goto unlock path for stale work, and changed the existing early return for unchanged VF count or disabled host PF into goto unlock so the lock is released through a common exit path.",
+        "how": "At runtime, the handler now serializes access earlier and ignores delayed or outdated work items that were queued before one or more eswitch mode/function-generation changes, preventing it from acting on stale VF-change events; it also ensures early exits after locking go through unlock handling instead of returning directly."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "guard",
+        "intent_summary": "Add a shared unlock label so early-exit paths can reliably release the devlink lock before returning.",
+        "what": "A new label named \"unlock:\" was added immediately before the existing call to devl_unlock(devlink) at the end of esw_vfs_changed_event_handler().",
+        "how": "This introduces a jump target so other code paths in the function can branch to the common unlock-and-exit sequence, ensuring devl_unlock(devlink) is executed before leaving through those paths."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Pass the queued work generation into the VFs changed event handler so it can process events using the correct generation context.",
+        "what": "The call to esw_vfs_changed_event_handler() was modified to pass an additional argument, host_work->work_gen, changing the invocation from two arguments (esw, out) to three arguments (esw, host_work->work_gen, out).",
+        "how": "At runtime, the VFs changed event handler now receives the work generation value associated with the queued host work item, enabling it to process the event with generation context, such as correlating or filtering stale versus current work, instead of handling the event without that information."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Capture the current esw_funcs generation when queuing host work so the async handler processes the correct event state and avoids stale updates.",
+        "what": "A new assignment was added in mlx5_esw_funcs_changed_handler() to copy the current esw_funcs generation counter into host_work->work_gen using atomic_read(&esw_funcs->generation) before initializing and queuing the work item.",
+        "how": "This records the generation value at the time the notifier runs and passes that state along with the queued work, enabling the asynchronous handler to detect or correlate the event with the correct eswitch function state and avoid acting on stale or mismatched updates."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Capture the current esw_funcs generation when queuing host work so the async handler processes the correct event state and avoids stale updates."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add generation counters to eswitch function state and host work structures to support versioning of asynchronous host work."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a shared unlock label so early-exit paths can reliably release the devlink lock before returning."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Track and validate eswitch function-generation state across queued asynchronous VF/host work so stale notifier work is invalidated instead of being processed after event handler changes.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly replace the problematic workqueue flush in eswitch_event_handler_unregister() with generation-based invalidation and add stale-work checks for queued VF/host handlers, which addresses the deadlock root cause from flushing work that later tried to take the devlink lock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change adds generation/versioning fields for asynchronous host work tracking, but it does not address the lock-order inversion or the deadlock caused by flushing the workqueue while holding the devlink lock."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The deadlock root cause involves incorrect devlink lock handling in the eswitch event path. Adding a shared unlock label for early exits directly affects reliable release of that same lock, which is part of preventing the lock-order inversion and related deadlock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+            "lineno": 1078,
+            "content": "flush_workqueue(esw->work_queue);",
+            "rationale": "This is the direct deadlock trigger: unregister flushes the eswitch workqueue, and if called while devlink lock is already held, it waits for queued work that itself tries to acquire the same devlink lock."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch_offloads.c",
+            "lineno": 3600,
+            "content": "devl_lock(devlink);",
+            "rationale": "Queued esw_vfs_changed_event_handler work acquires the devlink lock here, creating the lock-order inversion against unregister's flush when the caller already holds devlink lock."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "drivers/net/ethernet/mellanox/mlx5/core/eswitch_offloads.c",
+            "lineno": 3653,
+            "content": "queue_work(esw->work_queue, &host_work->work);",
+            "rationale": "This enqueues the asynchronous work that later takes devlink lock; combined with unregister's flush, it makes stale queued work able to participate in the deadlock."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+            "stmt_text": "flush_workqueue(esw->work_queue);",
+            "location": "hunk",
+            "explanation": "This is the direct vulnerable statement. Unregistering the eswitch event handler flushed the workqueue, and when invoked from a path already holding the devlink lock, it could block waiting for queued work that subsequently tried to acquire that same devlink lock, causing the deadlock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "55f854dd5bdd",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+          "anchor_lineno": 1078
+        },
+        "commit": "16fff98a7e827396eb68f9243636b7240f511f10",
+        "commit_short": "16fff98a7e82",
+        "commit_msg": "net/mlx5: E-Switch, Reg/unreg function changed event at correct stage\n\nWhen driver is doing eswitch mode change, it's cr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+        "display_lineno": 1747,
+        "code_snippet": "commit 16fff98a7e827396eb68f9243636b7240f511f10\nAuthor: Bodong Wang <bodong@mellanox.com>\nDate:   Fri Jun 28 22:36:18 2019 +0000\n\n    net/mlx5: E-Switch, Reg/unreg function changed event at correct stage\n    \n    When driver is doing eswitch mode change, it's critical to keep number\n    of enabled VFs unchanged. However, it can be changed on the fly once\n    function changed event is registered.\n    \n    To remove this uncertainty, function changed event should not be\n    registered before all s",
+        "exists": true,
+        "reason": "The shown function body is sufficient because it directly contains the unregister path and the workqueue flush relevant to the deadlock root cause. In `mlx5_eswitch_event_handlers_unregister(struct mlx5_eswitch *esw)`, after unregistering the EQ notifier via `mlx5_eq_notifier_unregister(...)`, the code unconditionally does `flush_workqueue(esw->work_queue);`. The root cause says deadlock happened because `mlx5_eswitch_event_handler_unregister()` flushed `esw->work_queue` while `.eswitch_mode_set` already held the devlink lock, and queued work later tried to acquire the same devlink lock. This exact dangerous construct is present here: unregistering handlers and then flushing the workqueue in the same helper. The diff also shows this helper is now called from `mlx5_eswitch_disable()` via `mlx5_eswitch_event_handlers_unregister(esw);`, so the flush is part of the mode-change/disable path. There is no indication in this snippet of any fix that avoids flushing under the devlink-locked context, defers the flush, cancels work safely, or otherwise breaks the lock inversion. Therefore the vulnerable construct is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "062f4bf4aab5",
+          "anchor_file": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+          "anchor_lineno": 1747
+        },
+        "commit": "f6455de0b0e52dcb11aeb503151b12ec87f9c5e4",
+        "commit_short": "f6455de0b0e5",
+        "commit_msg": "net/mlx5: E-Switch, Refactor eswitch SR-IOV interface\n\nDevlink eswitch mode is not necessarily related to SR-IOV, e.g, E",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/mellanox/mlx5/core/eswitch.c",
+        "display_lineno": 1748,
+        "code_snippet": "commit f6455de0b0e52dcb11aeb503151b12ec87f9c5e4\nAuthor: Bodong Wang <bodong@mellanox.com>\nDate:   Fri Jun 28 22:36:15 2019 +0000\n\n    net/mlx5: E-Switch, Refactor eswitch SR-IOV interface\n    \n    Devlink eswitch mode is not necessarily related to SR-IOV, e.g, ECPF\n    can be at offload mode when SR-IOV is not enabled.\n    \n    Rename the interface and eswitch mode names to decouple from SR-IOV,\n    and cleanup eswitch messages accordingly.\n    \n    Signed-off-by: Bodong Wang <bodong@mellanox.co",
+        "exists": false,
+        "reason": "The snippet shows eswitch enable/setup logic, including event enabling and notifier registration, but it does not show the vulnerable logic described in the root cause: `mlx5_eswitch_event_handler_unregister()` flushing `esw->work_queue` while the devlink lock is held, nor the queued `esw_vfs_changed_event_handler` work acquiring that same lock. In this function, the only relevant event-path code is `enabled_events = (mode == MLX5_ESWITCH_LEGACY) ? SRIOV_VPORT_EVENTS : 0;` and `mlx5_eq_notifier_register(esw->dev, &esw->nb);`, which indicate event registration in legacy mode, but they are not sufficient to determine whether the lock-order inversion exists or whether the unregister/flush fix is already present elsewhere. The critical unregister/flush and workqueue handling context is missing."
+      }
+    },
+    {
+      "bic_found": "16fff98a7e827396eb68f9243636b7240f511f10",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "16fff98a7e827396eb68f9243636b7240f511f10": 1
+      },
+      "bic_candidates": [
+        "16fff98a7e827396eb68f9243636b7240f511f10"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

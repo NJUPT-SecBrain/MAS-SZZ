@@ -1,0 +1,221 @@
+{
+  "cveid": "CVE-2026-46165",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "aa69918bd418e700309fdd08509dba324fb24296"
+  ],
+  "ground_truth_bic": "6931d21f87bc6d657f145798fad0bf077b82486c",
+  "predicted_bic": [
+    "a9020fde67a6eb77f8130feff633189f99264db1"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 14481,
+  "root_cause": {
+    "text": "In openvswitch tunnel vport destruction, ovs_netdev_tunnel_destroy() scheduled the RCU-based netdev_put() only after rtnl_unlock(), but rtnl_unlock()->netdev_run_todo() waits for those references to be released, creating a circular wait and self-deadlock on device removal.",
+    "evidence": "The patch moves `call_rcu(&vport->rcu, vport_netdev_free);` before `rtnl_unlock();`, and both the CVE and commit message explicitly state that in the old code “we never reach the call_rcu() and the vport is never freed and the reference is never released, causing a self-deadlock on device removal.”",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/openvswitch/vport-netdev.c",
+      "lineno": 211,
+      "content": "rtnl_unlock();",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/openvswitch/vport-netdev.c",
+      "lineno": 213,
+      "content": "call_rcu(&vport->rcu, vport_netdev_free);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In openvswitch tunnel vport destruction, ovs_netdev_tunnel_destroy() scheduled the RCU-based netdev_put() only after rtnl_unlock(), but rtnl_unlock()->netdev_run_todo() waits for those references to be released, creating a circular wait and self-deadlock on device removal.",
+      "evidence_points": "The patch moves `call_rcu(&vport->rcu, vport_netdev_free);` before `rtnl_unlock();`, and both the CVE and commit message explicitly state that in the old code “we never reach the call_rcu() and the vport is never freed and the reference is never released, causing a self-deadlock on device removal.”"
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/openvswitch/vport-netdev.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Queue vport RCU cleanup before releasing RTNL so tunnel device destruction follows the correct teardown ordering.",
+        "what": "The change moves the call to rtnl_unlock() to occur after call_rcu(&vport->rcu, vport_netdev_free) instead of before it, and adds a comment explaining that the device reference cannot be dropped yet because the device may still be in use and that rtnl_unlock()->netdev_run_todo() waits for references to be released, so the RCU free must be queued first.",
+        "how": "At runtime, the vport's RCU-based cleanup is now scheduled while RTNL is still held, before unlocking triggers netdev_run_todo(). This ensures deferred freeing is registered before the network device teardown path waits on outstanding references, preventing incorrect destruction ordering during tunnel device removal."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Queue vport RCU cleanup before releasing RTNL so tunnel device destruction follows the correct teardown ordering."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly addresses the deadlock root cause by moving/queuing the RCU-based vport cleanup before rtnl_unlock(), fixing the teardown ordering that caused rtnl_unlock()->netdev_run_todo() to wait on references released too late."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/openvswitch/vport-netdev.c",
+            "lineno": 211,
+            "content": "rtnl_unlock();",
+            "rationale": "This unlock happens before the RCU callback is queued. Per the root cause, releasing RTNL first allows rtnl_unlock()->netdev_run_todo() to wait for netdev references to be dropped, while the needed netdev_put() is deferred until later via call_rcu(), creating the circular wait and self-deadlock."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/openvswitch/vport-netdev.c",
+            "lineno": 213,
+            "content": "call_rcu(&vport->rcu, vport_netdev_free);",
+            "rationale": "This statement defers the netdev_put()-related cleanup to an RCU callback. In the vulnerable ordering, it is executed only after rtnl_unlock(), which is the direct cause of the deadlock described in the root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/openvswitch/vport-netdev.c",
+            "stmt_text": "rtnl_unlock();",
+            "location": "hunk",
+            "explanation": "This releases RTNL before the RCU cleanup is queued. As a result, rtnl_unlock() can enter netdev teardown paths that wait for netdev references to be dropped, while the required netdev_put() is still deferred until a later call_rcu()-scheduled callback, causing the circular wait and self-deadlock."
+          },
+          {
+            "vuln_file": "net/openvswitch/vport-netdev.c",
+            "stmt_text": "call_rcu(&vport->rcu, vport_netdev_free);",
+            "location": "hunk",
+            "explanation": "This schedules the cleanup that eventually releases the tunnel netdev reference, but in the vulnerable code it occurs only after rtnl_unlock(). That delayed ordering is what leaves netdev teardown waiting on a reference release that cannot happen yet, completing the deadlock condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "83861c48ba12",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 211
+        },
+        "commit": "a9020fde67a6eb77f8130feff633189f99264db1",
+        "commit_short": "a9020fde67a6",
+        "commit_msg": "openvswitch: Move tunnel destroy function to oppenvswitch module.\n\nThis function will be used in gre and geneve vport im",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 190,
+        "code_snippet": "commit a9020fde67a6eb77f8130feff633189f99264db1\nAuthor: Pravin B Shelar <pshelar@nicira.com>\nDate:   Fri Aug 7 23:51:33 2015 -0700\n\n    openvswitch: Move tunnel destroy function to oppenvswitch module.\n    \n    This function will be used in gre and geneve vport implementations.\n    \n    Signed-off-by: Pravin B Shelar <pshelar@nicira.com>\n    Acked-by: Thomas Graf <tgraf@suug.ch>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/openvswitch/vport-netdev.c b/net/openvswitc",
+        "exists": true,
+        "reason": "The diff shows the full newly added destroy path for tunnel vports, which is enough to assess the deadlock condition. The vulnerable logic is present in `ovs_netdev_tunnel_destroy()`: it takes RTNL with `rtnl_lock();`, optionally detaches, then does `dev_put(vport->dev);` followed by `rtnl_delete_link(vport->dev);` while still under RTNL, and only after `rtnl_unlock();` does it schedule `call_rcu(&vport->rcu, vport_netdev_free);`. The root cause describes that the RCU-based `netdev_put()`/final release must be scheduled before `rtnl_unlock()`, because `rtnl_unlock()->netdev_run_todo()` may wait for those references to be released. Here, the RCU callback that performs the final `dev_put` exists in `vport_netdev_free()` (`if (vport->dev) dev_put(vport->dev);`), but in the tunnel destroy path the callback is deferred until after `rtnl_unlock()`. That matches the vulnerable construct: release via RCU is scheduled too late, enabling the circular wait during device removal. Therefore the bug is present and the fix is not yet in this version."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "fb811395cd5a",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 190
+        },
+        "commit": "ccb1352e76cff0524e7ccb2074826a092dd13016",
+        "commit_short": "ccb1352e76cf",
+        "commit_msg": "net: Add Open vSwitch kernel components.\n\nOpen vSwitch is a multilayer Ethernet switch targeted at virtualized\nenvironme",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 152,
+        "code_snippet": "commit ccb1352e76cff0524e7ccb2074826a092dd13016\nAuthor: Jesse Gross <jesse@nicira.com>\nDate:   Tue Oct 25 19:26:31 2011 -0700\n\n    net: Add Open vSwitch kernel components.\n    \n    Open vSwitch is a multilayer Ethernet switch targeted at virtualized\n    environments.  In addition to supporting a variety of features\n    expected in a traditional hardware switch, it enables fine-grained\n    programmatic extension and flow-based control of the network.\n    This control is useful in a wide variety o",
+        "exists": false,
+        "reason": "The provided function body is sufficient because the relevant destruction logic is fully shown in `netdev_destroy()`. However, the vulnerability root cause specifically concerns `ovs_netdev_tunnel_destroy()` scheduling an RCU-based `netdev_put()` only after `rtnl_unlock()`, causing a circular wait with `rtnl_unlock()->netdev_run_todo()`. That tunnel-destroy logic is not present here. In this snippet, `netdev_destroy()` performs direct teardown under the function body shown: `netdev_rx_handler_unregister(netdev_vport->dev);`, `dev_set_promiscuity(netdev_vport->dev, -1);`, `synchronize_rcu();`, and then `dev_put(netdev_vport->dev);`. There is no `rtnl_unlock()`, no deferred/scheduled RCU callback for `netdev_put()`, and no `ovs_netdev_tunnel_destroy()` function. Therefore the vulnerable construct described in the root cause is absent from this function (`has_bug=false`). At the same time, the specific fix for the tunnel-destroy deadlock is also not shown here (`is_fixed=false`), since this code does not contain the corrected tunnel cleanup pattern either."
+      }
+    },
+    {
+      "bic_found": "a9020fde67a6eb77f8130feff633189f99264db1",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "83861c48ba12",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 213
+        },
+        "commit": "a9020fde67a6eb77f8130feff633189f99264db1",
+        "commit_short": "a9020fde67a6",
+        "commit_msg": "openvswitch: Move tunnel destroy function to oppenvswitch module.\n\nThis function will be used in gre and geneve vport im",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 192,
+        "code_snippet": "commit a9020fde67a6eb77f8130feff633189f99264db1\nAuthor: Pravin B Shelar <pshelar@nicira.com>\nDate:   Fri Aug 7 23:51:33 2015 -0700\n\n    openvswitch: Move tunnel destroy function to oppenvswitch module.\n    \n    This function will be used in gre and geneve vport implementations.\n    \n    Signed-off-by: Pravin B Shelar <pshelar@nicira.com>\n    Acked-by: Thomas Graf <tgraf@suug.ch>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/openvswitch/vport-netdev.c b/net/openvswitc",
+        "exists": true,
+        "reason": "The diff shows the complete newly introduced tunnel-destroy logic, which is sufficient to evaluate the reported deadlock pattern. The vulnerable function is `ovs_netdev_tunnel_destroy(struct vport *vport)`. In it, the code does `dev_put(vport->dev); rtnl_delete_link(vport->dev); vport->dev = NULL; rtnl_unlock(); call_rcu(&vport->rcu, vport_netdev_free);`. The root cause says the bug occurs when the RCU-based `netdev_put()` is only scheduled after `rtnl_unlock()`, because `rtnl_unlock()->netdev_run_todo()` may wait for those references and deadlock. This function indeed schedules the RCU free only after `rtnl_unlock()` via `call_rcu(&vport->rcu, vport_netdev_free);`. The RCU callback `vport_netdev_free()` contains `if (vport->dev) dev_put(vport->dev); ovs_vport_free(vport);`, meaning the delayed release path is explicitly tied to the post-unlock RCU callback. There is no visible fix such as ensuring the needed reference release is arranged before `rtnl_unlock()`/`rtnl_delete_link()` completes or otherwise avoiding the circular wait. Therefore this commit version contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "fb811395cd5a",
+          "anchor_file": "net/openvswitch/vport-netdev.c",
+          "anchor_lineno": 192
+        },
+        "commit": "ccb1352e76cff0524e7ccb2074826a092dd13016",
+        "commit_short": "ccb1352e76cf",
+        "commit_msg": "net: Add Open vSwitch kernel components.\n\nOpen vSwitch is a multilayer Ethernet switch targeted at virtualized\nenvironme",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/openvswitch/vport-netdev.c",
+        "display_lineno": 154,
+        "code_snippet": "commit ccb1352e76cff0524e7ccb2074826a092dd13016\nAuthor: Jesse Gross <jesse@nicira.com>\nDate:   Tue Oct 25 19:26:31 2011 -0700\n\n    net: Add Open vSwitch kernel components.\n    \n    Open vSwitch is a multilayer Ethernet switch targeted at virtualized\n    environments.  In addition to supporting a variety of features\n    expected in a traditional hardware switch, it enables fine-grained\n    programmatic extension and flow-based control of the network.\n    This control is useful in a wide variety o",
+        "exists": false,
+        "reason": "The root cause specifically concerns tunnel vport destruction in `ovs_netdev_tunnel_destroy()`, where `netdev_put()` was deferred via RCU until after `rtnl_unlock()`, causing a circular wait with `rtnl_unlock()->netdev_run_todo()`. In this snippet, that tunnel-destroy function is completely absent. The only destroy function shown is `static void netdev_destroy(struct vport *vport)`, which performs `synchronize_rcu();` and then a direct `dev_put(netdev_vport->dev);` before `ovs_vport_free(vport);`. There is no RCU-scheduled deferred `dev_put`/`netdev_put` after unlock logic here, and no `rtnl_unlock()` interaction is shown. Therefore the vulnerable construct described in the root cause is not present in this function body. At the same time, the specific fix for the tunnel-destroy deadlock is also not shown here, because the relevant tunnel destroy path is absent."
+      }
+    },
+    {
+      "bic_found": "a9020fde67a6eb77f8130feff633189f99264db1",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "a9020fde67a6eb77f8130feff633189f99264db1": 2
+      },
+      "bic_candidates": [
+        "a9020fde67a6eb77f8130feff633189f99264db1"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

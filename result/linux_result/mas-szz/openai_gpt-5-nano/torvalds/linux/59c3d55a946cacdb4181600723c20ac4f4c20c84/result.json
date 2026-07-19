@@ -1,0 +1,344 @@
+{
+  "cveid": "CVE-2026-31644",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "59c3d55a946cacdb4181600723c20ac4f4c20c84"
+  ],
+  "ground_truth_bic": "89ba464fcf548d64bc7215dfe769f791330ae8b6",
+  "predicted_bic": [
+    "2ea1cbac267e2a39546982612fc00084b6d93e40",
+    "89ba464fcf548d64bc7215dfe769f791330ae8b6"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 31620,
+  "root_cause": {
+    "text": "lan966x_fdma_reload() freed the existing RX page_pool pages before confirming replacement RX buffers were successfully allocated, so its failure restore path reused old FDMA descriptors pointing to freed pages and overwrote a partially created new page_pool without destroying it.",
+    "evidence": "The original code called lan966x_fdma_rx_free_pages(&lan966x->rx) before lan966x_fdma_rx_alloc(), and on allocation failure jumped to restore where it memcpy()'d back the old fdma state and restarted RX; the fix removes the early free, saves old_pages with kmemdup(), frees them only after successful allocation, and notes that the restore path previously overwrote the newly created page pool, requiring page_pool_destroy() only on the success path while keeping the old page_pool valid on failure.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+      "lineno": 828,
+      "content": "lan966x_fdma_rx_free_pages(&lan966x->rx);",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+      "lineno": 846,
+      "content": "memcpy(&lan966x->rx.fdma, &fdma_rx_old, sizeof(struct fdma));",
+      "confidence": 0.8
+    },
+    {
+      "file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+      "lineno": 845,
+      "content": "lan966x->rx.page_pool = page_pool;",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "lan966x_fdma_reload() freed the existing RX page_pool pages before confirming replacement RX buffers were successfully allocated, so its failure restore path reused old FDMA descriptors pointing to freed pages and overwrote a partially created new page_pool without destroying it.",
+      "evidence_points": "The original code called lan966x_fdma_rx_free_pages(&lan966x->rx) before lan966x_fdma_rx_alloc(), and on allocation failure jumped to restore where it memcpy()'d back the old fdma state and restarted RX; the fix removes the early free, saves old_pages with kmemdup(), frees them only after successful allocation, and notes that the restore path previously overwrote the newly created page pool, requiring page_pool_destroy() only on the success path while keeping the old page_pool valid on failure."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Backup the RX page array before FDMA reload and fail with -ENOMEM if that state cannot be saved.",
+        "what": "The change adds a new local variable `struct page *(*old_pages)[FDMA_RX_DCB_MAX_DBS];`, expands the integer declarations from just `err` to `err, i, j`, allocates a duplicate copy of `lan966x->rx.page` using `kmemdup(..., GFP_KERNEL)`, and adds an early `if (!old_pages) return -ENOMEM;` failure path before the existing memcpy of `lan966x->rx.fdma`.",
+        "how": "At runtime, the function now preserves a copy of the current RX page pointer array before reloading FDMA state and aborts safely if that backup allocation cannot be created. This enables later use of the saved page pointers, likely for cleanup or restoration during reload, and prevents proceeding with reload logic when the required backup state cannot be allocated."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid freeing RX pages during FDMA reload so the RX reconfiguration path preserves existing buffers instead of incorrectly releasing them before reallocation.",
+        "what": "The call to lan966x_fdma_rx_free_pages(&lan966x->rx) was removed from lan966x_fdma_reload() after RX is disabled and before page_order/max_mtu are updated and lan966x_fdma_rx_alloc() is called.",
+        "how": "At runtime, RX pages are no longer explicitly freed during FDMA reload before reallocation, which avoids discarding the existing page pool at this point and changes the reload path to reuse or preserve RX page resources instead of freeing them first."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Return old FDMA RX pages to the page pool during reload to avoid leaking pages before freeing old resources.",
+        "what": "A nested loop was added before freeing the old FDMA RX resources to iterate over all entries in old_pages using fdma_rx_old.n_dcbs and fdma_rx_old.n_dbs, and call page_pool_put_full_page(page_pool, old_pages[i][j], false) for each page.",
+        "how": "This returns all previously retained RX pages from the old FDMA configuration back to the page pool before the old coherent resources are freed and the pool is destroyed, preventing leaked or unreleased pages during FDMA reload when the MTU changes."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix fdma reload to return success correctly, restore runtime processing state on rollback, and free old page resources in both paths.",
+        "what": "The function's success path was changed from returning `err` to freeing `old_pages` with `kfree(old_pages)` and returning `0`, and the `restore` error path was extended to call `lan966x_fdma_wakeup_netdev(lan966x)`, `napi_enable(&lan966x->napi)`, and `kfree(old_pages)` before returning `err`.",
+        "how": "On successful reload, the function now reports success explicitly and releases the old page array instead of potentially returning a stale error value and leaking memory. On the restore/error path, it now re-enables netdev wakeup and NAPI after restarting RX, and also frees the old page array, preventing the device from remaining improperly disabled and avoiding a memory leak."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Avoid freeing RX pages during FDMA reload so the RX reconfiguration path preserves existing buffers instead of incorrectly releasing them before reallocation."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix fdma reload to return success correctly, restore runtime processing state on rollback, and free old page resources in both paths."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Preserve existing RX page buffers across FDMA reload during RX reconfiguration by backing up page state and preventing premature freeing.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix FDMA reload resource and state handling by correctly reporting success, restoring processing state on rollback, and releasing old RX page resources in all paths.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by preserving existing RX page state during FDMA reload and preventing premature freeing of RX pages before replacement buffers are successfully allocated, which is exactly what led to reuse of descriptors pointing to freed pages."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly target the FDMA reload rollback/resource-handling bug described in the root cause: they adjust RX page release behavior, fix success/failure handling, restore processing state on rollback, and free old RX page resources correctly in all paths, which is part of preventing reuse of freed pages and inconsistent page_pool state."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+            "lineno": 828,
+            "content": "lan966x_fdma_rx_free_pages(&lan966x->rx);",
+            "rationale": "This is the direct root cause: it frees the existing RX pages before replacement buffers are successfully allocated, so the later restore path can reuse descriptors still pointing at freed pages."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+            "lineno": 846,
+            "content": "memcpy(&lan966x->rx.fdma, &fdma_rx_old, sizeof(struct fdma));",
+            "rationale": "On allocation failure, this restores the old FDMA descriptors even though the referenced RX pages were already freed earlier, causing stale descriptors to point to freed memory."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+            "lineno": 845,
+            "content": "lan966x->rx.page_pool = page_pool;",
+            "rationale": "The rollback path reinstalls the old page_pool pointer after partial reconfiguration, which contributes to overwriting/leaking the partially created new page_pool state instead of properly destroying it."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+            "stmt_text": "lan966x_fdma_rx_free_pages(&lan966x->rx);",
+            "location": "hunk 1",
+            "explanation": "This statement prematurely frees the existing RX page_pool pages before replacement RX buffers are successfully allocated. If reallocation later fails, rollback restores old FDMA descriptors that still reference these freed pages, directly causing reuse of freed memory."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+            "stmt_text": "memcpy(&lan966x->rx.fdma, &fdma_rx_old, sizeof(struct fdma));",
+            "location": "hunk 3",
+            "explanation": "On the failure rollback path, this restores the old FDMA descriptor state after the old RX pages were already freed. That makes the restored descriptors point back to freed pages, triggering the stale-descriptor use-after-free condition described in the root cause."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+            "stmt_text": "lan966x->rx.page_pool = page_pool;",
+            "location": "hunk 3",
+            "explanation": "This rollback assignment reinstalls the old page_pool pointer after partial RX reconfiguration failure, overwriting the partially created new page_pool state rather than cleaning it up. That contributes to the leaked/corrupted page_pool state in the failure path."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "076344a6ad9d",
+          "anchor_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+          "anchor_lineno": 828
+        },
+        "commit": "2ea1cbac267e2a39546982612fc00084b6d93e40",
+        "commit_short": "2ea1cbac267e",
+        "commit_msg": "net: lan966x: Update FDMA to change MTU.\n\nWhen changing the MTU, it is required to change also the size of the\nDBs. In c",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "display_lineno": 704,
+        "code_snippet": "commit 2ea1cbac267e2a39546982612fc00084b6d93e40\nAuthor: Horatiu Vultur <horatiu.vultur@microchip.com>\nDate:   Fri Apr 8 09:03:57 2022 +0200\n\n    net: lan966x: Update FDMA to change MTU.\n    \n    When changing the MTU, it is required to change also the size of the\n    DBs. In case those frames will arrive to CPU.\n    \n    Signed-off-by: Horatiu Vultur <horatiu.vultur@microchip.com>\n    Signed-off-by: Jakub Kicinski <kuba@kernel.org>\n\ndiff --git a/drivers/net/ethernet/microchip/lan966x/lan966x_fdm",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full body of `lan966x_fdma_reload()`, which is the function identified in the root cause. The vulnerable sequence is present: after disabling RX, the code immediately frees existing RX pages with `lan966x_fdma_rx_free_pages(&lan966x->rx);` and only then attempts replacement allocation via `err = lan966x_fdma_rx_alloc(&lan966x->rx);`. This matches the stated root cause: old RX page_pool pages are freed before confirming new RX buffers are available. On allocation failure, the restore path does not recreate the old pages; instead it does `goto restore`, then `lan966x->rx.dma = rx_dma; lan966x->tx.dma = tx_dma; lan966x_fdma_rx_start(&lan966x->rx);` and later restores descriptor pointers with `lan966x->rx.dcbs = rx_dcbs; ...`. That means it restarts RX using the old descriptors after the backing pages were already freed, which is exactly the described reuse of descriptors pointing to freed pages. Also, if `lan966x_fdma_rx_alloc()` partially created a new page_pool before failing, the restore path contains no cleanup of that new allocation, so the partially created new page_pool would be overwritten by restoring old pointers without being destroyed. Therefore the vulnerable construct is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "c8349639324a",
+          "anchor_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+          "anchor_lineno": 704
+        },
+        "commit": "c8349639324a79f60106126c8193bd2fcd574fe8",
+        "commit_short": "c8349639324a",
+        "commit_msg": "net: lan966x: Add FDMA functionality\n\nEthernet frames can be extracted or injected to or from the device's\nDDR memory. T",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "display_lineno": 704,
+        "code_snippet": "commit c8349639324a79f60106126c8193bd2fcd574fe8\nAuthor: Horatiu Vultur <horatiu.vultur@microchip.com>\nDate:   Fri Apr 8 09:03:56 2022 +0200\n\n    net: lan966x: Add FDMA functionality\n    \n    Ethernet frames can be extracted or injected to or from the device's\n    DDR memory. There is one channel for injection and one channel for\n    extraction. Each of these channels contain a linked list of DCBs which\n    contains DB. The DCB contains only 1 DB for both the injection and\n    extraction. Each DB",
+        "exists": false,
+        "reason": "The snippet only shows teardown logic: it disables RX/TX/NAPI and then calls `lan966x_fdma_rx_free_pages(&lan966x->rx);`, `lan966x_fdma_rx_free(&lan966x->rx);`, and `lan966x_fdma_tx_free(&lan966x->tx);`. The root cause is specifically in `lan966x_fdma_reload()` freeing existing RX page_pool pages before confirming replacement RX buffers were allocated, and then mishandling the failure restore path. That reload/allocation/restore logic is not present in this function body. Since the vulnerable construct from the root cause is absent here, `has_bug` is false for this function, but the snippet is not sufficient to determine anything about whether the commit's relevant reload path is vulnerable or fixed."
+      }
+    },
+    {
+      "bic_found": "2ea1cbac267e2a39546982612fc00084b6d93e40",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "076344a6ad9d",
+          "anchor_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+          "anchor_lineno": 846
+        },
+        "commit": "89ba464fcf548d64bc7215dfe769f791330ae8b6",
+        "commit_short": "89ba464fcf54",
+        "commit_msg": "net: lan966x: refactor buffer reload function\n\nNow that we store everything in the fdma structs, refactor\nlan966x_fdma_r",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "display_lineno": 843,
+        "code_snippet": "commit 89ba464fcf548d64bc7215dfe769f791330ae8b6\nAuthor: Daniel Machon <daniel.machon@microchip.com>\nDate:   Thu Sep 5 10:06:40 2024 +0200\n\n    net: lan966x: refactor buffer reload function\n    \n    Now that we store everything in the fdma structs, refactor\n    lan966x_fdma_reload() to store and restore the entire struct.\n    \n    Signed-off-by: Daniel Machon <daniel.machon@microchip.com>\n    Reviewed-by: Horatiu Vultur <horatiu.vultur@microchip.com>\n    Signed-off-by: Paolo Abeni <pabeni@redhat.",
+        "exists": false,
+        "reason": "Only the restore tail of the function is shown: `restore:`, `lan966x->rx.page_pool = page_pool;`, `memcpy(&lan966x->rx.fdma, &fdma_rx_old, sizeof(struct fdma));`, and `lan966x_fdma_rx_start(&lan966x->rx);`. The root cause depends on earlier logic in `lan966x_fdma_reload()`—specifically whether existing RX page_pool pages were freed before replacement allocation succeeded, whether old descriptors in `fdma_rx_old` still referenced freed pages, and whether a newly created page_pool was leaked/not destroyed on failure. Those critical operations are not present in the provided snippet, so the shown code alone is not sufficient to determine whether the vulnerable construct exists or whether the fix is already present."
+      }
+    },
+    {
+      "bic_found": "89ba464fcf548d64bc7215dfe769f791330ae8b6",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "076344a6ad9d",
+          "anchor_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+          "anchor_lineno": 845
+        },
+        "commit": "11871aba19748b3387e83a2db6360aa7119e9a1a",
+        "commit_short": "11871aba1974",
+        "commit_msg": "net: lan96x: Use page_pool API\n\nUse the page_pool API for allocation, freeing and DMA handling instead\nof dev_alloc_page",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "display_lineno": 776,
+        "code_snippet": "commit 11871aba19748b3387e83a2db6360aa7119e9a1a\nAuthor: Horatiu Vultur <horatiu.vultur@microchip.com>\nDate:   Wed Nov 9 21:46:13 2022 +0100\n\n    net: lan96x: Use page_pool API\n    \n    Use the page_pool API for allocation, freeing and DMA handling instead\n    of dev_alloc_pages, __free_pages and dma_map_page.\n    \n    Signed-off-by: Horatiu Vultur <horatiu.vultur@microchip.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/drivers/net/ethernet/microchip/lan966x/lan966x_f",
+        "exists": true,
+        "reason": "The snippet is sufficient because it includes the full body of the relevant function `lan966x_fdma_reload()` and the associated page-pool allocation/free logic. The vulnerable construct is present in `lan966x_fdma_reload()`: it saves the old pool with `page_pool = lan966x->rx.page_pool;`, then disables RX and immediately frees existing RX pages with `lan966x_fdma_rx_free_pages(&lan966x->rx);` before attempting replacement allocation via `err = lan966x_fdma_rx_alloc(&lan966x->rx);`. This matches the root cause: old RX pages are freed before confirming new RX buffers are successfully allocated. On failure, the restore path only does `lan966x->rx.page_pool = page_pool;`, `lan966x->rx.dma = rx_dma;`, `lan966x->rx.dcbs = rx_dcbs;`, and `lan966x_fdma_rx_start(&lan966x->rx);`. There is no reallocation/restoration of the old pages, so restarting RX reuses descriptors associated with pages already freed by `lan966x_fdma_rx_free_pages()`. Also, `lan966x_fdma_rx_alloc()` creates a new pool at entry with `if (lan966x_fdma_rx_alloc_page_pool(rx)) return PTR_ERR(rx->page_pool);`, but the failure path in `lan966x_fdma_reload()` does not destroy that newly created `rx->page_pool` before overwriting it with `lan966x->rx.page_pool = page_pool;`, so a partially created new page_pool is leaked/overwritten. Therefore the bug is present, and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "6a2159be7604",
+          "anchor_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+          "anchor_lineno": 776
+        },
+        "commit": "2ea1cbac267e2a39546982612fc00084b6d93e40",
+        "commit_short": "2ea1cbac267e",
+        "commit_msg": "net: lan966x: Update FDMA to change MTU.\n\nWhen changing the MTU, it is required to change also the size of the\nDBs. In c",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/microchip/lan966x/lan966x_fdma.c",
+        "display_lineno": 734,
+        "code_snippet": "commit 2ea1cbac267e2a39546982612fc00084b6d93e40\nAuthor: Horatiu Vultur <horatiu.vultur@microchip.com>\nDate:   Fri Apr 8 09:03:57 2022 +0200\n\n    net: lan966x: Update FDMA to change MTU.\n    \n    When changing the MTU, it is required to change also the size of the\n    DBs. In case those frames will arrive to CPU.\n    \n    Signed-off-by: Horatiu Vultur <horatiu.vultur@microchip.com>\n    Signed-off-by: Jakub Kicinski <kuba@kernel.org>\n\ndiff --git a/drivers/net/ethernet/microchip/lan966x/lan966x_fdm",
+        "exists": true,
+        "reason": "The vulnerable logic is visible directly in `lan966x_fdma_reload()`. The function frees existing RX resources before confirming replacement RX buffers were allocated successfully: `lan966x_fdma_rx_disable(&lan966x->rx);` followed by `lan966x_fdma_rx_free_pages(&lan966x->rx);`, then it changes `lan966x->rx.page_order` and only afterwards calls `err = lan966x_fdma_rx_alloc(&lan966x->rx);`. If allocation fails, execution goes to `restore:`. In that restore path, it does not recreate the old RX pages or destroy any partially created new RX allocation; instead it merely reassigns some saved pointers and restarts RX: `lan966x->rx.dma = rx_dma;`, `lan966x->tx.dma = tx_dma;`, `lan966x_fdma_rx_start(&lan966x->rx);` and later `lan966x->rx.dcbs = rx_dcbs;`. This matches the root cause: old RX page_pool pages were freed before replacement was guaranteed, and failure recovery reuses old descriptors without restoring the freed backing pages. Also, because `lan966x_fdma_rx_alloc()` may have partially created new RX state before returning error, the restore path contains no cleanup such as destroying the new page_pool, so the fix is not present. Therefore the function contains the bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "2ea1cbac267e2a39546982612fc00084b6d93e40",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "2ea1cbac267e2a39546982612fc00084b6d93e40": 2,
+        "89ba464fcf548d64bc7215dfe769f791330ae8b6": 1
+      },
+      "bic_candidates": [
+        "2ea1cbac267e2a39546982612fc00084b6d93e40",
+        "89ba464fcf548d64bc7215dfe769f791330ae8b6"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

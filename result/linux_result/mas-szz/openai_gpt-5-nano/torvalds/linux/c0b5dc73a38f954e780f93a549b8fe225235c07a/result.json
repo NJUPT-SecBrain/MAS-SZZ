@@ -1,0 +1,286 @@
+{
+  "cveid": "CVE-2026-23203",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "c0b5dc73a38f954e780f93a549b8fe225235c07a"
+  ],
+  "ground_truth_bic": "1767bb2d47b715a106287a8f963d9ec6cbab4e69",
+  "predicted_bic": [
+    "ed3525eda4c4983fb8509e488de0a351788041ba"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 49729,
+  "root_cause": {
+    "text": "The TI cpsw_new driver's cpsw_ndo_set_rx_mode() directly called VLAN/multicast update paths such as vlan_for_each() without ensuring RTNL was held, even though ndo_set_rx_mode can now be invoked from lockless IPv6 multicast join paths after commit 1767bb2d47b7.",
+    "evidence": "The commit message states that after RTNL was removed for IPV6_ADD_MEMBERSHIP/MCAST_JOIN_GROUP, cpsw_ndo_set_rx_mode() triggered an “RTNL: assertion failed” in vlan_for_each(), and the fix moves the real rx-mode handling into a workqueue function that explicitly does rtnl_lock() before calling the existing multicast/VLAN logic.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/ti/cpsw_new.c",
+      "lineno": 271,
+      "content": "__hw_addr_ref_sync_dev(&ndev->mc, ndev, cpsw_add_mc_addr,",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ethernet/ti/cpsw_new.c",
+      "lineno": 251,
+      "content": "static void cpsw_ndo_set_rx_mode(struct net_device *ndev)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The TI cpsw_new driver's cpsw_ndo_set_rx_mode() directly called VLAN/multicast update paths such as vlan_for_each() without ensuring RTNL was held, even though ndo_set_rx_mode can now be invoked from lockless IPv6 multicast join paths after commit 1767bb2d47b7.",
+      "evidence_points": "The commit message states that after RTNL was removed for IPV6_ADD_MEMBERSHIP/MCAST_JOIN_GROUP, cpsw_ndo_set_rx_mode() triggered an “RTNL: assertion failed” in vlan_for_each(), and the fix moves the real rx-mode handling into a workqueue function that explicitly does rtnl_lock() before calling the existing multicast/VLAN logic."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/ti/cpsw_new.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/ti/cpsw_new.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/ti/cpsw_new.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/net/ethernet/ti/cpsw_new.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/net/ethernet/ti/cpsw_priv.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Convert RX mode updates into a locked workqueue handler that skips inactive devices and avoids unsafe early returns while changing promiscuous state.",
+        "what": "The function was changed from `static void cpsw_ndo_set_rx_mode(struct net_device *ndev)` to `static void cpsw_ndo_set_rx_mode_work(struct work_struct *work)`, replacing direct `ndev` access with `container_of(work, struct cpsw_priv, rx_mode_work)` to get `priv`, then deriving `ndev` from `priv->ndev`. It also adds `rtnl_lock()`, a `netif_running(ndev)` check with a jump to `unlock_rtnl`, adds `netif_addr_lock_bh(ndev)` before inspecting device flags, and changes the early return in the promiscuous-mode path to jump to `unlock_addr`.",
+        "how": "This converts RX mode handling to a workqueue-style callback and adds synchronization around the operation. At runtime it ensures the handler acquires RTNL and address locks before changing receive-mode state, skips processing if the network device is not running, and routes early exits through shared unlock paths so locking can be released correctly instead of returning immediately."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Defer CPSW RX mode updates to a workqueue and add proper unlock paths so address synchronization runs safely outside ndo_set_rx_mode context.",
+        "what": "The diff closes the existing multicast/address-update implementation by adding labeled unlock-and-return cleanup paths that call netif_addr_unlock_bh(ndev) and rtnl_unlock(), then redefines cpsw_ndo_set_rx_mode() as a new wrapper that only retrieves struct cpsw_priv *priv via netdev_priv(ndev) and schedules priv->rx_mode_work with schedule_work().",
+        "how": "Instead of performing RX mode and multicast address synchronization directly in the ndo_set_rx_mode callback, the callback now defers that work to a workqueue, allowing the actual address-update logic to run asynchronously and with explicit lock-release paths, which avoids doing the operation in the immediate callback context and helps ensure locks are properly released."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize each port's rx_mode_work during creation so deferred RX mode updates can be safely scheduled and executed.",
+        "what": "A new work item initialization was added in cpsw_create_ports() by inserting INIT_WORK(&priv->rx_mode_work, cpsw_ndo_set_rx_mode_work); after setting priv->tx_packet_min during per-port private structure setup.",
+        "how": "This ensures the rx_mode_work field in each port's private data is properly initialized with its worker callback before any scheduling or use, enabling deferred receive-mode handling to work correctly and preventing use of an uninitialized work_struct."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Disable and flush each port's rx_mode_work during CPSW port unregistration to prevent teardown races after netdev unregister.",
+        "what": "In cpsw_unregister_ports(), two local variables were added: struct net_device *ndev and struct cpsw_priv *priv. Inside the loop, cpsw->slaves[i].ndev is first assigned to ndev, the null check was changed to test ndev, netdev_priv(ndev) is assigned to priv before unregister_netdev(), and a new call to disable_work_sync(&priv->rx_mode_work) was added immediately after unregister_netdev(ndev).",
+        "how": "At runtime, port teardown now explicitly disables and synchronously drains the rx_mode_work work item for each registered net_device after it is unregistered. This prevents that deferred work from remaining enabled or executing during/after device unregistration, avoiding teardown-time races or use-after-free behavior involving the per-port private data."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "other",
+        "intent_summary": "Add a workqueue field to the CPSW private structure to support deferred RX mode handling.",
+        "what": "A new field, `struct work_struct rx_mode_work;`, was added to the `struct cpsw_priv` definition after the existing ALE rate limit members.",
+        "how": "This extends the driver's private state to include a workqueue item for RX mode handling, enabling deferred or asynchronous execution of receive mode related logic using the kernel workqueue mechanism."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 4,
+          "intent": "Disable and flush each port's rx_mode_work during CPSW port unregistration to prevent teardown races after netdev unregister."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a workqueue field to the CPSW private structure to support deferred RX mode handling."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Refactor CPSW RX mode handling to use per-port deferred work safely across initialization, execution, and teardown, preventing races during netdev state changes and unregistration.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes move cpsw RX mode processing out of ndo_set_rx_mode into deferred, locked workqueue handlers, with proper init and teardown. That directly addresses the root cause of ndo_set_rx_mode invoking VLAN/multicast update paths without RTNL in lockless call contexts."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "Adding a workqueue for deferred RX mode handling directly supports moving cpsw_ndo_set_rx_mode-related VLAN/multicast updates out of the unsafe lockless path, addressing the missing RTNL protection in the root cause."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/ethernet/ti/cpsw_new.c",
+            "lineno": 271,
+            "content": "__hw_addr_ref_sync_dev(&ndev->mc, ndev, cpsw_add_mc_addr,",
+            "rationale": "This multicast address synchronization is part of the RX mode update path and can traverse/update multicast state without RTNL protection when called directly from ndo_set_rx_mode, matching the root cause."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/ti/cpsw_new.c",
+            "lineno": 251,
+            "content": "static void cpsw_ndo_set_rx_mode(struct net_device *ndev)",
+            "rationale": "The vulnerability is rooted in this ndo_set_rx_mode implementation being executed directly in contexts where RTNL is no longer guaranteed, causing unsafe direct entry into VLAN/multicast update paths."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/ti/cpsw_new.c",
+            "lineno": 258,
+            "content": "cpsw_set_promiscious(ndev, true);",
+            "rationale": "This direct RX mode state change occurs inside ndo_set_rx_mode without deferred locking, illustrating the unsafe immediate hardware/filter update pattern that the fix moves to workqueue context."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/ti/cpsw_new.c",
+            "stmt_text": "__hw_addr_ref_sync_dev(&ndev->mc, ndev, cpsw_add_mc_addr,",
+            "location": "hunk",
+            "explanation": "This statement performs multicast address synchronization directly in the RX mode update path. Per the root cause, ndo_set_rx_mode could be invoked from lockless IPv6 multicast join paths without RTNL held, making this direct traversal/update of multicast state unsafe."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/ti/cpsw_new.c",
+            "stmt_text": "static void cpsw_ndo_set_rx_mode(struct net_device *ndev)",
+            "location": "hunk",
+            "explanation": "This is the entry point whose direct execution became unsafe after ndo_set_rx_mode could run without RTNL. The vulnerability stems from performing RX mode, VLAN, and multicast update work directly from this callback instead of deferring it to a safe locked context."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "279fe484dde4",
+          "anchor_file": "drivers/net/ethernet/ti/cpsw_new.c",
+          "anchor_lineno": 271
+        },
+        "commit": "ed3525eda4c4983fb8509e488de0a351788041ba",
+        "commit_short": "ed3525eda4c4",
+        "commit_msg": "net: ethernet: ti: introduce cpsw switchdev based driver part 1 - dual-emac\n\nPart 1:\n Introduce basic CPSW dual_mac driv",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/ti/cpsw_new.c",
+        "display_lineno": 258,
+        "code_snippet": "commit ed3525eda4c4983fb8509e488de0a351788041ba\nAuthor: Ilias Apalodimas <ilias.apalodimas@linaro.org>\nDate:   Wed Nov 20 00:19:19 2019 +0200\n\n    net: ethernet: ti: introduce cpsw switchdev based driver part 1 - dual-emac\n    \n    Part 1:\n     Introduce basic CPSW dual_mac driver (cpsw_new.c) which is operating in\n    dual-emac mode by default, thus working as 2 individual network interfaces.\n    Main differences from legacy CPSW driver are:\n    \n     - optimized promiscuous mode: The P0_UNI_FL",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in `cpsw_ndo_set_rx_mode()`. This function directly performs multicast/VLAN update work via `__hw_addr_ref_sync_dev(&ndev->mc, ndev, cpsw_add_mc_addr, cpsw_del_mc_addr);` with no check or acquisition of RTNL. The helper paths clearly shown in the snippet call VLAN iteration directly: `cpsw_add_mc_addr()` does `ret = vlan_for_each(ndev, cpsw_update_vlan_mc, &sync_ctx);`, `cpsw_del_mc_addr()` does `vlan_for_each(ndev, cpsw_update_vlan_mc, &sync_ctx);`, and `cpsw_purge_all_mc()` does `vlan_for_each(ndev, cpsw_purge_vlan_mc, &sync_ctx);`. This matches the root cause: ndo_set_rx_mode invokes VLAN/multicast update paths without ensuring RTNL is held. There is no protective `rtnl_lock()`, `ASSERT_RTNL()`, or deferral/workqueue mechanism in `cpsw_ndo_set_rx_mode()` before those calls, so the vulnerable construct is present and the fix is not yet present."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "ed3525eda4c4983fb8509e488de0a351788041ba",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "279fe484dde4",
+          "anchor_file": "drivers/net/ethernet/ti/cpsw_new.c",
+          "anchor_lineno": 251
+        },
+        "commit": "ed3525eda4c4983fb8509e488de0a351788041ba",
+        "commit_short": "ed3525eda4c4",
+        "commit_msg": "net: ethernet: ti: introduce cpsw switchdev based driver part 1 - dual-emac\n\nPart 1:\n Introduce basic CPSW dual_mac driv",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/ti/cpsw_new.c",
+        "display_lineno": 238,
+        "code_snippet": "commit ed3525eda4c4983fb8509e488de0a351788041ba\nAuthor: Ilias Apalodimas <ilias.apalodimas@linaro.org>\nDate:   Wed Nov 20 00:19:19 2019 +0200\n\n    net: ethernet: ti: introduce cpsw switchdev based driver part 1 - dual-emac\n    \n    Part 1:\n     Introduce basic CPSW dual_mac driver (cpsw_new.c) which is operating in\n    dual-emac mode by default, thus working as 2 individual network interfaces.\n    Main differences from legacy CPSW driver are:\n    \n     - optimized promiscuous mode: The P0_UNI_FL",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in `cpsw_ndo_set_rx_mode()`, so the snippet is sufficient. In that function, multicast/VLAN update paths are invoked directly: `__hw_addr_ref_sync_dev(&ndev->mc, ndev, cpsw_add_mc_addr, cpsw_del_mc_addr);`. The callbacks `cpsw_add_mc_addr()` and `cpsw_del_mc_addr()` in turn call `vlan_for_each(ndev, cpsw_update_vlan_mc, &sync_ctx);`, and `cpsw_purge_all_mc()` also uses `vlan_for_each(...)`. There is no check such as `lockdep_assert_held(&rtnl_mutex)`, no acquisition of RTNL, and no deferral to a workqueue or other protected context before traversing VLAN/multicast state. Since the root cause is that `ndo_set_rx_mode` can be called from lockless paths and this driver directly performs VLAN/multicast iteration from that ndo callback, the vulnerable construct is present. Therefore this version contains the bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "ed3525eda4c4983fb8509e488de0a351788041ba",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "ed3525eda4c4983fb8509e488de0a351788041ba": 2
+      },
+      "bic_candidates": [
+        "ed3525eda4c4983fb8509e488de0a351788041ba"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

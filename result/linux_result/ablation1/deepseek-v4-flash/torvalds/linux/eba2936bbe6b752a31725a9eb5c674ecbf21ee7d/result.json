@@ -1,0 +1,472 @@
+{
+  "cveid": "CVE-2026-31726",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "eba2936bbe6b752a31725a9eb5c674ecbf21ee7d"
+  ],
+  "ground_truth_bic": "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+  "predicted_bic": [
+    "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+    "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+    "6d11ed76c45dd7c8322c2d03575f2164cc725c18",
+    "dbe98b30d3a0d703369fef9712482e12fc685805",
+    "b9b82d3d0dbc45ee6b4817c7a7275a65152301f5"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 20,
+  "llm_tokens": 63923,
+  "root_cause": {
+    "text": "A race condition in the UVC gadget driver where `uvc_function_unbind()` can prematurely nullify the gadget pointer (`cdev->gadget = NULL`) before the V4L2 release path (`uvc_v4l2_release()`) finishes using it, because the timing-based `wait_event_interruptible_timeout()` is interrupted during PM freezing, leading to a NULL pointer dereference when `uvc_function_disconnect()` later calls `usb_gadget_deactivate()`.",
+    "evidence": "The CVE description shows the sequence: PM freezes user space, causing the wait to abort early, allowing unbind to proceed and set `cdev->gadget = NULL`. After resume, `uvc_v4l2_release()` calls `uvc_function_disconnect()` -> `usb_function_deactivate()` -> `usb_gadget_deactivate()` which dereferences the null gadget pointer, causing the panic. The patch introduces `func_unbound` flag and a mutex to skip the disconnect when unbind has started, plus a completion to synchronize video device release, confirming the root cause is the race due to insufficient synchronization.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/usb/gadget/function/f_uvc.c",
+      "lineno": 1032,
+      "content": "usb_ep_free_request(cdev->gadget->ep0, uvc->control_req);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/usb/gadget/function/f_uvc.c",
+      "lineno": 416,
+      "content": "if ((ret = usb_function_deactivate(&uvc->func)) < 0)",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/usb/gadget/function/uvc_v4l2.c",
+      "lineno": 595,
+      "content": "uvc_function_disconnect(uvc);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/usb/gadget/function/f_uvc.c",
+      "lineno": 1011,
+      "content": "wait_ret = wait_event_interruptible_timeout(uvc->func_connected_queue,",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/usb/gadget/function/f_uvc.c",
+      "lineno": 1017,
+      "content": "video_unregister_device(&uvc->vdev);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/usb/gadget/function/f_uvc.c",
+      "lineno": 443,
+      "content": "uvc->vdev.v4l2_dev->dev = &cdev->gadget->dev;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/usb/gadget/function/uvc_v4l2.c",
+      "lineno": 598,
+      "content": "uvc->func_connected = false;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/usb/gadget/function/uvc_v4l2.c",
+      "lineno": 599,
+      "content": "wake_up_interruptible(&uvc->func_connected_queue);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition in the UVC gadget driver where `uvc_function_unbind()` can prematurely nullify the gadget pointer (`cdev->gadget = NULL`) before the V4L2 release path (`uvc_v4l2_release()`) finishes using it, because the timing-based `wait_event_interruptible_timeout()` is interrupted during PM freezing, leading to a NULL pointer dereference when `uvc_function_disconnect()` later calls `usb_gadget_deactivate()`.",
+      "evidence_points": "The CVE description shows the sequence: PM freezes user space, causing the wait to abort early, allowing unbind to proceed and set `cdev->gadget = NULL`. After resume, `uvc_v4l2_release()` calls `uvc_function_disconnect()` -> `usb_function_deactivate()` -> `usb_gadget_deactivate()` which dereferences the null gadget pointer, causing the panic. The patch introduces `func_unbound` flag and a mutex to skip the disconnect when unbind has started, plus a completion to synchronize video device release, confirming the root cause is the race due to insufficient synchronization."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 5,
+            "file_path": "drivers/usb/gadget/function/f_uvc.c",
+            "lineno": 1011,
+            "content": "wait_ret = wait_event_interruptible_timeout(uvc->func_connected_queue,",
+            "rationale": "This wait is interruptible, so during PM freezing it can return early before the application closes, allowing the unbind to proceed and nullify the gadget pointer while the V4L2 release path is still using it."
+          },
+          {
+            "hunk_index": 7,
+            "file_path": "drivers/usb/gadget/function/f_uvc.c",
+            "lineno": 1032,
+            "content": "usb_ep_free_request(cdev->gadget->ep0, uvc->control_req);",
+            "rationale": "Directly dereferences cdev->gadget, which can be NULL if the gadget pointer was nullified before this line executes due to the race condition."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/usb/gadget/function/f_uvc.c",
+            "lineno": 416,
+            "content": "if ((ret = usb_function_deactivate(&uvc->func)) < 0)",
+            "rationale": "This call in uvc_function_disconnect uses the gadget pointer internally via usb_gadget_deactivate, leading to a NULL pointer dereference if the gadget was already freed."
+          },
+          {
+            "hunk_index": 11,
+            "file_path": "drivers/usb/gadget/function/uvc_v4l2.c",
+            "lineno": 595,
+            "content": "uvc_function_disconnect(uvc);",
+            "rationale": "Invokes the disconnect function that dereferences the gadget pointer; this may be called during V4L2 release after the gadget has been nullified by the unbind race."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/usb/gadget/function/f_uvc.c",
+            "lineno": 443,
+            "content": "uvc->vdev.v4l2_dev->dev = &cdev->gadget->dev;",
+            "rationale": "Stores a pointer to the gadget's device structure, which becomes invalid when cdev->gadget is set to NULL, potentially causing use-after-free or NULL dereference in later operations."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "drivers/usb/gadget/function/f_uvc.c",
+            "lineno": 1017,
+            "content": "video_unregister_device(&uvc->vdev);",
+            "rationale": "Triggers the V4L2 release callback that may attempt to use the gadget pointer; if the gadget was already nullified, this leads to a NULL dereference."
+          },
+          {
+            "hunk_index": 11,
+            "file_path": "drivers/usb/gadget/function/uvc_v4l2.c",
+            "lineno": 598,
+            "content": "uvc->func_connected = false;",
+            "rationale": "Setting func_connected to false is intended to signal the wait, but if the wait was already interrupted, this does not prevent the race from occurring."
+          },
+          {
+            "hunk_index": 11,
+            "file_path": "drivers/usb/gadget/function/uvc_v4l2.c",
+            "lineno": 599,
+            "content": "wake_up_interruptible(&uvc->func_connected_queue);",
+            "rationale": "Wakes up the wait queue, but if the wait was interrupted prematurely, the wake is not received in time to prevent unbind from proceeding incorrectly."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/usb/gadget/function/f_uvc.c",
+            "stmt_text": "usb_ep_free_request(cdev->gadget->ep0, uvc->control_req);",
+            "location": "hunk",
+            "explanation": "Directly dereferences cdev->gadget, which can be NULL if the gadget pointer was nullified before this line executes due to the race condition where uvc_function_unbind() premature nullification occurs while V4L2 release path is still using it."
+          },
+          {
+            "vuln_file": "drivers/usb/gadget/function/f_uvc.c",
+            "stmt_text": "if ((ret = usb_function_deactivate(&uvc->func)) < 0)",
+            "location": "hunk",
+            "explanation": "This call in uvc_function_disconnect uses the gadget pointer internally via usb_gadget_deactivate, leading to a NULL pointer dereference if the gadget was already freed by uvc_function_unbind before this line runs."
+          },
+          {
+            "vuln_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+            "stmt_text": "uvc_function_disconnect(uvc);",
+            "location": "hunk",
+            "explanation": "Invokes the disconnect function that dereferences the gadget pointer; this may be called during V4L2 release after the gadget has been nullified by the unbind race, causing a NULL pointer dereference."
+          },
+          {
+            "vuln_file": "drivers/usb/gadget/function/f_uvc.c",
+            "stmt_text": "wait_ret = wait_event_interruptible_timeout(uvc->func_connected_queue,",
+            "location": "hunk",
+            "explanation": "This wait is interruptible, so during PM freezing it can return early before the application closes, allowing the unbind to proceed and nullify the gadget pointer while the V4L2 release path is still using it."
+          },
+          {
+            "vuln_file": "drivers/usb/gadget/function/f_uvc.c",
+            "stmt_text": "video_unregister_device(&uvc->vdev);",
+            "location": "hunk",
+            "explanation": "Triggers the V4L2 release callback that may attempt to use the gadget pointer; if the gadget was already nullified by the unbind race, this leads to a NULL dereference."
+          },
+          {
+            "vuln_file": "drivers/usb/gadget/function/f_uvc.c",
+            "stmt_text": "uvc->vdev.v4l2_dev->dev = &cdev->gadget->dev;",
+            "location": "hunk",
+            "explanation": "Stores a pointer to the gadget's device structure, which becomes invalid when cdev->gadget is set to NULL, potentially causing use-after-free or NULL dereference in later operations that access this device pointer."
+          },
+          {
+            "vuln_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+            "stmt_text": "uvc->func_connected = false;",
+            "location": "hunk",
+            "explanation": "Setting func_connected to false is intended to signal the wait, but if the wait was already interrupted, this does not prevent the race from occurring, allowing unbind to proceed prematurely."
+          },
+          {
+            "vuln_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+            "stmt_text": "wake_up_interruptible(&uvc->func_connected_queue);",
+            "location": "hunk",
+            "explanation": "Wakes up the wait queue, but if the wait was interrupted prematurely, the wake is not received in time to prevent unbind from proceeding incorrectly, contributing to the race condition."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/f_uvc.c",
+          "anchor_lineno": 1032
+        },
+        "commit": "6d11ed76c45dd7c8322c2d03575f2164cc725c18",
+        "commit_short": "6d11ed76c45d",
+        "commit_msg": "usb: gadget: f_uvc: convert f_uvc to new function interface\n\nUse the new function registration interface. It is required",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/f_uvc.c",
+        "display_lineno": 939,
+        "code_snippet": "commit 6d11ed76c45dd7c8322c2d03575f2164cc725c18\nAuthor: Andrzej Pietrasiewicz <andrzej.p@samsung.com>\nDate:   Tue Sep 9 02:02:10 2014 +0300\n\n    usb: gadget: f_uvc: convert f_uvc to new function interface\n    \n    Use the new function registration interface. It is required\n    in order to integrate configfs support.\n    \n    Signed-off-by: Andrzej Pietrasiewicz <andrzej.p@samsung.com>\n    Tested-by: Michael Grzeschik <m.grzeschik@pengutronix.de>\n    [Updated copyright years]\n    Signed-off-by: L",
+        "exists": false,
+        "reason": "The commit shows two versions of the unbind function: uvc_function_unbind (under #ifdef USBF_UVC_INCLUDED) and uvc_unbind (under #else). Neither function sets cdev->gadget = NULL. The vulnerable construct (nullification of gadget pointer) is absent in both. Therefore, the vulnerability root cause is not present in this commit."
+      }
+    },
+    {
+      "bic_found": "6d11ed76c45dd7c8322c2d03575f2164cc725c18",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/f_uvc.c",
+          "anchor_lineno": 416
+        },
+        "commit": "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+        "commit_short": "cdda479f15cd",
+        "commit_msg": "USB gadget: video class function driver\n\nThis USB video class function driver implements a video capture device from the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/f_uvc.c",
+        "display_lineno": 317,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function `uvc_function_disconnect` calls `usb_function_deactivate(&uvc->func)` (line 317) without any check that the gadget pointer is valid. According to the root cause, a race condition can cause the gadget pointer to be nullified before this function executes, leading to a NULL pointer dereference. In this initial commit, no fix is present, so the vulnerable construct is present and unfixed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+          "anchor_lineno": 595
+        },
+        "commit": "72ee48ee8925446eaeda8e4ef3f2eb16b4a93d2a",
+        "commit_short": "72ee48ee8925",
+        "commit_msg": "usb: gadget: uvc: fix multiple opens\n\nCurrently, the UVC function is activated when open on the corresponding\nv4l2 devic",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+        "display_lineno": 256,
+        "code_snippet": "commit 72ee48ee8925446eaeda8e4ef3f2eb16b4a93d2a\nAuthor: Thomas Haemmerle <thomas.haemmerle@wolfvision.net>\nDate:   Sun Oct 3 22:13:55 2021 +0200\n\n    usb: gadget: uvc: fix multiple opens\n    \n    Currently, the UVC function is activated when open on the corresponding\n    v4l2 device is called.  On another open the activation of the function\n    fails since the deactivation counter in `usb_function_activate` equals\n    0. However the error is not returned to userspace since the open of the\n    v4",
+        "exists": true,
+        "reason": "The commit does not address the described race condition. The code still calls `uvc_function_disconnect()` (via `uvc_v4l2_disable()`) in `uvc_v4l2_release()` and `uvc_v4l2_unsubscribe_event()`, which is the vulnerable path that can race with `uvc_function_unbind()` nullifying the gadget pointer. No synchronization or fix for that race is added."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "c608dc105bd4",
+          "anchor_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+          "anchor_lineno": 256
+        },
+        "commit": "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+        "commit_short": "cdda479f15cd",
+        "commit_msg": "USB gadget: video class function driver\n\nThis USB video class function driver implements a video capture device from the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+        "display_lineno": 276,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function `uvc_v4l2_ioctl` in lines 200-201 directly dereferences `cdev->gadget` (e.g., `cdev->gadget->name`, `&cdev->gadget->dev`) without any NULL check or synchronization. This is the vulnerable construct described in the root cause, as a race condition can set `cdev->gadget` to NULL (in `uvc_function_unbind`) leading to a NULL pointer dereference. The initial commit does not include any fix such as locking or NULL verification."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/f_uvc.c",
+          "anchor_lineno": 1011
+        },
+        "commit": "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+        "commit_short": "b81ac4395bbe",
+        "commit_msg": "usb: gadget: uvc: allow for application to cleanly shutdown\n\nSeveral types of kernel panics can occur due to timing duri",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/f_uvc.c",
+        "display_lineno": 904,
+        "code_snippet": "commit b81ac4395bbeaf36e078dea1a48c02dd97b76235\nAuthor: Dan Vacura <w36195@motorola.com>\nDate:   Tue May 3 15:10:38 2022 -0500\n\n    usb: gadget: uvc: allow for application to cleanly shutdown\n    \n    Several types of kernel panics can occur due to timing during the uvc\n    gadget removal. This appears to be a problem with gadget resources being\n    managed by both the client application's v4l2 open/close and the UDC\n    gadget bind/unbind. Since the concept of USB_GADGET_DELAYED_STATUS\n    does",
+        "exists": false,
+        "reason": "The commit adds wait_event_interruptible_timeout calls in uvc_function_unbind() to wait for uvc->func_connected to become false, indicating that the V4L2 release has completed before proceeding with cleanup. This mitigates the race condition where cdev->gadget could be nullified while uvc_v4l2_release() is still using it. Although the underlying vulnerable assignment remains, the added synchronization constitutes a fix, so the function contains the correct handling to prevent the vulnerability."
+      }
+    },
+    {
+      "bic_found": "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/f_uvc.c",
+          "anchor_lineno": 1017
+        },
+        "commit": "dbe98b30d3a0d703369fef9712482e12fc685805",
+        "commit_short": "dbe98b30d3a0",
+        "commit_msg": "[media] gadget/uvc: embed video_device\n\nEmbed the video_device struct to simplify the error handling and in\norder to (ev",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/f_uvc.c",
+        "display_lineno": 893,
+        "code_snippet": "commit dbe98b30d3a0d703369fef9712482e12fc685805\nAuthor: Hans Verkuil <hverkuil@kernel.org>\nDate:   Mon Mar 9 13:34:08 2015 -0300\n\n    [media] gadget/uvc: embed video_device\n    \n    Embed the video_device struct to simplify the error handling and in\n    order to (eventually) get rid of video_device_alloc/release.\n    \n    Signed-off-by: Hans Verkuil <hans.verkuil@cisco.com>\n    Cc: Laurent Pinchart <laurent.pinchart@ideasonboard.com>\n    Signed-off-by: Mauro Carvalho Chehab <mchehab@osg.samsung.",
+        "exists": false,
+        "reason": "The provided diff only changes video_device allocation, registration, and v4l2_event_queue calls. It does not include the uvc_function_unbind function where the race condition nullifies cdev->gadget, nor the uvc_function_disconnect function that dereferences it. The vulnerable construct is completely absent from this commit."
+      }
+    },
+    {
+      "bic_found": "dbe98b30d3a0d703369fef9712482e12fc685805",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/f_uvc.c",
+          "anchor_lineno": 443
+        },
+        "commit": "b9b82d3d0dbc45ee6b4817c7a7275a65152301f5",
+        "commit_short": "b9b82d3d0dbc",
+        "commit_msg": "usb: gadget: uvc: set v4l2_dev->dev in f_uvc\n\nThe v4l2_dev has no corresponding device to it. We will\npoint it to the ga",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/f_uvc.c",
+        "display_lineno": 421,
+        "code_snippet": "commit b9b82d3d0dbc45ee6b4817c7a7275a65152301f5\nAuthor: Michal Grzeschik <mgr@kernel.org>\nDate:   Mon Jun 28 17:53:09 2021 +0200\n\n    usb: gadget: uvc: set v4l2_dev->dev in f_uvc\n    \n    The v4l2_dev has no corresponding device to it. We will\n    point it to the gadget's dev.\n    \n    Signed-off-by: Michael Grzeschik <m.grzeschik@pengutronix.de>\n    Link: https://lore.kernel.org/r/20210628155311.16762-4-m.grzeschik@pengutronix.de\n    Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org",
+        "exists": false,
+        "reason": "The commit only adds the line `uvc->vdev.v4l2_dev->dev = &cdev->gadget->dev;` in `uvc_register_video`. This line sets the V4L2 device pointer to the gadget's device, which is valid at the time of registration (during bind). The root cause race condition between `uvc_function_unbind()` nullifying `cdev->gadget` and `uvc_v4l2_release()` using it occurs in different functions and is not present in this code. No fix is applied either."
+      }
+    },
+    {
+      "bic_found": "b9b82d3d0dbc45ee6b4817c7a7275a65152301f5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+          "anchor_lineno": 598
+        },
+        "commit": "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+        "commit_short": "b81ac4395bbe",
+        "commit_msg": "usb: gadget: uvc: allow for application to cleanly shutdown\n\nSeveral types of kernel panics can occur due to timing duri",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+        "display_lineno": 259,
+        "code_snippet": "commit b81ac4395bbeaf36e078dea1a48c02dd97b76235\nAuthor: Dan Vacura <w36195@motorola.com>\nDate:   Tue May 3 15:10:38 2022 -0500\n\n    usb: gadget: uvc: allow for application to cleanly shutdown\n    \n    Several types of kernel panics can occur due to timing during the uvc\n    gadget removal. This appears to be a problem with gadget resources being\n    managed by both the client application's v4l2 open/close and the UDC\n    gadget bind/unbind. Since the concept of USB_GADGET_DELAYED_STATUS\n    does",
+        "exists": true,
+        "reason": "The function calls uvc_function_disconnect(uvc) at line 256, which eventually calls usb_gadget_deactivate() using the gadget pointer (cdev->gadget). There is a known race condition where uvc_function_unbind() can set cdev->gadget = NULL before this release path finishes, causing a NULL pointer dereference. No synchronization or fix (e.g., checking for NULL gadget or adding a wait queue) is present in this function body, so the vulnerable construct remains."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "bbc126ae381c",
+          "anchor_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+          "anchor_lineno": 259
+        },
+        "commit": "72ee48ee8925446eaeda8e4ef3f2eb16b4a93d2a",
+        "commit_short": "72ee48ee8925",
+        "commit_msg": "usb: gadget: uvc: fix multiple opens\n\nCurrently, the UVC function is activated when open on the corresponding\nv4l2 devic",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+        "display_lineno": 258,
+        "code_snippet": "commit 72ee48ee8925446eaeda8e4ef3f2eb16b4a93d2a\nAuthor: Thomas Haemmerle <thomas.haemmerle@wolfvision.net>\nDate:   Sun Oct 3 22:13:55 2021 +0200\n\n    usb: gadget: uvc: fix multiple opens\n    \n    Currently, the UVC function is activated when open on the corresponding\n    v4l2 device is called.  On another open the activation of the function\n    fails since the deactivation counter in `usb_function_activate` equals\n    0. However the error is not returned to userspace since the open of the\n    v4",
+        "exists": true,
+        "reason": "The function calls uvc_function_disconnect(uvc) on line 256, which is the function that dereferences the gadget pointer and triggers the NULL pointer crash if uvc_function_unbind() has set cdev->gadget = NULL. The snippet shows no locking, NULL check, or other mechanism to prevent the race condition described in the root cause. Therefore the vulnerable construct is present and not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "c608dc105bd4",
+          "anchor_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+          "anchor_lineno": 258
+        },
+        "commit": "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+        "commit_short": "cdda479f15cd",
+        "commit_msg": "USB gadget: video class function driver\n\nThis USB video class function driver implements a video capture device from the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+        "display_lineno": 277,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function accesses cdev->gadget on lines 200 and 201 (strncpy using cdev->gadget->name and dev_name(&cdev->gadget->dev)) without any NULL check. This is the vulnerable construct because if cdev->gadget is NULL (due to a race in unbind), these dereferences will cause a NULL pointer dereference. The fix (adding a NULL guard) is not present in this commit."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 3"
+    },
+    {
+      "bic_found": "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "dd36014ec604",
+          "anchor_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+          "anchor_lineno": 599
+        },
+        "commit": "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+        "commit_short": "b81ac4395bbe",
+        "commit_msg": "usb: gadget: uvc: allow for application to cleanly shutdown\n\nSeveral types of kernel panics can occur due to timing duri",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/usb/gadget/function/uvc_v4l2.c",
+        "display_lineno": 260,
+        "code_snippet": "commit b81ac4395bbeaf36e078dea1a48c02dd97b76235\nAuthor: Dan Vacura <w36195@motorola.com>\nDate:   Tue May 3 15:10:38 2022 -0500\n\n    usb: gadget: uvc: allow for application to cleanly shutdown\n    \n    Several types of kernel panics can occur due to timing during the uvc\n    gadget removal. This appears to be a problem with gadget resources being\n    managed by both the client application's v4l2 open/close and the UDC\n    gadget bind/unbind. Since the concept of USB_GADGET_DELAYED_STATUS\n    does",
+        "exists": false,
+        "reason": "The function `uvc_v4l2_disable()` does not contain the vulnerable construct of nullifying the gadget pointer (`cdev->gadget = NULL`); that occurs in `uvc_function_unbind()`. The diff adds synchronization (`wake_up_interruptible`) and reorders operations to prevent the race when the release path runs after unbind, thus the fix is already present in this function."
+      }
+    },
+    {
+      "bic_found": "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "6d11ed76c45dd7c8322c2d03575f2164cc725c18": 1,
+        "cdda479f15cd13fa50a913ca85129c0437cc7b91": 3,
+        "b81ac4395bbeaf36e078dea1a48c02dd97b76235": 2,
+        "dbe98b30d3a0d703369fef9712482e12fc685805": 1,
+        "b9b82d3d0dbc45ee6b4817c7a7275a65152301f5": 1
+      },
+      "bic_candidates": [
+        "cdda479f15cd13fa50a913ca85129c0437cc7b91",
+        "b81ac4395bbeaf36e078dea1a48c02dd97b76235",
+        "6d11ed76c45dd7c8322c2d03575f2164cc725c18",
+        "dbe98b30d3a0d703369fef9712482e12fc685805",
+        "b9b82d3d0dbc45ee6b4817c7a7275a65152301f5"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

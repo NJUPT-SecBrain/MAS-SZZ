@@ -1,0 +1,302 @@
+{
+  "cveid": "CVE-2026-23449",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "66360460cab63c248ca5b1070a01c0c29133b960"
+  ],
+  "ground_truth_bic": "96009c7d500efdd5534e83b2e3eb2c58d4b137ae",
+  "predicted_bic": [
+    "83874000929ed63aef30b44083a9f713135ff040",
+    "46e5da40aec256155cfedee96dd21a75da941f2c"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 25163,
+  "root_cause": {
+    "text": "`teql_destroy()` in the TEQL qdisc teardown path reset the slave device’s root qdisc with `qdisc_reset()` under only the sleeping root lock, but when the root qdisc was lockless (`TCQ_F_NOLOCK`) this raced with `teql_master_xmit()` and could free the same skb data twice.",
+    "evidence": "The patch says “Whenever a TEQL devices has a lockless Qdisc as root, qdisc_reset should be called using the seq_lock to avoid racing with the datapath,” and changes `teql_destroy()` from manually taking `qdisc_root_sleeping_lock()` plus `qdisc_reset()` to calling `dev_reset_queue()`, which explicitly handles both locked and lockless qdiscs by taking `qdisc->seqlock` when `TCQ_F_NOLOCK` is set; the CVE report shows the resulting double-free in `skb_release_data()` with the free path going through `teql_master_xmit()` and `qdisc_reset()` during `teql_destroy()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/sched/sch_teql.c",
+      "lineno": 156,
+      "content": "qdisc_reset(rtnl_dereference(txq->qdisc));",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/sched/sch_teql.c",
+      "lineno": 155,
+      "content": "spin_lock_bh(root_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/sched/sch_teql.c",
+      "lineno": 157,
+      "content": "spin_unlock_bh(root_lock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`teql_destroy()` in the TEQL qdisc teardown path reset the slave device’s root qdisc with `qdisc_reset()` under only the sleeping root lock, but when the root qdisc was lockless (`TCQ_F_NOLOCK`) this raced with `teql_master_xmit()` and could free the same skb data twice.",
+      "evidence_points": "The patch says “Whenever a TEQL devices has a lockless Qdisc as root, qdisc_reset should be called using the seq_lock to avoid racing with the datapath,” and changes `teql_destroy()` from manually taking `qdisc_root_sleeping_lock()` plus `qdisc_reset()` to calling `dev_reset_queue()`, which explicitly handles both locked and lockless qdiscs by taking `qdisc->seqlock` when `TCQ_F_NOLOCK` is set; the CVE report shows the resulting double-free in `skb_release_data()` with the free path going through `teql_master_xmit()` and `qdisc_reset()` during `teql_destroy()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/sch_generic.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/sched/sch_generic.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/sched/sch_teql.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a helper to safely reset a device queue's qdisc, including correct handling of nolock qdiscs and state cleanup.",
+        "what": "A new static inline function `dev_reset_queue(struct net_device *dev, struct netdev_queue *dev_queue, void *_unused)` was added. It looks up `dev_queue->qdisc_sleeping` with `rtnl_dereference()`, returns immediately if no qdisc is present, checks whether the qdisc has `TCQ_F_NOLOCK`, optionally acquires `qdisc->seqlock`, then acquires the qdisc lock, calls `qdisc_reset(qdisc)`, releases the qdisc lock, and if `TCQ_F_NOLOCK` was set clears `__QDISC_STATE_MISSED` and `__QDISC_STATE_DRAINING` before unlocking `qdisc->seqlock`.",
+        "how": "At runtime, this provides a queue-reset helper that safely resets the sleeping qdisc associated with a device queue. It handles both lock-based and nolock qdiscs correctly, preventing stale qdisc state from remaining after a reset and avoiding dereferencing a missing qdisc."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Remove the unused dev_reset_queue() helper and its qdisc reset handling.",
+        "what": "The static function dev_reset_queue() was completely removed, including its qdisc lookup, TCQ_F_NOLOCK handling, qdisc_reset() call, and the associated locking and state-bit clearing logic.",
+        "how": "At runtime, this code path no longer exists, so the device queue reset operation previously performed by dev_reset_queue() cannot be invoked from this translation unit; any behavior that depended on resetting the qdisc and clearing MISSED/DRAINING state here is eliminated."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Replace open-coded qdisc reset and locking in teql_destroy() with dev_reset_queue() for the master device transmit queue.",
+        "what": "In teql_destroy(), the code that handled the case where the current slave was the head of master->slaves was changed. Instead of manually obtaining txq->qdisc’s root lock and calling qdisc_reset() under spin_lock_bh()/spin_unlock_bh(), it now calls dev_reset_queue(master->dev, txq, NULL) after setting master->slaves to NULL. The local variable root_lock was removed.",
+        "how": "At runtime, this shifts queue reset handling to the helper dev_reset_queue(), which encapsulates the locking and reset logic for the device transmit queue. Functionally, it still clears the queue state for the master device when the last/primary slave is being removed, but does so through the centralized helper rather than open-coded qdisc locking and reset."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add a helper to safely reset a device queue's qdisc, including correct handling of nolock qdiscs and state cleanup."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove the unused dev_reset_queue() helper and its qdisc reset handling."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Replace open-coded qdisc reset and locking in teql_destroy() with dev_reset_queue() for the master device transmit queue."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change adds a safe qdisc reset helper with explicit handling for nolock qdiscs and cleanup, which directly matches the TEQL teardown race caused by using qdisc_reset() unsafely on a lockless root qdisc."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change only removes an unused dev_reset_queue() helper and related reset handling. It does not address the TEQL teardown race in teql_destroy() or the lockless root qdisc double-free condition described in the vulnerability root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly targets teql_destroy() teardown behavior by replacing the open-coded qdisc reset/locking with dev_reset_queue(), which is the same area implicated in the race causing double-free when the root qdisc is lockless."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "net/sched/sch_teql.c",
+            "lineno": 156,
+            "content": "qdisc_reset(rtnl_dereference(txq->qdisc));",
+            "rationale": "This is the direct unsafe reset of the slave device's root qdisc in teql_destroy(); when the qdisc was lockless (TCQ_F_NOLOCK), calling qdisc_reset() under only the sleeping root lock could race with teql_master_xmit() and lead to double-free of skb data."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/sched/sch_teql.c",
+            "lineno": 155,
+            "content": "spin_lock_bh(root_lock);",
+            "rationale": "This shows the teardown relied only on the sleeping root lock around qdisc_reset(), which is insufficient for lockless qdiscs and is the synchronization gap that allowed the race."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/sched/sch_teql.c",
+            "lineno": 157,
+            "content": "spin_unlock_bh(root_lock);",
+            "rationale": "Paired with the lock acquisition above, this marks the completion of the inadequate protection around qdisc_reset(); the vulnerable teardown path performed the reset without the specialized nolock-safe handling needed to avoid concurrent xmit races."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/sched/sch_teql.c",
+            "stmt_text": "qdisc_reset(rtnl_dereference(txq->qdisc));",
+            "location": "hunk",
+            "explanation": "This is the unsafe teardown reset in teql_destroy(). On lockless root qdiscs, resetting the slave device qdisc under only the sleeping root lock could race with teql_master_xmit() and double-free skb data."
+          },
+          {
+            "vuln_file": "net/sched/sch_teql.c",
+            "stmt_text": "spin_lock_bh(root_lock);",
+            "location": "hunk",
+            "explanation": "This lock acquisition shows teql_destroy() relied only on the sleeping root lock around qdisc_reset(), which did not provide the nolock-safe synchronization needed to prevent the race."
+          },
+          {
+            "vuln_file": "net/sched/sch_teql.c",
+            "stmt_text": "spin_unlock_bh(root_lock);",
+            "location": "hunk",
+            "explanation": "This completes the vulnerable teardown sequence: the qdisc was reset while only protected by the sleeping root lock, leaving the lockless qdisc path exposed to concurrent transmit activity."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6d5e4538364b",
+          "anchor_file": "net/sched/sch_teql.c",
+          "anchor_lineno": 156
+        },
+        "commit": "46e5da40aec256155cfedee96dd21a75da941f2c",
+        "commit_short": "46e5da40aec2",
+        "commit_msg": "net: qdisc: use rcu prefix and silence sparse warnings\n\nAdd __rcu notation to qdisc handling by doing this we can make\ns",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_teql.c",
+        "display_lineno": 165,
+        "code_snippet": "commit 46e5da40aec256155cfedee96dd21a75da941f2c\nAuthor: John Fastabend <john.fastabend@gmail.com>\nDate:   Fri Sep 12 20:04:52 2014 -0700\n\n    net: qdisc: use rcu prefix and silence sparse warnings\n    \n    Add __rcu notation to qdisc handling by doing this we can make\n    smatch output more legible. And anyways some of the cases should\n    be using rcu_dereference() see qdisc_all_tx_empty(),\n    qdisc_tx_chainging(), and so on.\n    \n    Also *wake_queue() API is commonly called from driver timer",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the unsafe teardown reset in `teql_destroy()` against a lockless root qdisc. In this snippet, that path has already been changed to use RCU-safe dereference: `root_lock = qdisc_root_sleeping_lock(rtnl_dereference(txq->qdisc));` and `qdisc_reset(rtnl_dereference(txq->qdisc));`. This replaces the direct `txq->qdisc` access that could race with `teql_master_xmit()`. Because the reset now uses `rtnl_dereference()` on the qdisc pointer, the original buggy construct is not present here, and the fix is already applied."
+      }
+    },
+    {
+      "bic_found": "46e5da40aec256155cfedee96dd21a75da941f2c",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6d5e4538364b",
+          "anchor_file": "net/sched/sch_teql.c",
+          "anchor_lineno": 155
+        },
+        "commit": "83874000929ed63aef30b44083a9f713135ff040",
+        "commit_short": "83874000929e",
+        "commit_msg": "pkt_sched: Kill netdev_queue lock.\n\nWe can simply use the qdisc->q.lock for all of the\nqdisc tree synchronization.\n\nSign",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_teql.c",
+        "display_lineno": 165,
+        "code_snippet": "commit 83874000929ed63aef30b44083a9f713135ff040\nAuthor: David S. Miller <davem@davemloft.net>\nDate:   Thu Jul 17 00:53:03 2008 -0700\n\n    pkt_sched: Kill netdev_queue lock.\n    \n    We can simply use the qdisc->q.lock for all of the\n    qdisc tree synchronization.\n    \n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/sched/sch_teql.c b/net/sched/sch_teql.c\nindex ade3372221c7..8b0ff345f9da 100644\n--- a/net/sched/sch_teql.c\n+++ b/net/sched/sch_teql.c\n@@ -156,12 +156,15 @@",
+        "exists": false,
+        "reason": "The vulnerable construct is not present in this snippet. The reported bug was caused by calling `qdisc_reset(txq->qdisc)` under only the sleeping root lock / queue lock mismatch, which raced with `teql_master_xmit()` when the root qdisc was lockless (`TCQ_F_NOLOCK`). In this code, the teardown path has been changed to obtain the qdisc root lock first: `root_lock = qdisc_root_lock(txq->qdisc); spin_lock_bh(root_lock); qdisc_reset(txq->qdisc); spin_unlock_bh(root_lock);`. That is the fix, because it synchronizes reset with the qdisc tree using the correct lock instead of `&txq->lock`."
+      }
+    },
+    {
+      "bic_found": "83874000929ed63aef30b44083a9f713135ff040",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6d5e4538364b",
+          "anchor_file": "net/sched/sch_teql.c",
+          "anchor_lineno": 157
+        },
+        "commit": "83874000929ed63aef30b44083a9f713135ff040",
+        "commit_short": "83874000929e",
+        "commit_msg": "pkt_sched: Kill netdev_queue lock.\n\nWe can simply use the qdisc->q.lock for all of the\nqdisc tree synchronization.\n\nSign",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_teql.c",
+        "display_lineno": 167,
+        "code_snippet": "commit 83874000929ed63aef30b44083a9f713135ff040\nAuthor: David S. Miller <davem@davemloft.net>\nDate:   Thu Jul 17 00:53:03 2008 -0700\n\n    pkt_sched: Kill netdev_queue lock.\n    \n    We can simply use the qdisc->q.lock for all of the\n    qdisc tree synchronization.\n    \n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/sched/sch_teql.c b/net/sched/sch_teql.c\nindex ade3372221c7..8b0ff345f9da 100644\n--- a/net/sched/sch_teql.c\n+++ b/net/sched/sch_teql.c\n@@ -156,12 +156,15 @@",
+        "exists": false,
+        "reason": "The vulnerable construct is not present in this version. The risky pattern from the root cause was resetting the slave device’s root qdisc under only the sleeping root lock via `qdisc_reset()` while potentially racing with `teql_master_xmit()`. In this snippet, the code already uses the qdisc’s root lock: `root_lock = qdisc_root_lock(txq->qdisc); spin_lock_bh(root_lock); qdisc_reset(txq->qdisc); spin_unlock_bh(root_lock);`. That is the fix, because it synchronizes teardown with the qdisc tree using the proper lock instead of `&txq->lock`. Therefore the bug is absent here and the fix is present."
+      }
+    },
+    {
+      "bic_found": "83874000929ed63aef30b44083a9f713135ff040",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "46e5da40aec256155cfedee96dd21a75da941f2c": 1,
+        "83874000929ed63aef30b44083a9f713135ff040": 2
+      },
+      "bic_candidates": [
+        "83874000929ed63aef30b44083a9f713135ff040",
+        "46e5da40aec256155cfedee96dd21a75da941f2c"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

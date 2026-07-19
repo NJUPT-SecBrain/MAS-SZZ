@@ -1,0 +1,280 @@
+{
+  "cveid": "CVE-2026-53260",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "e10902df24488ca722303133acfc82490f7d59ad"
+  ],
+  "ground_truth_bic": "d2d6422f8bd17c6bb205133e290625a564194496",
+  "predicted_bic": [
+    "3ce5dd8161ecdf12ffe0af99ff8980f1432f64a5",
+    "fa76ce7328b289b6edd476e24eb52fd634261720"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 18,
+  "llm_tokens": 34006,
+  "root_cause": {
+    "text": "A race condition in `reqsk_queue_hash_req()` where preemption between `mod_timer()` and `refcount_set()` allows the timer to fire and decrement the refcount before it is properly initialized, causing a refcount underflow.",
+    "evidence": "The CVE description explicitly states: \"the only possible scenario is that reqsk_queue_hash_req() is preempted after mod_timer() and before refcount_set(), and then the timer triggered after 1s aborts the reqsk due to its listener's close().\" The patch wraps both `mod_timer()` and `refcount_set()` with `preempt_disable_nested()` and `preempt_enable_nested()` to prevent this preemption window. The vulnerability manifests as a refcount underflow in `__inet_csk_reqsk_queue_drop()` because the request socket is missing both refcounts (one for ehash insertion and one for the timer), indicating the timer fired and called `reqsk_put()` before `refcount_set()` had initialized the refcount to its proper value of 3 (2 + 1).",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/ipv4/inet_connection_sock.c",
+      "lineno": 1151,
+      "content": "mod_timer(&req->rsk_timer, jiffies + req->timeout);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/ipv4/inet_connection_sock.c",
+      "lineno": 1157,
+      "content": "refcount_set(&req->rsk_refcnt, 2 + 1);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition in `reqsk_queue_hash_req()` where preemption between `mod_timer()` and `refcount_set()` allows the timer to fire and decrement the refcount before it is properly initialized, causing a refcount underflow.",
+      "evidence_points": "The CVE description explicitly states: \"the only possible scenario is that reqsk_queue_hash_req() is preempted after mod_timer() and before refcount_set(), and then the timer triggered after 1s aborts the reqsk due to its listener's close().\" The patch wraps both `mod_timer()` and `refcount_set()` with `preempt_disable_nested()` and `preempt_enable_nested()` to prevent this preemption window. The vulnerability manifests as a refcount underflow in `__inet_csk_reqsk_queue_drop()` because the request socket is missing both refcounts (one for ehash insertion and one for the timer), indicating the timer fired and called `reqsk_put()` before `refcount_set()` had initialized the refcount to its proper value of 3 (2 + 1)."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/ipv4/inet_connection_sock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/ipv4/inet_connection_sock.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add preemption guard to protect timer initialization from being interrupted between setup and activation in request socket queue handling.",
+        "what": "Added two blank lines and a `preempt_disable_nested()` function call between `timer_setup()` and `mod_timer()` in the `reqsk_queue_hash_req()` function.",
+        "how": "This change disables preemption in a nested-safe manner before modifying the timer. This prevents the scheduler from preempting the CPU between timer setup and timer activation, ensuring atomic execution of the timer initialization sequence and reducing the window where the timer structure could be accessed by other CPUs or contexts."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Re-enable nested preemption after request socket initialization to restore the preemption state and prevent preemption imbalance.",
+        "what": "Added two blank lines and a call to `preempt_enable_nested()` after `refcount_set(&req->rsk_refcnt, 2 + 1)` in the `reqsk_queue_hash_req()` function.",
+        "how": "This change re-enables preemption that was previously disabled (presumably by a matching `preempt_disable_nested()` call earlier in the function or caller context). The blank lines improve code readability by visually separating the refcount initialization from the preemption state restoration before the function returns."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add preemption guard to protect timer initialization from being interrupted between setup and activation in request socket queue handling."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Re-enable nested preemption after request socket initialization to restore the preemption state and prevent preemption imbalance."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by adding a preemption guard to prevent interruption between timer setup and refcount initialization. This eliminates the race condition window where the timer could fire and decrement the refcount before it is properly initialized, which is the exact vulnerability described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "This group directly addresses the race condition root cause by re-enabling nested preemption after request socket initialization. The vulnerability occurs due to preemption between `mod_timer()` and `refcount_set()`, allowing the timer to fire prematurely. By managing preemption state around the initialization sequence, this change prevents the problematic preemption window that enables the refcount underflow."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/ipv4/inet_connection_sock.c",
+            "lineno": 1151,
+            "content": "mod_timer(&req->rsk_timer, jiffies + req->timeout);",
+            "rationale": "This line activates the timer which can fire and call reqsk_timer_handler before refcount_set() is executed. Without preemption protection, the timer can fire between mod_timer() and refcount_set(), causing the handler to decrement an uninitialized refcount."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/ipv4/inet_connection_sock.c",
+            "lineno": 1157,
+            "content": "refcount_set(&req->rsk_refcnt, 2 + 1);",
+            "rationale": "This line initializes the refcount after the timer is already activated. If preemption occurs between mod_timer() and this line, the timer handler will decrement the refcount before it is properly initialized, causing underflow."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/ipv4/inet_connection_sock.c",
+            "stmt_text": "mod_timer(&req->rsk_timer, jiffies + req->timeout);",
+            "location": "hunk",
+            "explanation": "This statement activates the timer which can fire and invoke reqsk_timer_handler before refcount_set() is executed. Without preemption protection, a context switch between mod_timer() and refcount_set() allows the timer handler to decrement an uninitialized refcount, causing underflow."
+          },
+          {
+            "vuln_file": "net/ipv4/inet_connection_sock.c",
+            "stmt_text": "refcount_set(&req->rsk_refcnt, 2 + 1);",
+            "location": "hunk",
+            "explanation": "This statement initializes the refcount after mod_timer() has already activated the timer. The race condition window exists between mod_timer() and this refcount initialization, allowing the timer to fire and decrement an uninitialized refcount."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b748765019fe",
+          "anchor_file": "net/ipv4/inet_connection_sock.c",
+          "anchor_lineno": 1151
+        },
+        "commit": "3ce5dd8161ecdf12ffe0af99ff8980f1432f64a5",
+        "commit_short": "3ce5dd8161ec",
+        "commit_msg": "tcp: Remove timeout arg from reqsk_queue_hash_req().\n\ninet_csk_reqsk_queue_hash_add() is no longer shared by DCCP.\n\nWe d",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/inet_connection_sock.c",
+        "display_lineno": 1157,
+        "code_snippet": "commit 3ce5dd8161ecdf12ffe0af99ff8980f1432f64a5\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Thu Nov 6 00:32:41 2025 +0000\n\n    tcp: Remove timeout arg from reqsk_queue_hash_req().\n    \n    inet_csk_reqsk_queue_hash_add() is no longer shared by DCCP.\n    \n    We do not need to pass req->timeout down to reqsk_queue_hash_req().\n    \n    Let's move tcp_timeout_init() from tcp_conn_request() to\n    reqsk_queue_hash_req().\n    \n    Signed-off-by: Kuniyuki Iwashima <kuniyu@google.com>\n    Rev",
+        "exists": false,
+        "reason": "The commit shows that the vulnerable race condition has been FIXED. The vulnerability root cause was a race condition where preemption between `mod_timer()` and `refcount_set()` could allow the timer to fire before the refcount was properly initialized. Looking at the diff: (1) Line 1155 adds `req->timeout = tcp_timeout_init((struct sock *)req);` BEFORE the timer setup, (2) Line 1156 calls `timer_setup(&req->rsk_timer, reqsk_timer_handler, TIMER_PINNED);`, (3) Line 1157 calls `mod_timer(&req->rsk_timer, jiffies + req->timeout);`, and (4) Lines 1160-1161 show the critical `refcount_set(&req->rsk_refcnt, 2);` call with the comment 'before letting lookups find us, make sure all req fields are committed to memory and refcnt initialized.' The key fix is that `refcount_set()` is now properly positioned AFTER `mod_timer()` is called, ensuring the refcount is initialized before the timer can fire and decrement it. The vulnerable construct (race condition between mod_timer and refcount_set) is ABSENT in this version because the refcount initialization happens after the timer is armed, preventing the underflow scenario."
+      }
+    },
+    {
+      "bic_found": "3ce5dd8161ecdf12ffe0af99ff8980f1432f64a5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "b748765019fe",
+          "anchor_file": "net/ipv4/inet_connection_sock.c",
+          "anchor_lineno": 1157
+        },
+        "commit": "41c6d650f6537e55a1b53438c646fbc3f49176bf",
+        "commit_short": "41c6d650f653",
+        "commit_msg": "net: convert sock.sk_refcnt from atomic_t to refcount_t\n\nrefcount_t type and corresponding API should be\nused instead of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/inet_connection_sock.c",
+        "display_lineno": 759,
+        "code_snippet": "commit 41c6d650f6537e55a1b53438c646fbc3f49176bf\nAuthor: Reshetova, Elena <elena.reshetova@intel.com>\nDate:   Fri Jun 30 13:08:01 2017 +0300\n\n    net: convert sock.sk_refcnt from atomic_t to refcount_t\n    \n    refcount_t type and corresponding API should be\n    used instead of atomic_t when the variable is used as\n    a reference counter. This allows to avoid accidental\n    refcounter overflows that might lead to use-after-free\n    situations.\n    \n    This patch uses refcount_inc_not_zero() ins",
+        "exists": true,
+        "reason": "The vulnerable construct is clearly present. Line 752 calls `mod_timer(&req->rsk_timer, jiffies + timeout)` which arms the timer BEFORE line 759 calls `refcount_set(&req->rsk_refcnt, 2 + 1)` to initialize the refcount. This creates a race condition where the timer can fire and execute `reqsk_timer_handler()` (which decrements the refcount via `refcount_dec_and_test()`) between the `mod_timer()` call and the `refcount_set()` call. When the timer fires before refcount initialization, it will decrement an uninitialized refcount, causing underflow. The `smp_wmb()` barrier on line 758 only ensures memory ordering but does not prevent the timer from firing. The fix would require initializing the refcount BEFORE calling `mod_timer()`, but this code shows the vulnerable order of operations."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "14afee4b6092",
+          "anchor_file": "net/ipv4/inet_connection_sock.c",
+          "anchor_lineno": 759
+        },
+        "commit": "ca6fb06518836ef9b65dc0aac02ff97704d52a05",
+        "commit_short": "ca6fb0651883",
+        "commit_msg": "tcp: attach SYNACK messages to request sockets instead of listener\n\nIf a listen backlog is very big (to avoid syncookies",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/inet_connection_sock.c",
+        "display_lineno": 631,
+        "code_snippet": "commit ca6fb06518836ef9b65dc0aac02ff97704d52a05\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Fri Oct 2 11:43:35 2015 -0700\n\n    tcp: attach SYNACK messages to request sockets instead of listener\n    \n    If a listen backlog is very big (to avoid syncookies), then\n    the listener sk->sk_wmem_alloc is the main source of false\n    sharing, as we need to touch it twice per SYNACK re-transmit\n    and TX completion.\n    \n    (One SYN packet takes listener lock once, but up to 6 SYNACK\n    are g",
+        "exists": true,
+        "reason": "The vulnerable construct is present in this code. Line 624 calls `mod_timer_pinned(&req->rsk_timer, jiffies + timeout)` which starts the timer and can cause it to fire immediately. Line 631 then calls `atomic_set(&req->rsk_refcnt, 2 + 1)` to initialize the refcount. The race condition exists because: (1) the timer is armed at line 624 before the refcount is initialized, (2) if preemption occurs between line 624 and line 631, the timer can fire and execute `reqsk_timer_handler()` which will decrement the refcount via `reqsk_put()`, (3) this decrement happens before `atomic_set()` at line 631 initializes the refcount to 3, causing a refcount underflow. The `smp_wmb()` at line 630 only provides a memory barrier but does not prevent the timer from firing. The fix would require initializing the refcount BEFORE arming the timer, not after."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "1b33bc3e9e90",
+          "anchor_file": "net/ipv4/inet_connection_sock.c",
+          "anchor_lineno": 631
+        },
+        "commit": "fa76ce7328b289b6edd476e24eb52fd634261720",
+        "commit_short": "fa76ce7328b2",
+        "commit_msg": "inet: get rid of central tcp/dccp listener timer\n\nOne of the major issue for TCP is the SYNACK rtx handling,\ndone by ine",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/inet_connection_sock.c",
+        "display_lineno": 645,
+        "code_snippet": "commit fa76ce7328b289b6edd476e24eb52fd634261720\nAuthor: Eric Dumazet <edumazet@google.com>\nDate:   Thu Mar 19 19:04:20 2015 -0700\n\n    inet: get rid of central tcp/dccp listener timer\n    \n    One of the major issue for TCP is the SYNACK rtx handling,\n    done by inet_csk_reqsk_queue_prune(), fired by the keepalive\n    timer of a TCP_LISTEN socket.\n    \n    This function runs for awful long times, with socket lock held,\n    meaning that other cpus needing this lock have to spin for hundred of ms",
+        "exists": true,
+        "reason": "The vulnerable function `reqsk_queue_hash_req()` is present in this commit. The race condition exists between lines 50-51 where `mod_timer_pinned(&req->rsk_timer, jiffies + timeout)` is called AFTER `atomic_set(&req->rsk_refcnt, 2)` on line 48. However, there is a critical ordering issue: the `smp_wmb()` barrier on line 45 and the subsequent `atomic_set()` on line 48 are followed by `setup_timer()` on line 49, and then `mod_timer_pinned()` on line 57. The vulnerability is that between the `atomic_set(&req->rsk_refcnt, 2)` (line 48) and the actual `mod_timer_pinned()` call (line 57), there is a window where preemption could occur. If the timer fires during this window (after refcount is set but before mod_timer_pinned establishes the timer), the timer handler `reqsk_timer_handler()` could execute and call `reqsk_put(req)` (line 31), decrementing the refcount before it is properly initialized with the timer. The code lacks proper synchronization to prevent the timer from firing between `atomic_set()` and `mod_timer_pinned()`, creating a refcount underflow vulnerability."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "52452c542559",
+          "anchor_file": "net/ipv4/inet_connection_sock.c",
+          "anchor_lineno": 645
+        },
+        "commit": "a019d6fe2b9da68ea4ba6cf3c4e86fc1dbf554c3",
+        "commit_short": "a019d6fe2b9d",
+        "commit_msg": "[ICSK]: Move generalised functions from tcp to inet_connection_sock\n\nThis also improves reqsk_queue_prune and renames it",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/ipv4/inet_connection_sock.c",
+        "display_lineno": 482,
+        "code_snippet": "commit a019d6fe2b9da68ea4ba6cf3c4e86fc1dbf554c3\nAuthor: Arnaldo Carvalho de Melo <acme@ghostprotocols.net>\nDate:   Tue Aug 9 20:15:09 2005 -0700\n\n    [ICSK]: Move generalised functions from tcp to inet_connection_sock\n    \n    This also improves reqsk_queue_prune and renames it to\n    inet_csk_reqsk_queue_prune, as it deals with both inet_connection_sock\n    and inet_request_sock objects, not just with request_sock ones thus\n    belonging to inet_request_sock.\n    \n    Signed-off-by: Arnaldo Car",
+        "exists": false,
+        "reason": "The provided function is `inet_csk_reqsk_queue_prune()`, which handles pruning of request sockets. However, the vulnerability root cause describes a race condition in `reqsk_queue_hash_req()` involving `mod_timer()` and `refcount_set()`. The function shown does not contain `reqsk_queue_hash_req()` or the vulnerable constructs mentioned (mod_timer, refcount_set). This appears to be a different function entirely. To properly analyze whether this commit introduces the vulnerability, we would need to see the `reqsk_queue_hash_req()` function body from this commit, not the prune function. The shown code is insufficient to determine if the race condition vulnerability exists in this commit."
+      }
+    },
+    {
+      "bic_found": "fa76ce7328b289b6edd476e24eb52fd634261720",
+      "depth": 3
+    },
+    {
+      "bic_votes": {
+        "3ce5dd8161ecdf12ffe0af99ff8980f1432f64a5": 1,
+        "fa76ce7328b289b6edd476e24eb52fd634261720": 1
+      },
+      "bic_candidates": [
+        "3ce5dd8161ecdf12ffe0af99ff8980f1432f64a5",
+        "fa76ce7328b289b6edd476e24eb52fd634261720"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

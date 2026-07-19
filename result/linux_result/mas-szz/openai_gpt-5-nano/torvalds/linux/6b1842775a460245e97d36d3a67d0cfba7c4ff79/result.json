@@ -1,0 +1,348 @@
+{
+  "cveid": "CVE-2026-46279",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "6b1842775a460245e97d36d3a67d0cfba7c4ff79"
+  ],
+  "ground_truth_bic": "dcfe378c81f72f146890ce1dcfdcc742d3b66924",
+  "predicted_bic": [
+    "93d5440ece3c0aa341fb02e3a44a1b7ab44304c8",
+    "42895a86124418d8dd29a93812bc282e569ccfee"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 37403,
+  "root_cause": {
+    "text": "The mm page-allocation tagging code assumed page_ext-backed codetag storage was available in __pgalloc_tag_add(), so pages allocated during early boot before page_ext initialization were left with uninitialized codetag refs that later triggered warnings on free/reclaim.",
+    "evidence": "The commit message states that “page_ext is allocated and initialized relatively late during boot” and that pages allocated before it “have no codetag set,” and the patch adds an else path in mm/page_alloc.c when get_page_tag_ref(page, &ref, &handle) fails to record early PFNs and later clear their tag refs to CODETAG_EMPTY after page_ext initialization.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/page_alloc.c",
+      "lineno": 1255,
+      "content": "if (get_page_tag_ref(page, &ref, &handle)) {",
+      "confidence": 1.0
+    },
+    {
+      "file": "include/linux/pgalloc_tag.h",
+      "lineno": 184,
+      "content": "if (ref.ct)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The mm page-allocation tagging code assumed page_ext-backed codetag storage was available in __pgalloc_tag_add(), so pages allocated during early boot before page_ext initialization were left with uninitialized codetag refs that later triggered warnings on free/reclaim.",
+      "evidence_points": "The commit message states that “page_ext is allocated and initialized relatively late during boot” and that pages allocated before it “have no codetag set,” and the patch adds an else path in mm/page_alloc.c when get_page_tag_ref(page, &ref, &handle) fails to record early PFNs and later clear their tag refs to CODETAG_EMPTY after page_ext initialization."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/linux/alloc_tag.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "include/linux/pgalloc_tag.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "lib/alloc_tag.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "lib/alloc_tag.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "mm/page_alloc.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a configuration-safe declaration and no-op stub for `alloc_tag_add_early_pfn()` so callers can invoke it unconditionally across build modes.",
+        "what": "A new function declaration, `void alloc_tag_add_early_pfn(unsigned long pfn);`, was added under the enabled configuration branch, and a matching empty `static inline` stub with the same signature was added under the `#else` branch where the feature is disabled.",
+        "how": "This makes `alloc_tag_add_early_pfn()` available to callers regardless of build configuration: when the feature is enabled, the real function can be linked and used at runtime; when disabled, calls compile away as a no-op, preventing missing symbol or conditional-compilation issues."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid returning an allocation tag for page references whose codetag pointer is present but the codetag entry is empty.",
+        "what": "The condition guarding assignment to `tag` was changed from checking only `ref.ct` to checking both `ref.ct` and `!is_codetag_empty(&ref)` before calling `ct_to_alloc_tag(ref.ct)`.",
+        "how": "At runtime, this prevents conversion of a codetag reference into an allocation tag when the reference exists but represents an empty codetag, avoiding use of an invalid or non-meaningful tag and leaving `tag` unset in that case."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "other",
+        "intent_summary": "Add pgalloc_tag and RCU header dependencies so the file can use or build against those kernel interfaces.",
+        "what": "Two header includes were added to the source file: <linux/pgalloc_tag.h> and <linux/rcupdate.h>, while the existing include list remains otherwise unchanged.",
+        "how": "This makes declarations, types, and APIs from page allocation tagging and RCU update infrastructure available to the compilation unit, enabling use of those interfaces or resolving missing declarations during build, without showing any direct runtime logic change in this hunk alone."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Track and clean up pre-page_ext early page allocations in debug builds so uninitialized allocation tags do not cause warnings on later free.",
+        "what": "The change adds a CONFIG_MEM_ALLOC_PROFILING_DEBUG-only mechanism to record PFNs of pages allocated before page_ext initialization using a fixed-size __initdata array and atomic counter, exposes alloc_tag_add_early_pfn() through an RCU-protected function pointer, adds __alloc_tag_add_early_pfn() to append PFNs with overflow warning protection, implements clear_early_alloc_pfn_tag_refs() to disable further recording, wait for in-flight users via synchronize_rcu(), and iterate over recorded PFNs to set CODETAG_EMPTY on pages whose tag reference exists but has no codetag, and calls clear_early_alloc_pfn_tag_refs() from init_page_alloc_tagging(); in the non-debug case it adds an empty inline stub.",
+        "how": "At runtime, debug builds now track early page allocations that occur before page_ext is ready, and once page allocation tagging initializes they clear stale uninitialized codetag references for those pages so later frees do not trigger warnings. The RCU pointer shutdown prevents races with concurrent early-allocation tracking, the valid-tag check avoids overwriting tags on pages that were freed and reallocated after page_ext came up, and the compressed profiling mode bypasses the whole path."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle missing page_ext during page tag accounting by recording early PFNs and marking alloc tags inaccurate instead of silently skipping the update.",
+        "what": "The condition around get_page_tag_ref(page, &ref, &handle) was changed to use likely(...), and a new else branch was added that, when get_page_tag_ref fails, records the page frame number with alloc_tag_add_early_pfn(page_to_pfn(page)) and conditionally marks task->alloc_tag inaccurate via alloc_tag_set_inaccurate(task->alloc_tag).",
+        "how": "At runtime, the function still updates the page tag reference when page_ext metadata is available, but it now also handles the failure case instead of doing nothing: it tracks early PFNs for later tag cleanup once page_ext is initialized and flags the allocation tag as inaccurate, preventing silent loss of accounting state during early allocation paths."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a configuration-safe declaration and no-op stub for `alloc_tag_add_early_pfn()` so callers can invoke it unconditionally across build modes."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 3,
+          "intent": "Handle missing page_ext during page tag accounting by recording early PFNs and marking alloc tags inaccurate instead of silently skipping the update."
+        },
+        {
+          "group_id": 2,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add pgalloc_tag and RCU header dependencies so the file can use or build against those kernel interfaces."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Make page allocation tag accounting robust when page_ext or codetag metadata is missing or uninitialized by safely detecting such cases and tracking early allocations for correct later cleanup/accounting.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "This adds the API/stub needed to support early-PFN allocation tagging before page_ext is initialized, which is directly tied to fixing the early-boot uninitialized codetag ref problem described in the root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause: they add checks for missing/uninitialized page_ext and codetag metadata during page allocation tagging, and explicitly track early-boot allocations so later free/reclaim does not see bogus codetag refs or trigger warnings."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "This group only adds header dependencies for pgalloc_tag/RCU interfaces. It does not address the root cause of early-boot allocations occurring before page_ext initialization or the resulting uninitialized codetag refs."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 4,
+            "file_path": "mm/page_alloc.c",
+            "lineno": 1255,
+            "content": "if (get_page_tag_ref(page, &ref, &handle)) {",
+            "rationale": "This conditional makes tagging contingent on page_ext-backed tag storage being available. During early boot, get_page_tag_ref() can fail before page_ext initialization, causing the allocation to be skipped entirely and leaving later free/reclaim paths to observe uninitialized codetag refs."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "mm/page_alloc.c",
+            "lineno": 1256,
+            "content": "alloc_tag_add(&ref, task->alloc_tag, PAGE_SIZE * nr);",
+            "rationale": "This update assumes a valid, initialized codetag reference is available once entered. The root cause is that page-allocation tagging relied on page_ext-backed codetag storage at allocation time, which is not true for early-boot pages."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "lib/alloc_tag.c",
+            "lineno": 761,
+            "content": "static __init void init_page_alloc_tagging(void)",
+            "rationale": "The pre-fix init hook was effectively empty, so there was no mechanism to track or repair allocations made before page_ext initialization. That omission directly enabled early pages to retain uninitialized alloc-tag state."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "include/linux/pgalloc_tag.h",
+            "lineno": 184,
+            "content": "if (ref.ct)",
+            "rationale": "This check only tested whether the codetag pointer was non-NULL, not whether the underlying codetag entry was actually initialized/valid. That allowed later consumers to treat stale or empty early-boot refs as real tags, contributing to warnings."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/page_alloc.c",
+            "stmt_text": "if (get_page_tag_ref(page, &ref, &handle)) {",
+            "location": "hunk",
+            "explanation": "This conditional made page allocation tagging depend on page_ext-backed tag storage already being available. During early boot, get_page_tag_ref() could fail before page_ext initialization, causing the allocation path to skip tag initialization entirely and leaving pages with uninitialized codetag refs that later triggered warnings."
+          },
+          {
+            "vuln_file": "include/linux/pgalloc_tag.h",
+            "stmt_text": "if (ref.ct)",
+            "location": "hunk",
+            "explanation": "This validity check accepted any non-NULL codetag pointer without verifying that the underlying codetag entry had been properly initialized. That allowed later paths to treat stale or empty early-boot page tag references as valid tags, contributing to the observed warnings."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d14514c66cb9",
+          "anchor_file": "mm/page_alloc.c",
+          "anchor_lineno": 1255
+        },
+        "commit": "93d5440ece3c0aa341fb02e3a44a1b7ab44304c8",
+        "commit_short": "93d5440ece3c",
+        "commit_msg": "alloc_tag: uninline code gated by mem_alloc_profiling_key in page allocator\n\nWhen a sizable code section is protected by",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/page_alloc.c",
+        "display_lineno": 1067,
+        "code_snippet": "commit 93d5440ece3c0aa341fb02e3a44a1b7ab44304c8\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Sat Feb 1 15:18:02 2025 -0800\n\n    alloc_tag: uninline code gated by mem_alloc_profiling_key in page allocator\n    \n    When a sizable code section is protected by a disabled static key, that\n    code gets into the instruction cache even though it's not executed and\n    consumes the cache, increasing cache misses. This can be remedied by\n    moving such code into a separate uninlined function.\n",
+        "exists": false,
+        "reason": "The relevant logic is shown clearly in the added function `__pgalloc_tag_add()`. The root cause was that page-allocation tagging assumed page_ext-backed codetag storage was available and could leave uninitialized refs for early-boot pages if storage was not initialized. In this snippet, `__pgalloc_tag_add()` does not blindly operate on page tag storage; instead it first checks `if (get_page_tag_ref(page, &ref, &handle)) { ... }`. Only when that succeeds does it call `alloc_tag_add(&ref, task->alloc_tag, PAGE_SIZE * nr);`, then `update_page_tag_ref(handle, &ref);` and `put_page_tag_ref(handle);`. The same guarded pattern appears in `__clear_page_tag_ref()` and `__pgalloc_tag_sub()`. This means the code already handles the case where page tag backing is unavailable by doing nothing rather than using uninitialized codetag refs. Therefore the vulnerable construct is absent in this function version, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "93d5440ece3c0aa341fb02e3a44a1b7ab44304c8",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "d14514c66cb9",
+          "anchor_file": "include/linux/pgalloc_tag.h",
+          "anchor_lineno": 184
+        },
+        "commit": "51ff4d7486f0c0b4110a6da4af805b179dd7b11e",
+        "commit_short": "51ff4d7486f0",
+        "commit_msg": "mm: avoid extra mem_alloc_profiling_enabled() checks\n\nRefactor code to avoid extra mem_alloc_profiling_enabled() checks ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/linux/pgalloc_tag.h",
+        "display_lineno": 217,
+        "code_snippet": "commit 51ff4d7486f0c0b4110a6da4af805b179dd7b11e\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Sat Feb 1 15:18:00 2025 -0800\n\n    mm: avoid extra mem_alloc_profiling_enabled() checks\n    \n    Refactor code to avoid extra mem_alloc_profiling_enabled() checks inside\n    pgalloc_tag_get() function which is often called after that check was\n    already done.\n    \n    Link: https://lkml.kernel.org/r/20250201231803.2661189-1-surenb@google.com\n    Signed-off-by: Suren Baghdasaryan <surenb@googl",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full relevant logic of this helper. The root cause is that page_ext-backed codetag storage may be unavailable for some pages allocated before page_ext initialization, leaving an uninitialized codetag ref that must be handled safely. In this function, after `get_page_tag_ref(page, &ref, &handle)` succeeds, the code immediately does `alloc_tag_sub_check(&ref);` and then only guards on `if (ref.ct)` before converting it with `ct_to_alloc_tag(ref.ct)`. There is no check here for the early-boot/uninitialized page_ext-backed ref condition described in the root cause. The function assumes the returned `ref` is valid enough for `alloc_tag_sub_check(&ref)` and possible use of `ref.ct`, which matches the vulnerable construct. Because the function lacks any special handling for pages whose codetag storage was never properly initialized before page_ext came up, the bug is present. No fix is visible in this body."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "c372473a545e",
+          "anchor_file": "include/linux/pgalloc_tag.h",
+          "anchor_lineno": 217
+        },
+        "commit": "42895a86124418d8dd29a93812bc282e569ccfee",
+        "commit_short": "42895a861244",
+        "commit_msg": "alloc_tag: introduce pgtag_ref_handle to abstract page tag references\n\nTo simplify later changes to page tag references,",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/linux/pgalloc_tag.h",
+        "display_lineno": 109,
+        "code_snippet": "commit 42895a86124418d8dd29a93812bc282e569ccfee\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Wed Oct 23 10:07:58 2024 -0700\n\n    alloc_tag: introduce pgtag_ref_handle to abstract page tag references\n    \n    To simplify later changes to page tag references, introduce new\n    pgtag_ref_handle type.  This allows easy replacement of page_ext as a\n    storage of page allocation tags.\n    \n    Link: https://lkml.kernel.org/r/20241023170759.999909-6-surenb@google.com\n    Signed-off-by: Suren",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the full relevant helpers and the allocation/free tag update paths. The root cause is failure to handle pages allocated before page_ext initialization, leaving page tag refs uninitialized. In this commit, `get_page_tag_ref()` still simply does `page_ext = page_ext_get(page); if (!page_ext) return false;` and otherwise reads the stored ref via `tmp = (union codetag_ref *)page_ext_data(page_ext, &page_alloc_tagging_ops); ref->ct = tmp->ct; handle->ref = tmp; return true;`. There is no logic to initialize or sanitize tag state when `page_ext` is unavailable, nor any fallback storage for early-boot allocations. The callers `pgalloc_tag_add()` / `pgalloc_tag_sub()` / `clear_page_tag_ref()` only operate `if (get_page_tag_ref(...))`, meaning allocations done before `page_ext` exists are silently skipped rather than assigned a known empty/valid tag. For example, `pgalloc_tag_add()` does `if (get_page_tag_ref(page, &ref, &handle)) { alloc_tag_add(&ref, task->alloc_tag, PAGE_SIZE * nr); update_page_tag_ref(handle, &ref); put_page_tag_ref(handle); }`, so when `page_ext_get(page)` fails during early boot, no ref is set up. This matches the vulnerable construct. The code does not contain the later fix for early-boot pages; it only refactors access through `pgtag_ref_handle` and still depends entirely on `page_ext` availability."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "0f9b685626da",
+          "anchor_file": "include/linux/pgalloc_tag.h",
+          "anchor_lineno": 109
+        },
+        "commit": "d224eb0287fbd84f4f13eca042c7f08f87138f3b",
+        "commit_short": "d224eb0287fb",
+        "commit_msg": "codetag: debug: mark codetags for reserved pages as empty\n\nTo avoid debug warnings while freeing reserved pages which we",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/linux/pgalloc_tag.h",
+        "display_lineno": 123,
+        "code_snippet": "commit d224eb0287fbd84f4f13eca042c7f08f87138f3b\nAuthor: Suren Baghdasaryan <surenb@google.com>\nDate:   Thu Mar 21 09:36:56 2024 -0700\n\n    codetag: debug: mark codetags for reserved pages as empty\n    \n    To avoid debug warnings while freeing reserved pages which were not\n    allocated with usual allocators, mark their codetags as empty before\n    freeing.\n    \n    Link: https://lkml.kernel.org/r/20240321163705.3067592-35-surenb@google.com\n    Signed-off-by: Suren Baghdasaryan <surenb@google.co",
+        "exists": false,
+        "reason": "The complete function body is shown: `static inline union codetag_ref *get_page_tag_ref(struct page *page) { return NULL; }`. This function does not access page_ext-backed codetag storage, does not initialize or modify any codetag reference, and contains none of the vulnerable allocation-tagging logic described in the root cause. Because the vulnerable construct is completely absent from this function body, `has_bug` is false. The commit message refers to marking codetags for reserved pages as empty before free, but this specific function only returns `NULL` and does not implement that fix or any equivalent handling, so `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "42895a86124418d8dd29a93812bc282e569ccfee",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "93d5440ece3c0aa341fb02e3a44a1b7ab44304c8": 1,
+        "42895a86124418d8dd29a93812bc282e569ccfee": 1
+      },
+      "bic_candidates": [
+        "93d5440ece3c0aa341fb02e3a44a1b7ab44304c8",
+        "42895a86124418d8dd29a93812bc282e569ccfee"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

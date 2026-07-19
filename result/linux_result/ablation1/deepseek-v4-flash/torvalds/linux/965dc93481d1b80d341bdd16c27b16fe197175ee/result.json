@@ -1,0 +1,326 @@
+{
+  "cveid": "CVE-2026-53005",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "965dc93481d1b80d341bdd16c27b16fe197175ee"
+  ],
+  "ground_truth_bic": "c63829182c37c2d6d0608976d15fa61ebebe9e6b",
+  "predicted_bic": [
+    "7361c36c5224519b258219fe3d0e8abc865d8134",
+    "99a7a5b9943ea2d05fb0dee38e4ae2290477ed83",
+    "78fa0d61d97a728d306b0c23d353c0e340756437",
+    "d6e3b27cbd2df555ff0736796ad2f9a17e74be8b"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 10,
+  "llm_tokens": 36836,
+  "root_cause": {
+    "text": "The SOCKMAP subsystem fails to strip SCM attributes (including inflight file descriptors and associated references) from AF_UNIX skbs before enqueuing them into the psock internal queue, allowing the GC’s assumption that all inflight sockets are reachable via the socket graph to be violated and leading to use-after-free when a freed socket is later accessed by the GC.",
+    "evidence": "The commit message states: “SOCKMAP can hide inflight fd from AF_UNIX GC” and “SOCKMAP redirect breaks the Tarjan-based GC's assumption that unix_edge.successor is always alive, which is no longer true once skb is redirected, resulting in use-after-free.” The patch introduces `unix_orphan_scm()` which calls `scm_stat_del()` and `unix_destruct_scm()` and changes the destructor to `sock_wfree` before passing the skb to the recv_actor, thereby dropping all SCM attributes before SOCKMAP handles the skb.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 2691,
+      "content": "return recv_actor(sk, skb);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 2686,
+      "content": "skb = skb_recv_datagram(sk, MSG_DONTWAIT, &err);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 1994,
+      "content": "err = unix_attach_fds(scm, skb);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 1996,
+      "content": "skb->destructor = unix_destruct_scm;",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 1976,
+      "content": "unix_detach_fds(&scm, skb);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/unix/af_unix.c",
+      "lineno": 1980,
+      "content": "scm_destroy(&scm);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The SOCKMAP subsystem fails to strip SCM attributes (including inflight file descriptors and associated references) from AF_UNIX skbs before enqueuing them into the psock internal queue, allowing the GC’s assumption that all inflight sockets are reachable via the socket graph to be violated and leading to use-after-free when a freed socket is later accessed by the GC.",
+      "evidence_points": "The commit message states: “SOCKMAP can hide inflight fd from AF_UNIX GC” and “SOCKMAP redirect breaks the Tarjan-based GC's assumption that unix_edge.successor is always alive, which is no longer true once skb is redirected, resulting in use-after-free.” The patch introduces `unix_orphan_scm()` which calls `scm_stat_del()` and `unix_destruct_scm()` and changes the destructor to `sock_wfree` before passing the skb to the recv_actor, thereby dropping all SCM attributes before SOCKMAP handles the skb."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2686,
+            "content": "skb = skb_recv_datagram(sk, MSG_DONTWAIT, &err);",
+            "rationale": "Retrieves the AF_UNIX skb with SCM attributes (including inflight file descriptors) intact, without any check to strip them before passing to the recv_actor, allowing the skb to be enqueued into psock queue with dangling references."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2691,
+            "content": "return recv_actor(sk, skb);",
+            "rationale": "Passes the skb (still containing SCM attributes) to the recv_actor, which may enqueue it into the psock internal queue without stripping the file descriptors, violating the GC's reachability assumption."
+          },
+          {
+            "hunk_index": 4,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 2691,
+            "content": "return recv_actor(sk, skb);",
+            "rationale": "Same as above but in another recv path; passes the skb with SCM attributes to the recv_actor without stripping, leading to potential use-after-free."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 1994,
+            "content": "err = unix_attach_fds(scm, skb);",
+            "rationale": "Attaches file descriptors to the skb as SCM credentials, creating the inflight references that are later not stripped before enqueuing into the psock queue, directly contributing to the GC violation."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 1996,
+            "content": "skb->destructor = unix_destruct_scm;",
+            "rationale": "Sets the destructor that should clean up SCM attributes when the skb is freed, but if the skb is enqueued into psock and its lifetime extended, this destructor may not be called in time, leaving dangling references."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 1976,
+            "content": "unix_detach_fds(&scm, skb);",
+            "rationale": "Part of the destructor that detaches SCM file descriptors; however, this happens only when the skb is freed, not before enqueuing into psock, so it does not prevent the GC violation caused by early enqueuing."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "net/unix/af_unix.c",
+            "lineno": 1980,
+            "content": "scm_destroy(&scm);",
+            "rationale": "Destroys the SCM cookie in the destructor; again, this is deferred and does not strip attributes before the skb enters the psock queue, allowing use-after-free conditions to arise."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "return recv_actor(sk, skb);",
+            "location": "hunk",
+            "explanation": "This statement passes the skb (which still contains SCM attributes including inflight file descriptors) to the recv_actor callback without stripping the attributes. The recv_actor then enqueues the skb into the psock internal queue, violating the GC's reachability assumption and leading to use-after-free."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "skb = skb_recv_datagram(sk, MSG_DONTWAIT, &err);",
+            "location": "hunk",
+            "explanation": "This statement retrieves an AF_UNIX skb that contains SCM attributes (including inflight file descriptors) from the socket's receive queue. The skb is then passed to recv_actor without any stripping of those attributes, directly enabling the vulnerability."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "err = unix_attach_fds(scm, skb);",
+            "location": "hunk",
+            "explanation": "This statement attaches SCM file descriptors to the skb, creating the inflight references that must be later stripped before the skb is enqueued into the psock queue. Failure to strip these references allows dangling pointers that the GC will mistakenly treat as reachable."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "skb->destructor = unix_destruct_scm;",
+            "location": "hunk",
+            "explanation": "This statement sets the skb's destructor to unix_destruct_scm, which is supposed to clean up SCM attributes when the skb is freed. However, if the skb is enqueued into the psock queue and its lifetime is extended, this destructor may not be called in time, leaving inflight references dangling and causing use-after-free."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "unix_detach_fds(&scm, skb);",
+            "location": "hunk",
+            "explanation": "This statement is part of the destructor unix_destruct_scm; it detaches the SCM file descriptors from the skb. But because the destructor is only invoked when the skb is freed, and the skb may be held indefinitely in the psock queue without being freed, this cleanup does not occur in time to prevent the GC from accessing freed sockets."
+          },
+          {
+            "vuln_file": "net/unix/af_unix.c",
+            "stmt_text": "scm_destroy(&scm);",
+            "location": "hunk",
+            "explanation": "This statement is also part of the destructor; it destroys the SCM cookie and associated resources. It is deferred until skb free, but in the vulnerable scenario the skb remains alive and the inflight references persist, allowing a use-after-free when the GC later walks the socket graph."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2691
+        },
+        "commit": "78fa0d61d97a728d306b0c23d353c0e340756437",
+        "commit_short": "78fa0d61d97a",
+        "commit_msg": "bpf, sockmap: Pass skb ownership through read_skb\n\nThe read_skb hook calls consume_skb() now, but this means that if the",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2564,
+        "code_snippet": "commit 78fa0d61d97a728d306b0c23d353c0e340756437\nAuthor: John Fastabend <john.fastabend@gmail.com>\nDate:   Mon May 22 19:56:05 2023 -0700\n\n    bpf, sockmap: Pass skb ownership through read_skb\n    \n    The read_skb hook calls consume_skb() now, but this means that if the\n    recv_actor program wants to use the skb it needs to inc the ref cnt\n    so that the consume_skb() doesn't kfree the sk_buff.\n    \n    This is problematic because in some error cases under memory pressure\n    we may need to li",
+        "exists": false,
+        "reason": "The function unix_read_skb does not contain code related to stripping SCM attributes; it simply reads and forwards an skb to recv_actor. The vulnerability lies in the SOCKMAP code (sk_psock_verdict_recv) which fails to strip attributes before enqueuing. This commit only changes skb ownership handling."
+      }
+    },
+    {
+      "bic_found": "78fa0d61d97a728d306b0c23d353c0e340756437",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 2686
+        },
+        "commit": "d6e3b27cbd2df555ff0736796ad2f9a17e74be8b",
+        "commit_short": "d6e3b27cbd2d",
+        "commit_msg": "af_unix: Refactor unix_read_skb()\n\nSimilar to udp_read_skb(), delete the unnecessary while loop in\nunix_read_skb() for r",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 2544,
+        "code_snippet": "commit d6e3b27cbd2df555ff0736796ad2f9a17e74be8b\nAuthor: Peilin Ye <peilin.ye@bytedance.com>\nDate:   Thu Sep 22 21:59:26 2022 -0700\n\n    af_unix: Refactor unix_read_skb()\n    \n    Similar to udp_read_skb(), delete the unnecessary while loop in\n    unix_read_skb() for readability.  Since recv_actor() cannot return a\n    value greater than skb->len (see sk_psock_verdict_recv()), remove the\n    redundant check.\n    \n    Suggested-by: Cong Wang <cong.wang@bytedance.com>\n    Signed-off-by: Peilin Ye <",
+        "exists": false,
+        "reason": "The function unix_read_skb() simply retrieves a skb from the unix socket receive queue and passes it to the recv_actor callback. It does not perform any stripping of SCM attributes (e.g., inflight file descriptors) nor does it enqueue skbs into any psock internal queue. The vulnerability described (failure to strip SCM attributes in SOCKMAP) is not present in this function's logic, as it only reads and hands off the skb. The refactoring in this commit does not alter that behavior. Therefore, the vulnerable construct is absent (has_bug=false) and no fix for that vulnerability is added (is_fixed=false)."
+      }
+    },
+    {
+      "bic_found": "d6e3b27cbd2df555ff0736796ad2f9a17e74be8b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 1994
+        },
+        "commit": "7361c36c5224519b258219fe3d0e8abc865d8134",
+        "commit_short": "7361c36c5224",
+        "commit_msg": "af_unix: Allow credentials to work across user and pid namespaces.\n\nIn unix_skb_parms store pointers to struct pid and s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 1365,
+        "code_snippet": "commit 7361c36c5224519b258219fe3d0e8abc865d8134\nAuthor: Eric W. Biederman <ebiederm@xmission.com>\nDate:   Sun Jun 13 03:34:33 2010 +0000\n\n    af_unix: Allow credentials to work across user and pid namespaces.\n    \n    In unix_skb_parms store pointers to struct pid and struct cred instead\n    of raw uid, gid, and pid values, then translate the credentials on\n    reception into values that are meaningful in the receiving processes\n    namespaces.\n    \n    Signed-off-by: Eric W. Biederman <ebiederm",
+        "exists": false,
+        "reason": "The provided code is a diff for AF_UNIX credential handling across namespaces, not related to SOCKMAP. The SOCKMAP vulnerability (failure to strip SCM attributes before enqueuing into psock) does not appear in this commit; the code does not involve sockmap at all. Therefore, the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "7361c36c5224519b258219fe3d0e8abc865d8134",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 1996
+        },
+        "commit": "7361c36c5224519b258219fe3d0e8abc865d8134",
+        "commit_short": "7361c36c5224",
+        "commit_msg": "af_unix: Allow credentials to work across user and pid namespaces.\n\nIn unix_skb_parms store pointers to struct pid and s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 1367,
+        "code_snippet": "commit 7361c36c5224519b258219fe3d0e8abc865d8134\nAuthor: Eric W. Biederman <ebiederm@xmission.com>\nDate:   Sun Jun 13 03:34:33 2010 +0000\n\n    af_unix: Allow credentials to work across user and pid namespaces.\n    \n    In unix_skb_parms store pointers to struct pid and struct cred instead\n    of raw uid, gid, and pid values, then translate the credentials on\n    reception into values that are meaningful in the receiving processes\n    namespaces.\n    \n    Signed-off-by: Eric W. Biederman <ebiederm",
+        "exists": false,
+        "reason": "The provided code shows the credential and file descriptor handling for AF_UNIX sockets. It introduces proper cleanup via unix_destruct_scm and sets skb->destructor correctly. The vulnerable construct described (SOCKMAP failing to strip SCM attributes before enqueuing skbs) is not present in these functions; they handle SCM attributes correctly as part of normal socket send/recv. Therefore, there is no bug in this code related to the described root cause."
+      }
+    },
+    {
+      "bic_found": "7361c36c5224519b258219fe3d0e8abc865d8134",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 1976
+        },
+        "commit": "99a7a5b9943ea2d05fb0dee38e4ae2290477ed83",
+        "commit_short": "99a7a5b9943e",
+        "commit_msg": "af_unix: Remove CONFIG_UNIX_SCM.\n\nOriginally, the code related to garbage collection was all in garbage.c.\n\nCommit f4e65",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 1891,
+        "code_snippet": "commit 99a7a5b9943ea2d05fb0dee38e4ae2290477ed83\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Mon Jan 29 11:04:35 2024 -0800\n\n    af_unix: Remove CONFIG_UNIX_SCM.\n    \n    Originally, the code related to garbage collection was all in garbage.c.\n    \n    Commit f4e65870e5ce (\"net: split out functions related to registering\n    inflight socket files\") moved some functions to scm.c for io_uring and\n    added CONFIG_UNIX_SCM just in case AF_UNIX was built as module.\n    \n    However, since c",
+        "exists": false,
+        "reason": "The provided code shows functions related to AF_UNIX SCM (unix_attach_fds, unix_detach_fds, unix_destruct_scm, etc.) that are moved into af_unix.c as part of a config cleanup. There is no logic related to SOCKMAP or stripping SCM attributes before enqueuing skbs into psock. The vulnerability root cause concerns the SOCKMAP subsystem, which is not present in this code. Hence the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "99a7a5b9943ea2d05fb0dee38e4ae2290477ed83",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "8cff9dbe89d8",
+          "anchor_file": "net/unix/af_unix.c",
+          "anchor_lineno": 1980
+        },
+        "commit": "99a7a5b9943ea2d05fb0dee38e4ae2290477ed83",
+        "commit_short": "99a7a5b9943e",
+        "commit_msg": "af_unix: Remove CONFIG_UNIX_SCM.\n\nOriginally, the code related to garbage collection was all in garbage.c.\n\nCommit f4e65",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/unix/af_unix.c",
+        "display_lineno": 1895,
+        "code_snippet": "commit 99a7a5b9943ea2d05fb0dee38e4ae2290477ed83\nAuthor: Kuniyuki Iwashima <kuniyu@google.com>\nDate:   Mon Jan 29 11:04:35 2024 -0800\n\n    af_unix: Remove CONFIG_UNIX_SCM.\n    \n    Originally, the code related to garbage collection was all in garbage.c.\n    \n    Commit f4e65870e5ce (\"net: split out functions related to registering\n    inflight socket files\") moved some functions to scm.c for io_uring and\n    added CONFIG_UNIX_SCM just in case AF_UNIX was built as module.\n    \n    However, since c",
+        "exists": false,
+        "reason": "The diff only moves existing functions (unix_attach_fds, unix_detach_fds, unix_destruct_scm) into af_unix.c. These functions handle SCM attribute stripping correctly; the vulnerability is due to SOCKMAP not calling them before enqueuing skbs. The shown code does not contain the vulnerable missing call nor does it introduce or fix that missing call. Hence has_bug=false, is_fixed=false."
+      }
+    },
+    {
+      "bic_found": "99a7a5b9943ea2d05fb0dee38e4ae2290477ed83",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "78fa0d61d97a728d306b0c23d353c0e340756437": 1,
+        "d6e3b27cbd2df555ff0736796ad2f9a17e74be8b": 1,
+        "7361c36c5224519b258219fe3d0e8abc865d8134": 2,
+        "99a7a5b9943ea2d05fb0dee38e4ae2290477ed83": 2
+      },
+      "bic_candidates": [
+        "7361c36c5224519b258219fe3d0e8abc865d8134",
+        "99a7a5b9943ea2d05fb0dee38e4ae2290477ed83",
+        "78fa0d61d97a728d306b0c23d353c0e340756437",
+        "d6e3b27cbd2df555ff0736796ad2f9a17e74be8b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

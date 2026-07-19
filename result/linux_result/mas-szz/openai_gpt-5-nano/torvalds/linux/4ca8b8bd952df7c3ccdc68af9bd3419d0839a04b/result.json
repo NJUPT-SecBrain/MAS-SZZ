@@ -1,0 +1,277 @@
+{
+  "cveid": "CVE-2026-53063",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4ca8b8bd952df7c3ccdc68af9bd3419d0839a04b"
+  ],
+  "ground_truth_bic": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+  "predicted_bic": [
+    "b29d4986d0da1a27cd35917cdb433672f5c95d7f"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 90955,
+  "root_cause": {
+    "text": "In the dm-cache passthrough invalidation path, invalidate_remove() performed an incomplete state transition for write-hit overwrite_bio handling by remapping the bio after cache invalidation but neither submitting it nor preserving it for later completion, leaving the write bio dropped and hung.",
+    "evidence": "The CVE and commit message explicitly state that invalidate_remove() “sets up the remapping for the overwrite_bio but then drops it immediately without submission, causing write operations to hang,” and the patch removes the old remap-plus-`mg->overwrite_bio = NULL` logic from invalidate_remove() and replaces it with a new invalidate_committed() continuation that calls `dm_submit_bio_remap(bio, NULL)` and ends the bio via `overwrite_endio`/`invalidate_complete()`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/md/dm-cache-target.c",
+      "lineno": 1526,
+      "content": "mg->overwrite_bio = NULL;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/md/dm-cache-target.c",
+      "lineno": 1525,
+      "content": "remap_to_origin_clear_discard(cache, mg->overwrite_bio, mg->invalidate_oblock);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In the dm-cache passthrough invalidation path, invalidate_remove() performed an incomplete state transition for write-hit overwrite_bio handling by remapping the bio after cache invalidation but neither submitting it nor preserving it for later completion, leaving the write bio dropped and hung.",
+      "evidence_points": "The CVE and commit message explicitly state that invalidate_remove() “sets up the remapping for the overwrite_bio but then drops it immediately without submission, causing write operations to hang,” and the patch removes the old remap-plus-`mg->overwrite_bio = NULL` logic from invalidate_remove() and replaces it with a new invalidate_committed() continuation that calls `dm_submit_bio_remap(bio, NULL)` and ends the bio via `overwrite_endio`/`invalidate_complete()`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/md/dm-cache-target.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/md/dm-cache-target.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/md/dm-cache-target.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Always complete overwrite bios and only assign a generic I/O error on pre-submission migration failure so existing bio status is preserved.",
+        "what": "The code replaces a conditional call that only invoked bio_io_error(mg->overwrite_bio) when !success and overwrite_bio was present with a new overwrite_bio block that always completes the bio via bio_endio(mg->overwrite_bio); before completion, it sets mg->overwrite_bio->bi_status = BLK_STS_IOERR only when the migration failed and the bio has no existing status.",
+        "how": "This change ensures overwrite_bio is always ended when present, preventing it from being left incomplete on both success and failure paths. On failure before the bio was issued, it now assigns a generic I/O error status, while preserving any error status already set by lower layers if the bio had already been submitted and completed with its own result."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a committed-stage invalidation worker that remaps and submits the overwrite bio to origin so cache invalidation can complete asynchronously.",
+        "what": "A new static workqueue callback function named invalidate_committed is added. It retrieves the migration object from the work_struct, extracts the cache, overwrite bio, and per-bio data, conditionally calls invalidate_complete(mg, false) when mg->k.input is set, initializes mg->k with invalidate_completed as the continuation, remaps the bio to the origin while clearing discard state using remap_to_origin_clear_discard(cache, bio, mg->invalidate_oblock), installs overwrite_endio as the bio completion hook via dm_hook_bio, and submits the remapped bio with dm_submit_bio_remap(bio, NULL).",
+        "how": "At runtime this introduces a new deferred invalidation path that, after any needed completion of prior input handling, prepares and submits the overwrite bio to the origin device with a specific endio handler and follow-up continuation. This enables the invalidation workflow to continue asynchronously through committed work processing rather than stopping after earlier stages."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Run invalidate follow-up work after commit completion by switching to the committed continuation and removing premature bio remap/cleanup from invalidate_remove().",
+        "what": "The callback passed to init_continuation() in invalidate_remove() was changed from invalidate_completed to invalidate_committed, and the immediate calls to remap_to_origin_clear_discard(cache, mg->overwrite_bio, mg->invalidate_oblock) and setting mg->overwrite_bio = NULL were removed from this function.",
+        "how": "This defers the discard-remap and overwrite_bio cleanup work until the commit continuation runs instead of performing it immediately after continue_after_commit() is set up, ensuring the post-invalidation handling occurs only once the commit has actually completed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Always complete overwrite bios and only assign a generic I/O error on pre-submission migration failure so existing bio status is preserved."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Run invalidate follow-up work after commit completion by switching to the committed continuation and removing premature bio remap/cleanup from invalidate_remove()."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Move cache invalidation follow-up processing to a committed-stage asynchronous path so bio remap/submission and cleanup happen only after commit completion.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change directly targets overwrite_bio handling in the dm-cache invalidation/migration path, ensuring the bio is always completed instead of being dropped/hung, which matches the root cause of an incomplete state transition leaving remapped write bios neither submitted nor completed."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly address the faulty passthrough invalidation path by moving overwrite_bio remap/submission and cleanup out of invalidate_remove() into a committed-stage asynchronous continuation, ensuring the bio is properly submitted after invalidation instead of being dropped and hung."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/md/dm-cache-target.c",
+            "lineno": 1525,
+            "content": "remap_to_origin_clear_discard(cache, mg->overwrite_bio, mg->invalidate_oblock);",
+            "rationale": "This remaps the overwrite bio during invalidation follow-up, but in the pre-fix path it is not followed by submission or deferred completion handling, directly causing the bio to be dropped and hang."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/md/dm-cache-target.c",
+            "lineno": 1526,
+            "content": "mg->overwrite_bio = NULL;",
+            "rationale": "This clears the only reference to the remapped overwrite bio immediately after remap, ensuring it is neither submitted nor later completed, which embodies the incomplete state transition."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/md/dm-cache-target.c",
+            "stmt_text": "mg->overwrite_bio = NULL;",
+            "location": "hunk",
+            "explanation": "This clears the sole tracked reference to the write-hit overwrite bio immediately after invalidation-path remap, without submission or deferral, causing the bio to be lost and hang. It directly reflects the incomplete state transition described in the root cause."
+          },
+          {
+            "vuln_file": "drivers/md/dm-cache-target.c",
+            "stmt_text": "remap_to_origin_clear_discard(cache, mg->overwrite_bio, mg->invalidate_oblock);",
+            "location": "hunk",
+            "explanation": "This remaps the overwrite bio in invalidate_remove() but does not submit it or preserve it for later completion. In the pre-fix path, this premature remap is part of the broken invalidation follow-up that leaves the write bio dropped."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "0c5eef0aad50",
+          "anchor_file": "drivers/md/dm-cache-target.c",
+          "anchor_lineno": 1526
+        },
+        "commit": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+        "commit_short": "b29d4986d0da",
+        "commit_msg": "dm cache: significant rework to leverage dm-bio-prison-v2\n\nThe cache policy interfaces have been updated to work well wi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-target.c",
+        "display_lineno": 1645,
+        "code_snippet": "commit b29d4986d0da1a27cd35917cdb433672f5c95d7f\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Thu Dec 15 04:57:31 2016 -0500\n\n    dm cache: significant rework to leverage dm-bio-prison-v2\n    \n    The cache policy interfaces have been updated to work well with the new\n    bio-prison v2 interface's ability to queue work immediately (promotion,\n    demotion, etc) -- overriding benefit being reduced latency on processing\n    IO through the cache.  Previously such work would be left for the DM\n    c",
+        "exists": true,
+        "reason": "The snippet contains the full passthrough invalidation path and specifically shows the vulnerable logic in `invalidate_remove()`. After successful invalidation, it does:\n\n- `init_continuation(&mg->k, invalidate_completed);`\n- `continue_after_commit(&cache->committer, &mg->k);`\n- `remap_to_origin_clear_discard(cache, mg->overwrite_bio, mg->invalidate_oblock);`\n- `mg->overwrite_bio = NULL;`\n- `schedule_commit(&cache->committer);`\n\nThis is the incomplete state transition described by the root cause. The write-hit `overwrite_bio` is remapped to origin, but it is neither submitted (no `generic_make_request`, `accounted_request`, or `issue_after_commit` for that bio) nor preserved for later completion/submission. Immediately afterward, `mg->overwrite_bio = NULL;` drops the only reference.\n\nThen `invalidate_completed()` calls `invalidate_complete(mg, !mg->k.input);`, and `invalidate_complete()` only errors the bio if `!success && mg->overwrite_bio` via `bio_io_error(mg->overwrite_bio);`. Because `mg->overwrite_bio` was cleared to NULL before commit completion, even failure will not complete/error the bio. On success there is also no completion/submission path for the bio at all.\n\nTherefore the vulnerable construct is present, and the fix is not present in this version."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "742c8fdc31e8",
+          "anchor_file": "drivers/md/dm-cache-target.c",
+          "anchor_lineno": 1645
+        },
+        "commit": "c6b4fcbad044e6fffcc75bba160e720eb8d67d17",
+        "commit_short": "c6b4fcbad044",
+        "commit_msg": "dm: add cache target\n\nAdd a target that allows a fast device such as an SSD to be used as a\ncache for a slower device su",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-target.c",
+        "display_lineno": 1016,
+        "code_snippet": "commit c6b4fcbad044e6fffcc75bba160e720eb8d67d17\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Fri Mar 1 22:45:51 2013 +0000\n\n    dm: add cache target\n    \n    Add a target that allows a fast device such as an SSD to be used as a\n    cache for a slower device such as a disk.\n    \n    A plug-in architecture was chosen so that the decisions about which data\n    to migrate and when are delegated to interchangeable tunable policy\n    modules.  The first general purpose module we have developed, calle",
+        "exists": false,
+        "reason": "The provided snippet is not the invalidate_remove() passthrough invalidation path described in the root cause. It only shows a small helper that computes a migration-volume threshold: `sector_t current_volume = (atomic_read(&cache->nr_migrations) + 1) * cache->sectors_per_block; return current_volume < cache->migration_threshold;`. The vulnerability concerns write-hit overwrite_bio handling after cache invalidation, specifically remapping/submitting/preserving a bio. None of that logic appears in this function body, so the relevant vulnerable construct is absent from the shown code. Because the snippet is unrelated to the described invalidation/remap/submit path, it is not sufficient to determine whether this commit's relevant code contains or fixes the bug."
+      }
+    },
+    {
+      "bic_found": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "0c5eef0aad50",
+          "anchor_file": "drivers/md/dm-cache-target.c",
+          "anchor_lineno": 1525
+        },
+        "commit": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+        "commit_short": "b29d4986d0da",
+        "commit_msg": "dm cache: significant rework to leverage dm-bio-prison-v2\n\nThe cache policy interfaces have been updated to work well wi",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-target.c",
+        "display_lineno": 1644,
+        "code_snippet": "commit b29d4986d0da1a27cd35917cdb433672f5c95d7f\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Thu Dec 15 04:57:31 2016 -0500\n\n    dm cache: significant rework to leverage dm-bio-prison-v2\n    \n    The cache policy interfaces have been updated to work well with the new\n    bio-prison v2 interface's ability to queue work immediately (promotion,\n    demotion, etc) -- overriding benefit being reduced latency on processing\n    IO through the cache.  Previously such work would be left for the DM\n    c",
+        "exists": true,
+        "reason": "The vulnerable logic is shown directly in `invalidate_remove()`. After successful invalidation, it does:\n\n- `init_continuation(&mg->k, invalidate_completed);`\n- `continue_after_commit(&cache->committer, &mg->k);`\n- `remap_to_origin_clear_discard(cache, mg->overwrite_bio, mg->invalidate_oblock);`\n- `mg->overwrite_bio = NULL;`\n- `schedule_commit(&cache->committer);`\n\nThis matches the root cause: for passthrough write-hit invalidation with an `overwrite_bio`, the bio is remapped to origin after cache invalidation, but it is neither submitted (`generic_make_request` / `accounted_request`) nor retained for later completion. Instead, the pointer is cleared with `mg->overwrite_bio = NULL` before the completion path runs.\n\nThe completion path confirms the bio is then lost: `invalidate_complete()` only errors the bio if `!success && mg->overwrite_bio`, i.e. `if (!success && mg->overwrite_bio) bio_io_error(mg->overwrite_bio);`. On success it never submits or ends the bio, and because `invalidate_remove()` set `mg->overwrite_bio = NULL`, even later error handling cannot reach it. Thus the write bio is dropped/hung.\n\nThere is no fix present here such as issuing the remapped bio after commit or preserving `mg->overwrite_bio` for submission/completion in `invalidate_completed()` / `invalidate_complete()`. Therefore the function contains the vulnerable construct and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "742c8fdc31e8",
+          "anchor_file": "drivers/md/dm-cache-target.c",
+          "anchor_lineno": 1644
+        },
+        "commit": "a59db67656021fa212e9b95a583f13c34eb67cd9",
+        "commit_short": "a59db6765602",
+        "commit_msg": "dm cache: fix problematic dual use of a single migration count variable\n\nIntroduce a new variable to count the number of",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/md/dm-cache-target.c",
+        "display_lineno": 1430,
+        "code_snippet": "commit a59db67656021fa212e9b95a583f13c34eb67cd9\nAuthor: Joe Thornber <ejt@redhat.com>\nDate:   Fri Jan 23 10:16:16 2015 +0000\n\n    dm cache: fix problematic dual use of a single migration count variable\n    \n    Introduce a new variable to count the number of allocated migration\n    structures.  The existing variable cache->nr_migrations became\n    overloaded.  It was used to:\n    \n     i) track of the number of migrations in flight for the purposes of\n        quiescing during suspend.\n    \n     ",
+        "exists": false,
+        "reason": "The provided function body is only a small helper that computes whether a migration threshold is below a limit: `sector_t current_volume = (atomic_read(&cache->nr_io_migrations) + 1) * cache->sectors_per_block; return current_volume < cache->migration_threshold;`. The root cause described involves the dm-cache passthrough invalidation path, specifically `invalidate_remove()` mishandling a write-hit `overwrite_bio` by remapping it after invalidation without submitting or preserving it. None of that logic is present in this snippet, and `invalidate_remove()`/bio remap/submission handling is absent. Therefore the snippet is not sufficient to determine whether the vulnerable construct is present or fixed."
+      }
+    },
+    {
+      "bic_found": "b29d4986d0da1a27cd35917cdb433672f5c95d7f",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "b29d4986d0da1a27cd35917cdb433672f5c95d7f": 2
+      },
+      "bic_candidates": [
+        "b29d4986d0da1a27cd35917cdb433672f5c95d7f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

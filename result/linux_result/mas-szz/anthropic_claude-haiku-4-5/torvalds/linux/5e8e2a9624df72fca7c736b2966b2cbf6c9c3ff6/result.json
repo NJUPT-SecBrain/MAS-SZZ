@@ -1,0 +1,425 @@
+{
+  "cveid": "CVE-2026-53215",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "5e8e2a9624df72fca7c736b2966b2cbf6c9c3ff6"
+  ],
+  "ground_truth_bic": "07dd0a7aae7f72af7cec18909581c2bb570edddc",
+  "predicted_bic": [
+    "07dd0a7aae7f72af7cec18909581c2bb570edddc",
+    "0e0372816b9cbd22c82e3e7cd36e8e74c58ba641"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 31,
+  "llm_tokens": 49918,
+  "root_cause": {
+    "text": "The driver was attempting to return RX buffers to the hardware BM pool after ownership had been transferred to XDP or the network stack, causing potential DMA writes to memory no longer owned by the RX ring.",
+    "evidence": "The patch moves `mvpp2_rx_refill()` to execute **before** the buffer is handed to XDP or attached to an skb. The commit message explicitly states: \"mvpp2_rx_refill() can fail after the current buffer has been handed to XDP or attached to an skb. In those cases mvpp2_run_xdp() may have recycled, redirected, or queued the page for XDP_TX, and an skb free also retires the data buffer. Returning such a buffer to BM lets hardware DMA into memory that is no longer owned by the RX ring.\" The patch also introduces a new error path `err_drop_frame_retired` that properly frees the buffer through page_pool or dma_unmap instead of returning it to BM when the buffer has already been retired by the network stack.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+      "lineno": 3991,
+      "content": "err = mvpp2_rx_refill(port, bm_pool, pp, pool);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+      "lineno": 3994,
+      "content": "goto err_drop_frame;",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+      "lineno": 4008,
+      "content": "skb = slab_build_skb(data);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The driver was attempting to return RX buffers to the hardware BM pool after ownership had been transferred to XDP or the network stack, causing potential DMA writes to memory no longer owned by the RX ring.",
+      "evidence_points": "The patch moves `mvpp2_rx_refill()` to execute **before** the buffer is handed to XDP or attached to an skb. The commit message explicitly states: \"mvpp2_rx_refill() can fail after the current buffer has been handed to XDP or attached to an skb. In those cases mvpp2_run_xdp() may have recycled, redirected, or queued the page for XDP_TX, and an skb free also retires the data buffer. Returning such a buffer to BM lets hardware DMA into memory that is no longer owned by the RX ring.\" The patch also introduces a new error path `err_drop_frame_retired` that properly frees the buffer through page_pool or dma_unmap instead of returning it to BM when the buffer has already been retired by the network stack."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add error checking for buffer pool refill operation to prevent processing packets with invalid buffer descriptors.",
+        "what": "Added a call to mvpp2_rx_refill() with error checking before the xdp_prog conditional block. If refill fails, logs an error message and jumps to err_drop_frame label.",
+        "how": "This change ensures that buffer pool refilling is attempted and validated during packet reception. If refilling fails, the frame is dropped and an error is logged, preventing potential use of invalid or unavailable buffer descriptors in subsequent packet processing."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Remove redundant or incorrect buffer pool refill logic from the XDP processing path to fix packet handling behavior.",
+        "what": "Removed a conditional block that calls mvpp2_rx_refill() and checks its return value, along with associated error handling and netdev_err() logging, while preserving the subsequent packet statistics updates.",
+        "how": "This change eliminates the buffer pool refill operation that was previously triggered after XDP processing. The code now skips refilling the buffer pool in the XDP return path and proceeds directly to updating packet statistics. This means buffer pools may not be replenished as promptly after XDP frame processing, potentially affecting buffer availability for subsequent packets."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix resource leak on skb allocation failure by explicitly cleaning up DMA mappings or returning pages to pool before error handling, and enable skb buffer recycling through page pool when available.",
+        "what": "Replaced a simple `goto err_drop_frame` with explicit resource cleanup logic that conditionally calls either `page_pool_put_page()` (when page pool is available) or `dma_unmap_single_attrs()` followed by `mvpp2_frag_free()` (when using buffer manager pool), then jumps to `err_drop_frame_retired` instead. Additionally added a call to `skb_mark_for_recycle(skb)` after successful skb creation when page pool is available.",
+        "how": "This change ensures proper cleanup of DMA-mapped memory and page pool resources when skb allocation fails. Previously, the code would jump to a generic error handler that may not have properly released these resources. Now it explicitly unmaps DMA memory or returns pages to the pool based on which allocation path was taken. The `skb_mark_for_recycle()` call enables the networking stack to recycle skb buffers through the page pool when available, improving memory efficiency."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "refactor",
+        "intent_summary": "Simplify rx packet handling by removing buffer pool refill logic and inverting the DMA unmapping condition to execute only when no buffer pool is available.",
+        "what": "Removed the mvpp2_rx_refill() call with its error handling block (4 lines), removed the skb_mark_for_recycle() call, and inverted the conditional logic from 'if (pp)' to 'if (!pp)' for the dma_unmap_single_attrs() call.",
+        "how": "This change eliminates the buffer pool refill operation during packet reception and its associated error handling. It removes the skb recycling optimization when a buffer pool is available. The dma_unmap_single_attrs() call now executes only when pp is NULL (no buffer pool), whereas previously it executed when pp was non-NULL. This fundamentally alters the packet reception flow by skipping refill logic and reversing the condition for DMA unmapping."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Reorder error handling to ensure buffers are returned to the pool before updating error statistics, preventing potential resource leaks in the RX error path.",
+        "what": "Moved the error statistics increment (dev->stats.rx_errors++) and mvpp2_rx_error() call to after the buffer return logic, and introduced a new label 'err_drop_frame_retired' to separate the error handling path from the buffer cleanup path.",
+        "how": "This change ensures that when a frame is dropped due to an error, the buffer is returned to the pool before the error statistics are updated and the error handler is invoked. Previously, error accounting happened before buffer cleanup, which could lead to resource leaks or incorrect error handling order. The new label allows some error paths to skip error accounting while still performing buffer cleanup."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add error checking for buffer pool refill operation to prevent processing packets with invalid buffer descriptors."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Remove redundant or incorrect buffer pool refill logic from the XDP processing path to fix packet handling behavior."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Reorder error handling to ensure buffers are returned to the pool before updating error statistics, preventing potential resource leaks in the RX error path."
+        },
+        {
+          "group_id": 3,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Simplify rx packet handling by removing buffer pool refill logic and inverting the DMA unmapping condition to execute only when no buffer pool is available."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix resource leaks in the RX error path by ensuring proper cleanup and return of buffers to the pool before error handling or statistics updates.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group adds error checking for buffer pool refill operations and invalid buffer descriptors, which is a defensive programming practice. However, the root cause is about returning buffers to the hardware pool after ownership transfer to XDP/network stack. The group does not address the core issue of preventing buffer returns after ownership has been relinquished, nor does it track or manage buffer ownership state."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by removing buffer pool refill logic from the XDP processing path. This prevents the driver from incorrectly returning RX buffers to the hardware BM pool after ownership has been transferred to XDP, which is the exact vulnerability described."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by ensuring buffers are returned to the pool at the correct time in the RX error path. Hunk 2 fixes premature buffer returns by cleaning up DMA mappings before error handling, and Hunk 4 reorders operations to return buffers to the pool before statistics updates. Both changes prevent the scenario where buffers are returned to hardware after ownership has been transferred elsewhere, which is the core vulnerability issue."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by removing buffer pool refill logic that was attempting to return RX buffers to the hardware BM pool after ownership transfer. By eliminating this refill mechanism and inverting the DMA unmapping condition, the changes prevent the driver from returning buffers to the pool when they're no longer owned by the RX ring, which is the core issue described in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+            "lineno": 3991,
+            "content": "err = mvpp2_rx_refill(port, bm_pool, pp, pool);",
+            "rationale": "This line attempts to refill the BM pool after XDP processing has already transferred buffer ownership. The refill operation tries to return buffers to hardware that are no longer owned by the RX ring, causing potential DMA writes to memory not under RX ring control."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+            "lineno": 3991,
+            "content": "err = mvpp2_rx_refill(port, bm_pool, pp, pool);",
+            "rationale": "Similar to Hunk 1, this refill call in the normal packet processing path (Hunk 3) attempts to return buffers to the pool after they have been transferred to the network stack via skb allocation, violating buffer ownership semantics."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+            "lineno": 3994,
+            "content": "goto err_drop_frame;",
+            "rationale": "The error path at line 4011 jumps to err_drop_frame without properly returning the buffer to the pool first. This allows the subsequent error handling to potentially attempt operations on buffers that have already been transferred to XDP/network stack."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+            "lineno": 4008,
+            "content": "skb = slab_build_skb(data);",
+            "rationale": "When skb allocation fails at line 4008, the code jumps to err_drop_frame without returning the buffer to the pool, but the buffer ownership has already been transferred to the skb allocation attempt, creating a resource leak and potential DMA access to freed memory."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+            "stmt_text": "err = mvpp2_rx_refill(port, bm_pool, pp, pool);",
+            "location": "hunk",
+            "explanation": "This statement attempts to refill the BM pool after buffer ownership has been transferred to XDP or the network stack. The refill operation tries to return buffers to hardware that are no longer owned by the RX ring, causing potential DMA writes to memory not under RX ring control. This violates buffer ownership semantics and is the core of the vulnerability."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+            "stmt_text": "goto err_drop_frame;",
+            "location": "hunk",
+            "explanation": "The error path jumps to err_drop_frame without properly returning the buffer to the pool first when skb allocation fails. This allows subsequent error handling to potentially attempt operations on buffers that have already been transferred to XDP/network stack, creating a resource leak and potential DMA access to freed memory."
+          },
+          {
+            "vuln_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+            "stmt_text": "skb = slab_build_skb(data);",
+            "location": "hunk",
+            "explanation": "When skb allocation fails at this statement, the code path jumps to err_drop_frame without returning the buffer to the pool. The buffer ownership has already been transferred to the skb allocation attempt, creating a resource leak and potential DMA access to freed memory when the error handling path executes."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f3c6aa078927",
+          "anchor_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+          "anchor_lineno": 3991
+        },
+        "commit": "07dd0a7aae7f72af7cec18909581c2bb570edddc",
+        "commit_short": "07dd0a7aae7f",
+        "commit_msg": "mvpp2: add basic XDP support\n\nAdd XDP native support.\nBy now only XDP_DROP, XDP_PASS and XDP_REDIRECT\nverdicts are suppo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "display_lineno": 3172,
+        "code_snippet": "commit 07dd0a7aae7f72af7cec18909581c2bb570edddc\nAuthor: Matteo Croce <mcroce@microsoft.com>\nDate:   Thu Jul 2 16:12:42 2020 +0200\n\n    mvpp2: add basic XDP support\n    \n    Add XDP native support.\n    By now only XDP_DROP, XDP_PASS and XDP_REDIRECT\n    verdicts are supported.\n    \n    Co-developed-by: Sven Auhagen <sven.auhagen@voleatech.de>\n    Signed-off-by: Sven Auhagen <sven.auhagen@voleatech.de>\n    Signed-off-by: Matteo Croce <mcroce@microsoft.com>\n    Signed-off-by: David S. Miller <davem",
+        "exists": true,
+        "reason": "The vulnerability exists in the mvpp2_run_xdp() function and the XDP handling in mvpp2_rx(). The root cause is that after XDP processing returns (when ret != 0), the code calls mvpp2_rx_refill() to refill the BM pool, but then continues the loop without properly handling the buffer ownership. Specifically: (1) In mvpp2_run_xdp(), when XDP_DROP or XDP_REDIRECT with error occurs, the page is returned to the pool via page_pool_put_page(pp, page, sync, true). (2) However, in mvpp2_rx() at line 3119-3127, after mvpp2_run_xdp() returns a non-zero ret value, the code calls mvpp2_rx_refill() and then 'continue', which skips the mvpp2_bm_pool_put() call at line 3215. (3) This means the same buffer is being returned to both the page pool (in mvpp2_run_xdp) AND the hardware BM pool (via mvpp2_rx_refill), causing double-ownership and potential DMA writes to memory no longer owned by the RX ring. The fix would require ensuring that when XDP processes a buffer, it is NOT subsequently returned to the hardware BM pool via mvpp2_bm_pool_put()."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "b27db2274ba8",
+          "anchor_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+          "anchor_lineno": 3172
+        },
+        "commit": "3f518509dedc99f0b755d2ce68d24f610e3a005a",
+        "commit_short": "3f518509dedc",
+        "commit_msg": "ethernet: Add new driver for Marvell Armada 375 network unit\n\nThis commit adds a new network driver for the network cont",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "display_lineno": 5098,
+        "code_snippet": "",
+        "exists": false,
+        "reason": "This function is a TX (transmit) fragment processing function, not an RX (receive) buffer handling function. The vulnerability root cause describes a problem with returning RX buffers to the hardware BM pool after ownership transfer to XDP or the network stack. This function processes TX fragments for transmission, mapping them to DMA addresses and setting up TX descriptors. It does not involve RX buffer pool management, BM pool operations, or the scenario described in the vulnerability. The function is not related to the vulnerable construct described in the root cause."
+      }
+    },
+    {
+      "bic_found": "07dd0a7aae7f72af7cec18909581c2bb570edddc",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f3c6aa078927",
+          "anchor_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+          "anchor_lineno": 3994
+        },
+        "commit": "07dd0a7aae7f72af7cec18909581c2bb570edddc",
+        "commit_short": "07dd0a7aae7f",
+        "commit_msg": "mvpp2: add basic XDP support\n\nAdd XDP native support.\nBy now only XDP_DROP, XDP_PASS and XDP_REDIRECT\nverdicts are suppo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "display_lineno": 3175,
+        "code_snippet": "commit 07dd0a7aae7f72af7cec18909581c2bb570edddc\nAuthor: Matteo Croce <mcroce@microsoft.com>\nDate:   Thu Jul 2 16:12:42 2020 +0200\n\n    mvpp2: add basic XDP support\n    \n    Add XDP native support.\n    By now only XDP_DROP, XDP_PASS and XDP_REDIRECT\n    verdicts are supported.\n    \n    Co-developed-by: Sven Auhagen <sven.auhagen@voleatech.de>\n    Signed-off-by: Sven Auhagen <sven.auhagen@voleatech.de>\n    Signed-off-by: Matteo Croce <mcroce@microsoft.com>\n    Signed-off-by: David S. Miller <davem",
+        "exists": true,
+        "reason": "The vulnerability exists in the mvpp2_rx() function's XDP handling. When XDP_DROP, XDP_REDIRECT (with error), or XDP_ABORTED/XDP_EXCEPTION actions occur, the code calls page_pool_put_page(pp, page, sync, true) in mvpp2_run_xdp() to return the buffer to the page pool. However, immediately after mvpp2_run_xdp() returns with a non-zero ret value (lines 3169-3177), the code calls mvpp2_rx_refill(port, bm_pool, pp, pool) to refill the BM pool. The critical issue is that the same page has already been returned to the page pool via page_pool_put_page(), but the code then attempts to refill the hardware BM pool without properly accounting for this ownership transfer. This creates a race condition where the hardware BM pool may still hold a DMA address pointing to a page that is now owned by the page pool and could be reallocated, leading to potential DMA writes to memory no longer owned by the RX ring. The fix would require ensuring that when ownership is transferred to the page pool (via page_pool_put_page), the buffer is NOT subsequently returned to the BM pool, or implementing proper synchronization to prevent concurrent access."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "b27db2274ba8",
+          "anchor_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+          "anchor_lineno": 3175
+        },
+        "commit": "e531f76757eb9f3314957cee24e6e9a0fa4aa98c",
+        "commit_short": "e531f76757eb",
+        "commit_msg": "net: mvpp2: handle cases where more CPUs are available than s/w threads\n\nThe Marvell PPv2 network controller has 9 inter",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "display_lineno": 2787,
+        "code_snippet": "commit e531f76757eb9f3314957cee24e6e9a0fa4aa98c\nAuthor: Antoine Tenart <atenart@kernel.org>\nDate:   Wed Sep 19 11:27:10 2018 +0200\n\n    net: mvpp2: handle cases where more CPUs are available than s/w threads\n    \n    The Marvell PPv2 network controller has 9 internal threads. The driver\n    works fine when there are less CPUs available than threads. This isn't\n    true if more CPUs are available. As this is a valid use case, handle\n    this particular case.\n    \n    Signed-off-by: Antoine Tenart",
+        "exists": false,
+        "reason": "This commit introduces protective measures against the vulnerability described. The root cause was returning RX buffers to hardware BM pool after ownership transfer. The commit adds: (1) A modulo operation in mvpp2_cpu_to_thread() to handle cases where CPUs exceed threads (line 91: 'return cpu % priv->nthreads'), (2) Spin lock protection in mvpp2_bm_pool_put() when multiple CPUs map to the same thread (lines 635-637 and 667-669: 'if (test_bit(thread, &port->priv->lock_map)) spin_lock_irqsave/unlock_irqrestore'), (3) Similar locking in mvpp2_tx() function (lines 2968-2969 and 3056-3057), and (4) Thread boundary checks in interrupt handlers (lines 910-911, 928-929, 1817-1819) to prevent operations on invalid threads. The lock_map bitmap is populated when shared CPUs exist (lines 5264-5266: 'if (shared > 0) bitmap_fill(&priv->lock_map, min_t(int, shared, MVPP2_MAX_THREADS))'). These changes ensure proper synchronization when multiple CPUs access the same hardware thread, preventing the race condition where buffers could be returned after ownership transfer."
+      }
+    },
+    {
+      "bic_found": "07dd0a7aae7f72af7cec18909581c2bb570edddc",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f3c6aa078927",
+          "anchor_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+          "anchor_lineno": 4008
+        },
+        "commit": "4467c09bc7a66a17ffd84d6262d48279b26106ea",
+        "commit_short": "4467c09bc7a6",
+        "commit_msg": "net: mvpp2: use slab_build_skb for oversized frames\n\nSetting frag_size to 0 to indicate kmalloc has been deprecated,\nuse",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "display_lineno": 4020,
+        "code_snippet": "commit 4467c09bc7a66a17ffd84d6262d48279b26106ea\nAuthor: Aryan Srivastava <aryan.srivastava@alliedtelesis.co.nz>\nDate:   Thu Jun 13 14:49:00 2024 +1200\n\n    net: mvpp2: use slab_build_skb for oversized frames\n    \n    Setting frag_size to 0 to indicate kmalloc has been deprecated,\n    use slab_build_skb directly.\n    \n    Fixes: ce098da1497c (\"skbuff: Introduce slab_build_skb()\")\n    Signed-off-by: Aryan Srivastava <aryan.srivastava@alliedtelesis.co.nz>\n    Reviewed-by: Kees Cook <kees@kernel.org",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the RX path. The issue is that after XDP processing (lines 3988-4014), when XDP returns a non-zero value (indicating the packet was handled by XDP), the code calls mvpp2_rx_refill() at line 4005 to return the buffer to the pool. However, the critical problem occurs at line 4067 in the err_drop_frame label: mvpp2_bm_pool_put() is called to return the buffer to the hardware BM pool using the original dma_addr and phys_addr. The vulnerability is that when XDP or the network stack takes ownership of the buffer (lines 4017-4057), the buffer should NOT be returned to the BM pool afterward. Yet at line 4035, mvpp2_rx_refill() is unconditionally called even after the skb has been created and the buffer ownership transferred. The subsequent call to mvpp2_bm_pool_put() at line 4067 (in error paths) or the refill at line 4035 can cause DMA writes to memory no longer owned by the RX ring. The fix would require tracking whether the buffer has been transferred to XDP/network stack and conditionally returning it to the pool only when appropriate, but this logic is not present in the current code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "d20f6b3d747c",
+          "anchor_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+          "anchor_lineno": 4020
+        },
+        "commit": "0e0372816b9cbd22c82e3e7cd36e8e74c58ba641",
+        "commit_short": "0e0372816b9c",
+        "commit_msg": "net: mvpp2: switch to build_skb() in the RX path\n\nThis commit adapts the mvpp2 RX path to use the build_skb() method. No",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c",
+        "display_lineno": 5174,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The vulnerable construct is present in the error handling path. At line 5174, when `build_skb()` fails, the code jumps to `err_drop_frame` (line 5156), which calls `mvpp2_pool_refill()` at lines 5161-5162 to return the buffer to the BM pool. However, the critical issue is that at line 5177-5181, `mvpp2_rx_refill()` is called BEFORE the DMA unmapping at lines 5183-5184. If `mvpp2_rx_refill()` fails and jumps to `err_drop_frame`, the buffer is returned to the hardware BM pool via `mvpp2_pool_refill()` while still being DMA-mapped (the `dma_unmap_single()` hasn't been called yet). This means the hardware can write to memory that is still marked as DMA-mapped, violating DMA ownership semantics. The fix would require calling `dma_unmap_single()` before attempting `mvpp2_rx_refill()`, or ensuring the buffer is properly unmapped before returning it to the pool in the error path."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 2"
+    },
+    {
+      "bic_found": "0e0372816b9cbd22c82e3e7cd36e8e74c58ba641",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "07dd0a7aae7f72af7cec18909581c2bb570edddc": 2,
+        "0e0372816b9cbd22c82e3e7cd36e8e74c58ba641": 1
+      },
+      "bic_candidates": [
+        "07dd0a7aae7f72af7cec18909581c2bb570edddc",
+        "0e0372816b9cbd22c82e3e7cd36e8e74c58ba641"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

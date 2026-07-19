@@ -1,0 +1,311 @@
+{
+  "cveid": "CVE-2026-53085",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "d8e27d2d22b6e2df3a0125b8c08e9aace38c954c"
+  ],
+  "ground_truth_bic": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+  "predicted_bic": [
+    "4ac4546821584736798aaa9e97da9f6eaf689ea3"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 30,
+  "llm_tokens": 28457,
+  "root_cause": {
+    "text": "The open-coded task_vma iterator reads task->mm locklessly and acquires mmap_read_trylock() without taking an mm reference via mmget(), so if the task exits concurrently the mm_struct can be freed, causing a use-after-free.",
+    "evidence": "Commit message explicitly states: \"The open-coded task_vma iterator reads task->mm locklessly and acquires mmap_read_trylock() but never calls mmget(). If the task exits concurrently, the mm_struct can be freed as it is not SLAB_TYPESAFE_BY_RCU, resulting in a use-after-free.\" Patch adds mmget() after safely reading task->mm under alloc_lock, and adds bpf_iter_mmput_async() in destroy and error paths to drop the reference.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/bpf/task_iter.c",
+      "lineno": 837,
+      "content": "kit->data->mm = task->mm;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The open-coded task_vma iterator reads task->mm locklessly and acquires mmap_read_trylock() without taking an mm reference via mmget(), so if the task exits concurrently the mm_struct can be freed, causing a use-after-free.",
+      "evidence_points": "Commit message explicitly states: \"The open-coded task_vma iterator reads task->mm locklessly and acquires mmap_read_trylock() but never calls mmget(). If the task exits concurrently, the mm_struct can be freed as it is not SLAB_TYPESAFE_BY_RCU, resulting in a use-after-free.\" Patch adds mmget() after safely reading task->mm under alloc_lock, and adds bpf_iter_mmput_async() in destroy and error paths to drop the reference."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "kernel/bpf/task_iter.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add missing include for <linux/sched/mm.h> to resolve compilation error due to use of memory management functions from that header.",
+        "what": "Added #include <linux/sched/mm.h> between existing includes of <linux/mm_types.h> and \"mmap_unlock_work.h\".",
+        "how": "This ensures that the file has access to declarations from the sched/mm header, likely needed for functions like mmget, mmput, get_task_mm, or similar memory management routines that are used in the code. Without it, compilation would fail due to missing function prototypes or type definitions."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a static inline wrapper to safely put mm_struct references using mmput_async when MMU is enabled, falling back to mmput otherwise, for use in BPF iterator task_vma code.",
+        "what": "Added a new static inline function bpf_iter_mmput_async that calls mmput_async if CONFIG_MMU is defined, otherwise calls mmput.",
+        "how": "This provides a safe helper for releasing mm_struct references in contexts where sleeping is not allowed (atomic contexts) on MMU systems, while falling back to the standard mmput on non-MMU systems. The function is defined static inline and is placed before the bpf_iter_task_vma_kern_data struct definition, presumably for use in that file's code."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "guard",
+        "intent_summary": "Add guards to bpf_iter_task_vma_new to reject usage when CONFIG_MMU is disabled or when running in irqs-disabled context to prevent deadlocks.",
+        "what": "Added two early-exit checks at the start of bpf_iter_task_vma_new: one for !CONFIG_MMU returning -EOPNOTSUPP, and one for irqs_disabled() returning -EBUSY, both setting kit->data to NULL.",
+        "how": "Prevents initialization of the iterator when MMU support is missing or when running in an irqs-disabled context, avoiding potential deadlocks and use of unavailable functions."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix race condition and use-after-free in bpf_iter_task_vma_new by safely reading task->mm under alloc_lock and taking an mm reference.",
+        "what": "Added spin_trylock on task->alloc_lock before reading task->mm; conditionally increments mm reference count (mmget) if mm is non-NULL and task is not PF_KTHREAD; returns -EBUSY if lock cannot be acquired; otherwise sets mm to NULL for kernel threads.",
+        "how": "Ensures safe, race-free access to task->mm under lock, prevents use-after-free by taking an mm reference, and avoids deadlock in softirq context by using trylock and returning -EBUSY on contention."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix missing mm reference cleanup in bpf_iter_task_vma_new error path to avoid memory leak.",
+        "what": "Added a new label 'err_cleanup_mmget' that calls bpf_iter_mmput_async before falling through to 'err_cleanup_iter', and removed the conditional check for kit->data->task in put_task_struct at err_cleanup_iter.",
+        "how": "In the error path when irq_work_busy or mmap_read_trylock fails, the function now releases the mm reference via bpf_iter_mmput_async before releasing the task reference and freeing memory, preventing a potential memory leak. The put_task_struct call is now unconditional because task is guaranteed non-NULL at that point."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix a missing mm reference decrement in BPF task VMA iterator destruction to prevent a reference leak.",
+        "what": "Added a call to bpf_iter_mmput_async() after put_task_struct() and before bpf_mem_free() in the bpf_iter_task_vma_destroy function, inside the if (kit->data) block.",
+        "how": "This adds an asynchronous decrement of the mm_struct reference count when cleaning up the iterator data, ensuring that the mm reference obtained during initialization is properly released."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Add missing include for <linux/sched/mm.h> to resolve compilation error due to use of memory management functions from that header."
+        },
+        {
+          "group_id": 1,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a static inline wrapper to safely put mm_struct references using mmput_async when MMU is enabled, falling back to mmput otherwise, for use in BPF iterator task_vma code."
+        },
+        {
+          "group_id": 2,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add guards to bpf_iter_task_vma_new to reject usage when CONFIG_MMU is disabled or when running in irqs-disabled context to prevent deadlocks."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix race condition and use-after-free in bpf_iter_task_vma_new by safely reading task->mm under alloc_lock and taking an mm reference."
+        },
+        {
+          "group_id": 4,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix a missing mm reference decrement in BPF task VMA iterator destruction to prevent a reference leak."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 4,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix missing mm reference decrements in BPF task VMA iterator to prevent memory leaks",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "Adding the missing include for <linux/sched/mm.h> is a direct consequence of needing to use memory management functions (like mmget()) to fix the use-after-free vulnerability. Without this include, the code would fail to compile, making it a necessary part of the fix."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability by adding a wrapper to safely put mm_struct references, which is necessary for proper reference counting when using the task_vma iterator to prevent use-after-free after acquiring an mm reference via mmget()."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "Group 2 adds guards for non-MMU or irqs-disabled contexts to prevent deadlocks, which does not address the use-after-free root cause caused by missing mmget() when the task exits."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by fixing the use-after-free through safe reading of task->mm under alloc_lock and taking an mm reference, which prevents the mm_struct from being freed during concurrent task exit."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 4,
+        "is_relevant": false,
+        "reason": "Group 4 addresses missing mm reference decrements (put) to prevent memory leaks, whereas the root cause is a use-after-free due to missing mmget() (get) when accessing mm locklessly. The fix for the root cause would involve adding mmget() calls, not fixing put operations. Thus, this group is not directly related to the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/bpf/task_iter.c",
+            "lineno": 837,
+            "content": "kit->data->mm = task->mm;",
+            "rationale": "This statement reads task->mm without any synchronization or reference counting, allowing concurrent task exit to free the mm_struct and cause use-after-free when the iterator later uses it."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/bpf/task_iter.c",
+            "stmt_text": "kit->data->mm = task->mm;",
+            "location": "hunk",
+            "explanation": "This statement reads task->mm without synchronization or reference counting. If the task exits concurrently, the mm_struct can be freed, causing a use-after-free when the iterator later acquires mmap_read_trylock on the freed mm."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "a0c584fc1805",
+          "anchor_file": "kernel/bpf/task_iter.c",
+          "anchor_lineno": 837
+        },
+        "commit": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+        "commit_short": "4ac454682158",
+        "commit_msg": "bpf: Introduce task_vma open-coded iterator kfuncs\n\nThis patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which al",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/bpf/task_iter.c",
+        "display_lineno": 850,
+        "code_snippet": "commit 4ac4546821584736798aaa9e97da9f6eaf689ea3\nAuthor: Dave Marchevsky <davemarchevsky@fb.com>\nDate:   Fri Oct 13 13:44:24 2023 -0700\n\n    bpf: Introduce task_vma open-coded iterator kfuncs\n    \n    This patch adds kfuncs bpf_iter_task_vma_{new,next,destroy} which allow\n    creation and manipulation of struct bpf_iter_task_vma in open-coded\n    iterator style. BPF programs can use these kfuncs directly or through\n    bpf_for_each macro for natural-looking iteration of all task vmas.\n    \n    Th",
+        "exists": true,
+        "reason": "In bpf_iter_task_vma_new, after get_task_struct, the code reads 'kit->data->mm = task->mm;' without taking an mm reference (mmget). This allows a concurrent task exit to free the mm_struct, leading to use-after-free when mmap_read_trylock is called on the dangling pointer. No reference count increment is performed to protect the mm."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "4ac4546821584736798aaa9e97da9f6eaf689ea3",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "4ac4546821584736798aaa9e97da9f6eaf689ea3": 1
+      },
+      "bic_candidates": [
+        "4ac4546821584736798aaa9e97da9f6eaf689ea3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

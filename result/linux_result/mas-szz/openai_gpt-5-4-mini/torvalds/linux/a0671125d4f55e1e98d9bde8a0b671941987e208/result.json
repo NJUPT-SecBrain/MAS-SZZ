@@ -1,0 +1,396 @@
+{
+  "cveid": "CVE-2026-23413",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a0671125d4f55e1e98d9bde8a0b671941987e208"
+  ],
+  "ground_truth_bic": "1cb6f0bae50441f4b4b32a28315853b279c7404e",
+  "predicted_bic": [
+    "e420bed025071a623d2720a92bc2245c84757ecb",
+    "c7eb7d7230509ec862d4144f7a831f995bc5d028"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 32300,
+  "root_cause": {
+    "text": "`clsact_destroy()` and `ingress_destroy()` used `dev->tcx_{ingress,egress}` non-NULL checks to decide whether to drop `tcx_miniq` references, but during a failed `clsact_init()` rollback the qdisc’s per-instance miniq state may be only partially initialized, causing destroy to decrement a stale `bpf_mprog_entry` from the previous clsact instance and trigger a use-after-free.",
+    "evidence": "The patch description says the failure can happen mid-init via `tcf_block_get_ext()`, and that “clsact_destroy() tests whether the {ingress,egress}_entry was non-NULL. However, even in midway failure on the replacement, both are in fact non-NULL with a valid egress_entry from the previous clsact instance.” The fix replaces those checks with `mini_qdisc_pair_inited(&q->miniqp_ingress/egress)`, and `ingress_destroy()` is similarly changed to only use `dev->tcx_ingress` after confirming the qdisc instance was initialized.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/sched/sch_ingress.c",
+      "lineno": 116,
+      "content": "struct bpf_mprog_entry *entry = rtnl_dereference(dev->tcx_ingress);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/sched/sch_ingress.c",
+      "lineno": 301,
+      "content": "tcf_block_put_ext(q->ingress_block, sch, &q->ingress_block_info);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/sched/sch_ingress.c",
+      "lineno": 302,
+      "content": "tcf_block_put_ext(q->egress_block, sch, &q->egress_block_info);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`clsact_destroy()` and `ingress_destroy()` used `dev->tcx_{ingress,egress}` non-NULL checks to decide whether to drop `tcx_miniq` references, but during a failed `clsact_init()` rollback the qdisc’s per-instance miniq state may be only partially initialized, causing destroy to decrement a stale `bpf_mprog_entry` from the previous clsact instance and trigger a use-after-free.",
+      "evidence_points": "The patch description says the failure can happen mid-init via `tcf_block_get_ext()`, and that “clsact_destroy() tests whether the {ingress,egress}_entry was non-NULL. However, even in midway failure on the replacement, both are in fact non-NULL with a valid egress_entry from the previous clsact instance.” The fix replaces those checks with `mini_qdisc_pair_inited(&q->miniqp_ingress/egress)`, and `ingress_destroy()` is similarly changed to only use `dev->tcx_ingress` after confirming the qdisc instance was initialized."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "include/net/sch_generic.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/sched/sch_ingress.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/sched/sch_ingress.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/sched/sch_ingress.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/sched/sch_ingress.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add a helper to detect whether a `mini_Qdisc_pair` has been initialized.",
+        "what": "A new static inline helper function `mini_qdisc_pair_inited(struct mini_Qdisc_pair *miniqp)` was added, and it returns `!!miniqp->p_miniq`.",
+        "how": "This provides a simple way to check whether a `mini_Qdisc_pair` has been initialized by testing whether its `p_miniq` pointer is non-NULL, enabling callers to gate behavior on initialization state."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix ingress qdisc destruction to only update tcx ingress state when the mini qdisc pair has been initialized.",
+        "what": "The local variable `entry` in `ingress_destroy()` was changed from being initialized immediately with `rtnl_dereference(dev->tcx_ingress)` to being declared uninitialized, and the subsequent `tcx_miniq_dec()` / `tcx_entry_is_active()` / `tcx_entry_update()` sequence is now executed only when `mini_qdisc_pair_inited(&q->miniqp)` is true, with `entry` assigned inside that conditional block.",
+        "how": "At runtime, the teardown path now avoids touching `dev->tcx_ingress` unless the mini qdisc pair was actually initialized, preventing operations on an entry when ingress miniq state was never set up. This narrows the destroy logic to only decrement and possibly clear the tcx ingress entry when the corresponding miniq setup exists."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Move tcx ingress/egress entry declarations to the top of `clsact_destroy()` to support later handling without changing behavior.",
+        "what": "The declarations of `ingress_entry` and `egress_entry` were moved out of their initialization statements and are now declared at the start of `clsact_destroy()`. Their initial values are no longer assigned inline from `rtnl_dereference(dev->tcx_ingress)` and `rtnl_dereference(dev->tcx_egress)` in the declaration.",
+        "how": "At runtime, this change does not alter the logic of `clsact_destroy()` by itself, but it separates variable declaration from initialization, likely to allow the entries to be assigned later in a different control path or after additional checks."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix clsact ingress destruction to only run when the ingress mini-qdisc pair is initialized and to dereference the current ingress TCX entry during cleanup.",
+        "what": "In clsact_destroy(), the conditional guarding the ingress cleanup was changed from `if (ingress_entry)` to `if (mini_qdisc_pair_inited(&q->miniqp_ingress))`, and `ingress_entry` is now reloaded from `rtnl_dereference(dev->tcx_ingress)` inside that block before calling `tcx_miniq_dec()` and the subsequent active-state check.",
+        "how": "At runtime, ingress teardown now only proceeds when the ingress mini-qdisc pair was actually initialized, and it uses the current `dev->tcx_ingress` pointer at destruction time instead of relying on a previously held local value. This prevents cleanup from running on an uninitialized ingress state and reduces the risk of using stale or invalid ingress entry data during clsact destruction."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix clsact egress destruction to use miniqdisc initialization state and the current TCX egress entry during teardown.",
+        "what": "The destroy path condition was changed from `if (egress_entry)` to `if (mini_qdisc_pair_inited(&q->miniqp_egress))`, and inside that block `egress_entry` is now reloaded from `rtnl_dereference(dev->tcx_egress)` before calling `tcx_miniq_dec()` and checking whether the entry is still active.",
+        "how": "This makes the egress teardown logic run based on whether the egress miniqdisc pair was actually initialized, rather than on the current local pointer value. It also ensures the code operates on the latest device egress TCX entry during destruction, preventing teardown from being skipped or applied to stale state."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a helper to detect whether a `mini_Qdisc_pair` has been initialized."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix clsact ingress destruction to only run when the ingress mini-qdisc pair is initialized and to dereference the current ingress TCX entry during cleanup."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Move tcx ingress/egress entry declarations to the top of `clsact_destroy()` to support later handling without changing behavior."
+        },
+        {
+          "group_id": 3,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix clsact egress destruction to use miniqdisc initialization state and the current TCX egress entry during teardown."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix clsact ingress destruction so it only acts when the ingress mini-qdisc pair is initialized and properly dereferences the current ingress TCX entry during cleanup.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 3,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change adds a helper to detect whether a miniq pair has been initialized, which directly relates to the root cause: destroy logic was incorrectly using non-NULL tcx checks on partially initialized state during rollback, leading to stale reference drops and use-after-free."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly match the root cause: they add initialization-state checks before destroying ingress/clsact miniq state and ensure cleanup uses the current TCX ingress entry rather than a stale one, which addresses the use-after-free during failed clsact_init() rollback."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The change is just moving local declarations in `clsact_destroy()` without altering the destroy logic or the non-NULL reference handling tied to the UAF root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 3,
+        "is_relevant": true,
+        "reason": "The group directly targets clsact egress teardown logic, which is the same area as the root cause. It changes destruction to use miniqdisc initialization state and the current TCX egress entry, addressing the stale reference/use-after-free scenario during rollback or teardown."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/sched/sch_ingress.c",
+            "lineno": 116,
+            "content": "struct bpf_mprog_entry *entry = rtnl_dereference(dev->tcx_ingress);",
+            "rationale": "This uses only the device's TCX ingress pointer to decide teardown behavior, without checking whether the miniq pair was actually initialized. During clsact_init rollback, this can reference and decrement a stale entry from a prior instance."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/sched/sch_ingress.c",
+            "lineno": 301,
+            "content": "tcf_block_put_ext(q->ingress_block, sch, &q->ingress_block_info);",
+            "rationale": "This cleanup path runs unconditionally for clsact ingress teardown; combined with missing initialization-state checks, it can lead to later TCX reference dropping on partially initialized state."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "net/sched/sch_ingress.c",
+            "lineno": 302,
+            "content": "tcf_block_put_ext(q->egress_block, sch, &q->egress_block_info);",
+            "rationale": "This is part of the clsact destroy path that executes regardless of whether the per-instance miniq state finished initializing, allowing stale TCX cleanup decisions to be made on rollback."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/sched/sch_ingress.c",
+            "stmt_text": "struct bpf_mprog_entry *entry = rtnl_dereference(dev->tcx_ingress);",
+            "location": "hunk",
+            "explanation": "This statement bases teardown solely on dev->tcx_ingress. In the buggy path, clsact_init() rollback can leave the qdisc's miniq state only partially initialized, so using this pointer can select a stale bpf_mprog_entry from a previous clsact instance and later drop the wrong reference."
+          },
+          {
+            "vuln_file": "net/sched/sch_ingress.c",
+            "stmt_text": "tcf_block_put_ext(q->ingress_block, sch, &q->ingress_block_info);",
+            "location": "hunk",
+            "explanation": "This is part of the clsact ingress destroy path that executes even when the per-instance miniq state was not fully initialized. That unconditional cleanup can lead to releasing TCX state for a partially initialized instance and trigger use-after-free via stale reference handling."
+          },
+          {
+            "vuln_file": "net/sched/sch_ingress.c",
+            "stmt_text": "tcf_block_put_ext(q->egress_block, sch, &q->egress_block_info);",
+            "location": "hunk",
+            "explanation": "This is the corresponding clsact egress cleanup statement in the destroy path. Because the destroy logic did not verify that the miniq pair had been initialized, it could participate in dropping stale TCX references from a previous clsact instance during rollback."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e4c00ba7274b",
+          "anchor_file": "net/sched/sch_ingress.c",
+          "anchor_lineno": 116
+        },
+        "commit": "e420bed025071a623d2720a92bc2245c84757ecb",
+        "commit_short": "e420bed02507",
+        "commit_msg": "bpf: Add fd-based tcx multi-prog infra with link support\n\nThis work refactors and adds a lightweight extension (\"tcx\") t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ingress.c",
+        "display_lineno": 116,
+        "code_snippet": "commit e420bed025071a623d2720a92bc2245c84757ecb\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Wed Jul 19 16:08:52 2023 +0200\n\n    bpf: Add fd-based tcx multi-prog infra with link support\n    \n    This work refactors and adds a lightweight extension (\"tcx\") to the tc BPF\n    ingress and egress data path side for allowing BPF program management based\n    on fds via bpf() syscall through the newly added generic multi-prog API.\n    The main goal behind this work which we also presented at L",
+        "exists": false,
+        "reason": "The shown code already uses per-direction tcx entry management and active-state tracking instead of the vulnerable plain device pointer check. In both destroy paths it does more than just test non-NULL: \n- `ingress_destroy()` gets `struct bpf_mprog_entry *entry = rtnl_dereference(dev->tcx_ingress);` and then only frees after `tcx_miniq_set_active(entry, false);` and `if (!tcx_entry_is_active(entry)) { tcx_entry_update(dev, NULL, false); tcx_entry_free(entry); }`.\n- `clsact_destroy()` similarly uses `ingress_entry` / `egress_entry`, clears active state, and only frees when `!tcx_entry_is_active(...)`.\n\nThis is the relevant fix for the root cause: the stale rollback-free path is protected by explicit active-state checks and updates, rather than blindly decrementing based on a non-NULL `dev->tcx_{ingress,egress}`. The vulnerable construct described in the root cause is therefore not present in this snippet, and the code already contains the fix logic."
+      }
+    },
+    {
+      "bic_found": "e420bed025071a623d2720a92bc2245c84757ecb",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e4c00ba7274b",
+          "anchor_file": "net/sched/sch_ingress.c",
+          "anchor_lineno": 301
+        },
+        "commit": "c7eb7d7230509ec862d4144f7a831f995bc5d028",
+        "commit_short": "c7eb7d723050",
+        "commit_msg": "net: sched: introduce chain_head_change callback\n\nAdd a callback that is to be called whenever head of the chain changes",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ingress.c",
+        "display_lineno": 203,
+        "code_snippet": "commit c7eb7d7230509ec862d4144f7a831f995bc5d028\nAuthor: Jiri Pirko <jiri@resnulli.us>\nDate:   Fri Nov 3 11:46:24 2017 +0100\n\n    net: sched: introduce chain_head_change callback\n    \n    Add a callback that is to be called whenever head of the chain changes.\n    Also provide a callback for the default case when the caller gets a\n    block using non-extended getter.\n    \n    Signed-off-by: Jiri Pirko <jiri@mellanox.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/sc",
+        "exists": true,
+        "reason": "Yes, the snippet is enough to assess the destroy path. The function unconditionally drops both blocks: `tcf_block_put_ext(q->egress_block, sch, &q->egress_block_info);` and `tcf_block_put_ext(q->ingress_block, sch, &q->ingress_block_info);`, followed by queue decrements. This matches the vulnerable pattern described in the root cause: destroy logic relies on the instance's block/state pointers without any extra validation of whether the miniq/bpf_mprog state was fully initialized. There is no visible fix here such as guarding against partially initialized rollback state, checking the actual chain head/state, or preventing stale reference drops. Therefore the vulnerable construct is present and the fix is absent."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "aa5fbf07541b",
+          "anchor_file": "net/sched/sch_ingress.c",
+          "anchor_lineno": 203
+        },
+        "commit": "1f211a1b929c804100e138c5d3d656992cfd5622",
+        "commit_short": "1f211a1b929c",
+        "commit_msg": "net, sched: add clsact qdisc\n\nThis work adds a generalization of the ingress qdisc as a qdisc holding\nonly classifiers. ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ingress.c",
+        "display_lineno": 153,
+        "code_snippet": "commit 1f211a1b929c804100e138c5d3d656992cfd5622\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Thu Jan 7 22:29:47 2016 +0100\n\n    net, sched: add clsact qdisc\n    \n    This work adds a generalization of the ingress qdisc as a qdisc holding\n    only classifiers. The clsact qdisc works on ingress, but also on egress.\n    In both cases, it's execution happens without taking the qdisc lock, and\n    the main difference for the egress part compared to prior version of [1]\n    is that this can ",
+        "exists": false,
+        "reason": "The shown function body is `clsact_destroy()`, and it only contains:\n` tcf_destroy_chain(&dev->ingress_cl_list);`\n` tcf_destroy_chain(&dev->egress_cl_list);`\nfollowed by `net_dec_ingress_queue();` and `net_dec_egress_queue();`. There are no `dev->tcx_ingress` / `dev->tcx_egress` non-NULL checks, no per-instance `tcx_miniq` handling, and no rollback logic for partially initialized `clsact_init()`. The vulnerable construct described in the root cause is therefore absent from this code snippet. Since the fix for the later UAF would involve guarding destruction against stale/partially initialized state, that protection is also not present here."
+      }
+    },
+    {
+      "bic_found": "c7eb7d7230509ec862d4144f7a831f995bc5d028",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "e4c00ba7274b",
+          "anchor_file": "net/sched/sch_ingress.c",
+          "anchor_lineno": 302
+        },
+        "commit": "e420bed025071a623d2720a92bc2245c84757ecb",
+        "commit_short": "e420bed02507",
+        "commit_msg": "bpf: Add fd-based tcx multi-prog infra with link support\n\nThis work refactors and adds a lightweight extension (\"tcx\") t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ingress.c",
+        "display_lineno": 301,
+        "code_snippet": "commit e420bed025071a623d2720a92bc2245c84757ecb\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Wed Jul 19 16:08:52 2023 +0200\n\n    bpf: Add fd-based tcx multi-prog infra with link support\n    \n    This work refactors and adds a lightweight extension (\"tcx\") to the tc BPF\n    ingress and egress data path side for allowing BPF program management based\n    on fds via bpf() syscall through the newly added generic multi-prog API.\n    The main goal behind this work which we also presented at L",
+        "exists": true,
+        "reason": "The snippet shows the exact vulnerable pattern described in the root cause: destroy paths key off the device-level tcx pointers and then drop miniq references from those entries. In `ingress_destroy()` it does `struct bpf_mprog_entry *entry = rtnl_dereference(dev->tcx_ingress);` followed by `if (entry) { tcx_miniq_set_active(entry, false); ... tcx_entry_free(entry); }`. Likewise `clsact_destroy()` reads `ingress_entry = rtnl_dereference(dev->tcx_ingress);` and `egress_entry = rtnl_dereference(dev->tcx_egress);` and conditionally decrements/frees them. The root cause says this is unsafe during a failed `clsact_init()` rollback because the qdisc’s per-instance miniq state may be only partially initialized, so using `dev->tcx_{ingress,egress}` non-NULL checks can operate on a stale `bpf_mprog_entry` from a previous clsact instance and trigger UAF. This commit introduces that logic and does not show any additional guard tying destroy to per-instance initialization state or checking that the entry belongs to the current qdisc instance, so the fix is not present here."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "053c8e1f235d",
+          "anchor_file": "net/sched/sch_ingress.c",
+          "anchor_lineno": 301
+        },
+        "commit": "1f211a1b929c804100e138c5d3d656992cfd5622",
+        "commit_short": "1f211a1b929c",
+        "commit_msg": "net, sched: add clsact qdisc\n\nThis work adds a generalization of the ingress qdisc as a qdisc holding\nonly classifiers. ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/sched/sch_ingress.c",
+        "display_lineno": 180,
+        "code_snippet": "commit 1f211a1b929c804100e138c5d3d656992cfd5622\nAuthor: Daniel Borkmann <daniel@iogearbox.net>\nDate:   Thu Jan 7 22:29:47 2016 +0100\n\n    net, sched: add clsact qdisc\n    \n    This work adds a generalization of the ingress qdisc as a qdisc holding\n    only classifiers. The clsact qdisc works on ingress, but also on egress.\n    In both cases, it's execution happens without taking the qdisc lock, and\n    the main difference for the egress part compared to prior version of [1]\n    is that this can ",
+        "exists": false,
+        "reason": "The shown code is enough to evaluate the specific root cause in this commit. The vulnerable condition described relies on destroy paths using stale per-device state during rollback after a failed init. In this snippet, `clsact_destroy()` is very simple: it unconditionally calls `tcf_destroy_chain(&dev->ingress_cl_list);` and `tcf_destroy_chain(&dev->egress_cl_list);` followed by `net_dec_ingress_queue();` and `net_dec_egress_queue();`. There are no `dev->tcx_ingress` / `dev->tcx_egress` checks here at all, and no partial-initialization rollback logic. However, the root cause you provided is about later `clsact_destroy()`/`ingress_destroy()` code using `dev->tcx_{ingress,egress}` non-NULL checks to decide whether to drop `tcx_miniq` references; that vulnerable construct is not present in this 2016 introduction patch. So this function body does not contain the described bug, and it also does not contain the later fix for that bug."
+      }
+    },
+    {
+      "bic_found": "e420bed025071a623d2720a92bc2245c84757ecb",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "e420bed025071a623d2720a92bc2245c84757ecb": 2,
+        "c7eb7d7230509ec862d4144f7a831f995bc5d028": 1
+      },
+      "bic_candidates": [
+        "e420bed025071a623d2720a92bc2245c84757ecb",
+        "c7eb7d7230509ec862d4144f7a831f995bc5d028"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

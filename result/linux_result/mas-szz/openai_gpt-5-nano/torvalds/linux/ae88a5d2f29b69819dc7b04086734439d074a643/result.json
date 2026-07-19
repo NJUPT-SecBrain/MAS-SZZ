@@ -1,0 +1,363 @@
+{
+  "cveid": "CVE-2026-31411",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ae88a5d2f29b69819dc7b04086734439d074a643"
+  ],
+  "ground_truth_bic": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+  "predicted_bic": [
+    "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 27,
+  "llm_tokens": 31644,
+  "root_cause": {
+    "text": "The ATM signaling path in `net/atm/signaling.c:sigd_send()` trusted the `msg->vcc`/`msg->listen_vcc` pointer copied from userspace and dereferenced it directly without verifying it matched a registered `struct atm_vcc` or taking a reference on its lifetime.",
+    "evidence": "The CVE and commit state that `sendmsg -> vcc_sendmsg -> sigd_send` \"reads the vcc pointer from msg->vcc and uses it directly without any validation,\" with a reproducer forging `0xdeadbeef`; the patch adds `find_get_vcc()` to search `vcc_hash` for the pointer and `sock_hold()`/`sock_put()` around its use, and replaces direct assignments from `msg->vcc` and `msg->listen_vcc` with validated lookups.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/atm/signaling.c",
+      "lineno": 72,
+      "content": "vcc = *(struct atm_vcc **) &msg->vcc;",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/atm/signaling.c",
+      "lineno": 103,
+      "content": "vcc = *(struct atm_vcc **)&msg->listen_vcc;",
+      "confidence": 0.8
+    },
+    {
+      "file": "net/atm/signaling.c",
+      "lineno": 74,
+      "content": "sk = sk_atm(vcc);",
+      "confidence": 0.8
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The ATM signaling path in `net/atm/signaling.c:sigd_send()` trusted the `msg->vcc`/`msg->listen_vcc` pointer copied from userspace and dereferenced it directly without verifying it matched a registered `struct atm_vcc` or taking a reference on its lifetime.",
+      "evidence_points": "The CVE and commit state that `sendmsg -> vcc_sendmsg -> sigd_send` \"reads the vcc pointer from msg->vcc and uses it directly without any validation,\" with a reproducer forging `0xdeadbeef`; the patch adds `find_get_vcc()` to search `vcc_hash` for the pointer and `sock_hold()`/`sock_put()` around its use, and replaces direct assignments from `msg->vcc` and `msg->listen_vcc` with validated lookups."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/atm/signaling.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/atm/signaling.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "net/atm/signaling.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "net/atm/signaling.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "net/atm/signaling.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Add a helper to validate an atm_vcc against the registered VCC hash and safely take a socket reference before use.",
+        "what": "A new static helper function, find_get_vcc(struct atm_vcc *vcc), was added along with its comment block. The function acquires read_lock(&vcc_sklist_lock), iterates over all buckets in vcc_hash using sk_for_each, compares each socket's atm_sk(s) pointer to the input vcc, calls sock_hold(s) and returns the vcc if a match is found, and otherwise unlocks and returns NULL.",
+        "how": "This adds a runtime mechanism to verify that an atm_vcc pointer still corresponds to a registered VCC in the global hash table before use, while also safely taking a socket reference when it is valid. It helps prevent use of stale or unregistered VCC pointers and enables callers to hold a stable reference that must later be released with sock_put(sk_atm(vcc))."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Validate and safely acquire the VCC from the message before use, rejecting invalid pointers to avoid unsafe access.",
+        "what": "The code replaces the direct assignment of `vcc` from `msg->vcc` with a call to `find_get_vcc(*(struct atm_vcc **)&msg->vcc)`, and adds a null check that logs `\"invalid vcc pointer in msg\"`, frees `skb` with `dev_kfree_skb(skb)`, and returns `-EINVAL` when no valid VCC is found.",
+        "how": "At runtime, the function now validates and acquires a referenced ATM VCC object instead of blindly trusting the pointer embedded in the message. This prevents the function from proceeding with an invalid or stale VCC pointer, avoiding unsafe dereference/use of a potentially freed object and failing cleanly on invalid input."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Validate and acquire the listen_vcc reference in as_indicate handling, releasing the old socket reference and rejecting invalid pointers to prevent unsafe VCC use.",
+        "what": "In the as_indicate case of sigd_send(), the direct assignment of vcc from msg->listen_vcc was replaced with a comment, an early sock_put(sk) to release the reference associated with msg->vcc, a call to find_get_vcc() using msg->listen_vcc, and a null check that logs a debug message, frees the skb, and returns -EINVAL if no valid vcc is found before continuing with sk = sk_atm(vcc).",
+        "how": "At runtime, this change stops the code from blindly trusting and dereferencing the listen_vcc pointer from the message. It switches to acquiring a validated referenced vcc object, releases the previous socket reference before switching, and safely aborts on an invalid listen_vcc. This prevents use of an invalid or stale VCC pointer and avoids reference misuse when handling as_indicate messages."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the socket reference acquired for listen_vcc on the indicate-complete path to fix a refcount leak.",
+        "what": "A call to sock_put(sk) and an explanatory comment were added on the as_indicate_complete path immediately after release_sock(sk) and before returning 0.",
+        "how": "This decrements the socket reference count that was previously acquired by find_get_vcc(msg->listen_vcc), preventing a leaked socket reference on this execution path while keeping the existing lock release behavior unchanged."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Release the socket reference acquired by find_get_vcc() on all sigd_send() exit paths to fix a reference leak.",
+        "what": "The change adds two calls to sock_put(sk) in sigd_send(): one immediately before returning -EINVAL in the default case for an invalid message type, and one in the common out path after dev_kfree_skb(skb), both annotated with comments indicating they pair with an earlier find_get_vcc(msg->vcc) reference acquisition.",
+        "how": "This ensures the socket reference previously acquired for sk is released on both the error path and the normal exit path, preventing leaked socket references when processing messages and when encountering an unsupported message type."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Validate and safely acquire the VCC from the message before use, rejecting invalid pointers to avoid unsafe access."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Validate and acquire the listen_vcc reference in as_indicate handling, releasing the old socket reference and rejecting invalid pointers to prevent unsafe VCC use."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Release the socket reference acquired by find_get_vcc() on all sigd_send() exit paths to fix a reference leak."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Safely validate and acquire an ATM VCC/socket reference before use by checking that the VCC is registered and rejecting invalid pointers.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "core_intent": "Release socket references acquired via find_get_vcc()/listen_vcc on all sigd_send-related exit paths to fix refcount leaks.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by validating that the user-supplied atm_vcc is a registered VCC and safely acquiring a socket/reference before dereferencing it, rejecting invalid pointers."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The change directly addresses the root cause by validating the userspace-provided listen_vcc pointer, acquiring a proper reference, and rejecting invalid pointers instead of trusting and dereferencing it unsafely."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "This group modifies sigd_send() handling of vcc/listen_vcc references obtained via find_get_vcc()/listen_vcc lookup, which is directly tied to the root cause fix of replacing unsafe userspace-trusted pointers with validated registered atm_vcc objects and managing their lifetimes via references."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "net/atm/signaling.c",
+            "lineno": 72,
+            "content": "vcc = *(struct atm_vcc **) &msg->vcc;",
+            "rationale": "This directly copies an atm_vcc pointer from the userspace-originated message and trusts it as a kernel pointer without validating that it refers to a registered VCC or taking a safe reference."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/atm/signaling.c",
+            "lineno": 74,
+            "content": "sk = sk_atm(vcc);",
+            "rationale": "After the unvalidated pointer is copied from msg->vcc, this dereferences it to obtain the socket, embodying the unsafe use of attacker-controlled or stale kernel pointer data."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/atm/signaling.c",
+            "lineno": 103,
+            "content": "vcc = *(struct atm_vcc **)&msg->listen_vcc;",
+            "rationale": "This is the analogous vulnerable assignment for listen_vcc: it trusts a pointer value embedded in the message without checking that it matches a live, registered atm_vcc."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "net/atm/signaling.c",
+            "lineno": 74,
+            "content": "sk = sk_atm(vcc);",
+            "rationale": "This dereferences the unvalidated listen_vcc-derived pointer immediately, making the vulnerability exploitable via invalid or freed atm_vcc pointers."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/atm/signaling.c",
+            "stmt_text": "vcc = *(struct atm_vcc **) &msg->vcc;",
+            "location": "hunk 1",
+            "explanation": "This statement is the root trust boundary violation: it copies a struct atm_vcc pointer from the userspace-originated message directly into a kernel pointer without validating that it refers to a registered live VCC or acquiring a reference."
+          },
+          {
+            "vuln_file": "net/atm/signaling.c",
+            "stmt_text": "vcc = *(struct atm_vcc **)&msg->listen_vcc;",
+            "location": "hunk 2",
+            "explanation": "This is the analogous vulnerable assignment for listen_vcc, again trusting a pointer embedded in the message as a valid kernel struct atm_vcc without verification or lifetime protection."
+          },
+          {
+            "vuln_file": "net/atm/signaling.c",
+            "stmt_text": "sk = sk_atm(vcc);",
+            "location": "hunk 1",
+            "explanation": "This statement dereferences the previously unvalidated vcc pointer, turning the trust bug into an actual unsafe kernel access against attacker-controlled or stale pointer data."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6d2f142b1e4b",
+          "anchor_file": "net/atm/signaling.c",
+          "anchor_lineno": 72
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/atm/signaling.c",
+        "display_lineno": 106,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable logic is directly visible in `sigd_send()`. After parsing the userspace-provided message buffer, the function does `vcc = *(struct atm_vcc **) &msg->vcc;` and immediately dereferences it via `sk = sk_atm(vcc);` with no validation that the pointer refers to a registered/live `struct atm_vcc`, and no reference is taken on its lifetime. Likewise in the `as_indicate` case it does `vcc = *(struct atm_vcc **) &msg->listen_vcc;` from the message. This matches the root cause: trusting `msg->vcc` / `msg->listen_vcc` copied from userspace and dereferencing directly. There is no lookup against a VCC registry/hash, no pointer verification, and no refcounting or lifetime protection before use. Therefore the bug is present, and the fix is not present."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6d2f142b1e4b",
+          "anchor_file": "net/atm/signaling.c",
+          "anchor_lineno": 103
+        },
+        "commit": "0ec96e656fcd4a8ea8cb0e92f90ab4bb6f79cada",
+        "commit_short": "0ec96e656fcd",
+        "commit_msg": "net/atm/signaling.c: checkpatch cleanups\n\nMostly 80 column wrapped.\nMove embedded assigns out of tests\nMove trailing sta",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/atm/signaling.c",
+        "display_lineno": 122,
+        "code_snippet": "commit 0ec96e656fcd4a8ea8cb0e92f90ab4bb6f79cada\nAuthor: Joe Perches <joe@perches.com>\nDate:   Tue Jan 26 11:40:17 2010 +0000\n\n    net/atm/signaling.c: checkpatch cleanups\n    \n    Mostly 80 column wrapped.\n    Move embedded assigns out of tests\n    Move trailing statements to new lines\n    switch/case cleanups\n    \n    Signed-off-by: Joe Perches <joe@perches.com>\n    Signed-off-by: David S. Miller <davem@davemloft.net>\n\ndiff --git a/net/atm/signaling.c b/net/atm/signaling.c\nindex 28df4edf9ca4..a",
+        "exists": true,
+        "reason": "The relevant logic is fully visible in `sigd_send()`, so the snippet is sufficient. The vulnerable construct is present in the `as_indicate` case: `vcc = *(struct atm_vcc **)&msg->listen_vcc;` directly reconstructs a `struct atm_vcc *` from message contents, and then immediately dereferences it via `sk = sk_atm(vcc);`, `lock_sock(sk);`, and later uses `vcc` in `sigd_enq(NULL, as_reject, vcc, NULL, NULL);`. There is no validation that this pointer matches a registered `struct atm_vcc`, and no reference/lifetime protection is taken before dereferencing. This matches the root cause: trusting `msg->vcc`/`msg->listen_vcc` copied from userspace and dereferencing directly. The rest of the commit is only checkpatch/formatting cleanup; no fix is present such as lookup/verification against registered VCCs or taking a reference before use."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "07b54c9ad480",
+          "anchor_file": "net/atm/signaling.c",
+          "anchor_lineno": 122
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/atm/signaling.c",
+        "display_lineno": 134,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable logic is shown directly in `sigd_send()`. After parsing the message, the function does `vcc = *(struct atm_vcc **) &msg->vcc;` and immediately dereferences that pointer via `sk = sk_atm(vcc);` with no validation that the pointer matches a registered/known `struct atm_vcc` and no reference/lifetime protection. Later, in the `as_indicate` case, it again trusts userspace-derived message contents with `vcc = *(struct atm_vcc **) &msg->listen_vcc;`. This matches the root cause: the signaling path trusts `msg->vcc` / `msg->listen_vcc` copied from userspace and dereferences them directly. There is no lookup, sanity check, or refcount acquisition anywhere in this function before use, so the fix is not present."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "6d2f142b1e4b",
+          "anchor_file": "net/atm/signaling.c",
+          "anchor_lineno": 74
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/atm/signaling.c",
+        "display_lineno": 107,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": true,
+        "reason": "The vulnerable logic is visible directly in `sigd_send()`. The function reads a userspace-provided pointer value out of the message and dereferences it without validation: `vcc = *(struct atm_vcc **) &msg->vcc;` followed immediately by `sk = sk_atm(vcc);`. There is no lookup to verify that `msg->vcc` corresponds to a registered/live `struct atm_vcc`, and no reference is taken on the object before use. The same pattern appears in the `as_indicate` path with `vcc = *(struct atm_vcc **) &msg->listen_vcc;`. This matches the stated root cause: trusting `msg->vcc`/`msg->listen_vcc` copied from userspace and dereferencing directly. No fix is present in this function—there is no validation against a socket/VCC registry, no lifetime protection/refcount acquisition, and no rejection of invalid pointers before use."
+      }
+    },
+    {
+      "bic_found": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+      "note": "reached root commit"
+    },
+    {
+      "bic_votes": {
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2": 3
+      },
+      "bic_candidates": [
+        "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

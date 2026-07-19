@@ -1,0 +1,327 @@
+{
+  "cveid": "CVE-2026-23053",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "cce0be6eb4971456b703aaeafd571650d314bcca"
+  ],
+  "ground_truth_bic": "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+  "predicted_bic": [
+    "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+    "3577da4aa895847da74890903a3ae7e67ba1ee2f",
+    "1b3b4a1a2deb7d3e5d66063bd76304d840c966b3"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 26,
+  "llm_tokens": 18972,
+  "root_cause": {
+    "text": "`nfs_release_folio()` in the NFS page-cache reclaim path could call the normal NFS writeback/commit path that may block on NFSv4.1 state recovery, creating a deadlock when memory reclaim runs in `kthreadd` and waits for that recovery to finish.",
+    "evidence": "The patch changes `nfs_release_folio()` to use a new non-blocking reclaim-specific helper `nfs_wb_folio_reclaim()` and to fail if the folio is still private (`folio_test_private(folio)`), and the commit message says the deadlock happened because `nfs_release_folio()` “cannot make progress due to state recovery being needed” while `kthreadd` was reclaiming memory.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/nfs/file.c",
+      "lineno": 513,
+      "content": "return false;",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/nfs/file.c",
+      "lineno": 517,
+      "content": "return nfs_fscache_release_folio(folio, gfp);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/nfs/write.c",
+      "lineno": 2024,
+      "content": "return ret;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "`nfs_release_folio()` in the NFS page-cache reclaim path could call the normal NFS writeback/commit path that may block on NFSv4.1 state recovery, creating a deadlock when memory reclaim runs in `kthreadd` and waits for that recovery to finish.",
+      "evidence_points": "The patch changes `nfs_release_folio()` to use a new non-blocking reclaim-specific helper `nfs_wb_folio_reclaim()` and to fail if the folio is still private (`folio_test_private(folio)`), and the commit message says the deadlock happened because `nfs_release_folio()` “cannot make progress due to state recovery being needed” while `kthreadd` was reclaiming memory."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/nfs/file.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/nfs/nfstrace.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/nfs/write.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "include/linux/nfs_fs.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Use the reclaim writeback path and keep private folios from being released prematurely.",
+        "what": "In nfs_release_folio(), the single call to nfs_wb_folio(folio->mapping->host, folio) in the reclaim path was replaced with nfs_wb_folio_reclaim(folio->mapping->host, folio), and an additional check was added to վերադարձ false if folio_test_private(folio) is still set.",
+        "how": "During folio release under reclaim, the code now uses a reclaim-specific writeback path and refuses to release the folio if it remains marked private afterward, preventing the folio from being freed or released while metadata/state is still attached."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "other",
+        "intent_summary": "Add dedicated NFS folio trace events for writeback during reclaim so it can be observed separately in tracing.",
+        "what": "Two new trace event definitions were added: DEFINE_NFS_FOLIO_EVENT(nfs_writeback_folio_reclaim) and DEFINE_NFS_FOLIO_EVENT_DONE(nfs_writeback_folio_reclaim_done), inserted between the existing nfs_aop_readpage_done and nfs_writeback_folio trace events.",
+        "how": "This expands the NFS folio tracing set to emit a distinct event pair for writeback occurring during reclaim, allowing runtime tracing and diagnostics to distinguish reclaim-path writeback from ordinary writeback."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Add a folio reclaim writeback path for NFS that synchronously flushes dirty data or commits the inode, while rejecting folios already under writeback.",
+        "what": "A new function `nfs_wb_folio_reclaim(struct inode *inode, struct folio *folio)` was added. It initializes a `writeback_control` struct for the folio's byte range with `WB_SYNC_ALL`, `nr_to_write = 0`, and `for_sync = 1`, checks `folio_test_writeback()` and returns `-EBUSY` if the folio is already under writeback, then if `folio_clear_dirty_for_io()` succeeds it emits start/end tracepoints and calls `nfs_writepage_locked(folio, &wbc)`, otherwise it calls `nfs_commit_inode(inode, 0)` and returns 0.",
+        "how": "This enables NFS to reclaim a locked folio by either synchronously writing back any dirty data on it or, if the folio is already clean, forcing inode commit work instead. It prevents reclaim from proceeding on a folio that is already in writeback and preserves dirty data handling during reclaim by directing the writeback path through a synchronous, full-sync control flow."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "other",
+        "intent_summary": "Add a public declaration for the NFS folio reclaim writeback helper.",
+        "what": "A new function prototype, `extern int nfs_wb_folio_reclaim(struct inode *inode, struct folio *folio);`, was added to the NFS header alongside the existing writeback-related declarations.",
+        "how": "This makes the reclaim-specific folio writeback helper available to other translation units, allowing code to invoke a dedicated writeback path when folios are being reclaimed."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Add a folio reclaim writeback path for NFS that synchronously flushes dirty data or commits the inode, while rejecting folios already under writeback."
+        },
+        {
+          "group_id": 1,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add dedicated NFS folio trace events for writeback during reclaim so it can be observed separately in tracing."
+        },
+        {
+          "group_id": 2,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a public declaration for the NFS folio reclaim writeback helper."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Add an NFS folio reclaim writeback path that synchronously flushes dirty data or commits the inode, while preventing premature release of private folios and rejecting folios already under writeback.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes add a dedicated NFS folio reclaim writeback path and alter reclaim behavior to handle dirty or writeback folios safely. This directly targets the page-cache reclaim path involved in the deadlock-causing normal writeback/commit path, so it is related to the vulnerability root cause."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change only adds tracing for NFS folio writeback during reclaim. It does not alter nfs_release_folio() behavior, the reclaim/writeback path, or address the deadlock caused by blocking on NFSv4.1 state recovery."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The vulnerability is in the NFS page-cache reclaim path, specifically how folio release/reclaim can invoke blocking writeback. Adding a public declaration for the NFS folio reclaim writeback helper is directly related to that reclaim-path fix and likely exposes or enables the dedicated non-blocking reclaim helper used to avoid the deadlock."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/nfs/file.c",
+            "lineno": 517,
+            "content": "return nfs_fscache_release_folio(folio, gfp);",
+            "rationale": "This is the final reclaim-path release operation in nfs_release_folio(); before the fix, the function could fall through to normal NFS writeback/commit behavior elsewhere and ultimately release the folio without using a reclaim-safe path, which is the path implicated in the deadlock during memory reclaim."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/nfs/file.c",
+            "lineno": 513,
+            "content": "return false;",
+            "rationale": "These early exits show that the reclaim path previously did not perform the specialized NFS writeback/commit handling needed for dirty folios in reclaim context, leaving the normal path to handle writeback and potentially block on NFSv4.1 recovery."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/nfs/write.c",
+            "lineno": 2024,
+            "content": "return ret;",
+            "rationale": "This return terminates the existing writeback helper path; before the fix, reclaim-related folio writeback was not separated into a dedicated synchronous reclaim helper, so the standard path could be reached and block during state recovery."
+          }
+        ],
+        "confidence": "low",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 1
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/nfs/file.c",
+            "stmt_text": "return false;",
+            "location": "hunk",
+            "explanation": "This early exit in nfs_release_folio() meant the folio-reclaim path could decline release without using the dedicated reclaim-safe NFS writeback logic, leaving execution to proceed via the normal writeback/commit path that may block on NFSv4.1 state recovery during memory reclaim."
+          },
+          {
+            "vuln_file": "fs/nfs/file.c",
+            "stmt_text": "return nfs_fscache_release_folio(folio, gfp);",
+            "location": "hunk",
+            "explanation": "This was the final reclaim-path release operation before the fix, and it shows nfs_release_folio() could complete via the non-reclaim-specific release handling rather than a dedicated safe flush/commit path, allowing the normal NFS writeback/commit path implicated in the deadlock."
+          },
+          {
+            "vuln_file": "fs/nfs/write.c",
+            "stmt_text": "return ret;",
+            "location": "hunk",
+            "explanation": "This return terminates the pre-fix writeback helper path that reclaim could reach; before the dedicated reclaim helper existed, dirty folio handling used the standard NFS writeback/commit path, which could block while waiting for NFSv4.1 state recovery."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "857bf9056291",
+          "anchor_file": "fs/nfs/file.c",
+          "anchor_lineno": 513
+        },
+        "commit": "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+        "commit_short": "96780ca55e3c",
+        "commit_msg": "NFS: fix up nfs_release_folio() to try to release the page\n\nIf the gfp context allows it, and we're not kswapd, then try",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nfs/file.c",
+        "display_lineno": 438,
+        "code_snippet": "commit 96780ca55e3cbf4f150fd5a833a61492c9947b5b\nAuthor: Trond Myklebust <trond.myklebust@hammerspace.com>\nDate:   Thu Jan 19 16:33:48 2023 -0500\n\n    NFS: fix up nfs_release_folio() to try to release the page\n    \n    If the gfp context allows it, and we're not kswapd, then try to write\n    out the folio that has private data.\n    \n    Signed-off-by: Trond Myklebust <trond.myklebust@hammerspace.com>\n    Signed-off-by: Anna Schumaker <Anna.Schumaker@Netapp.com>\n\ndiff --git a/fs/nfs/file.c b/fs/nf",
+        "exists": false,
+        "reason": "The snippet shows the exact vulnerable path and the added fix. The risky construct is the private-folio handling in `nfs_release_folio()`: previously private folios were simply rejected with `if (folio_test_private(folio)) return false;`, and the commit changes that to attempt writeout only when safe: `if ((current_gfp_context(gfp) & GFP_KERNEL) != GFP_KERNEL || current_is_kswapd()) return false;` followed by `if (nfs_wb_folio(... ) < 0) return false;`. This matches the root cause because the fix avoids calling normal NFS writeback/commit from reclaim contexts that can deadlock, especially kswapd or non-GFP_KERNEL contexts. Since the shown code already contains the GFP/kswapd gating and uses `nfs_wb_folio()` instead of blindly proceeding, the fix is present."
+      }
+    },
+    {
+      "bic_found": "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "857bf9056291",
+          "anchor_file": "fs/nfs/file.c",
+          "anchor_lineno": 517
+        },
+        "commit": "3577da4aa895847da74890903a3ae7e67ba1ee2f",
+        "commit_short": "3577da4aa895",
+        "commit_msg": "nfs: Convert to release_folio\n\nUse folios throughout the release_folio paths.\n\nSigned-off-by: Matthew Wilcox (Oracle) <w",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nfs/file.c",
+        "display_lineno": 430,
+        "code_snippet": "commit 3577da4aa895847da74890903a3ae7e67ba1ee2f\nAuthor: Matthew Wilcox (Oracle) <willy@infradead.org>\nDate:   Sat Apr 30 23:53:28 2022 -0400\n\n    nfs: Convert to release_folio\n    \n    Use folios throughout the release_folio paths.\n    \n    Signed-off-by: Matthew Wilcox (Oracle) <willy@infradead.org>\n    Reviewed-by: Jeff Layton <jlayton@kernel.org>\n\ndiff --git a/fs/nfs/file.c b/fs/nfs/file.c\nindex 4f6d1f90b87f..d764b3ce7905 100644\n--- a/fs/nfs/file.c\n+++ b/fs/nfs/file.c\n@@ -415,19 +415,19 @@ st",
+        "exists": false,
+        "reason": "The snippet only shows the folio conversion of the NFS release callback: `static bool nfs_release_folio(struct folio *folio, gfp_t gfp)` and the check `if (folio_test_private(folio)) return false; return nfs_fscache_release_folio(folio, gfp);`. The vulnerable construct described in the root cause is the normal NFS writeback/commit path being invoked from `nfs_release_folio()` and potentially blocking on NFSv4.1 state recovery. That writeback/commit logic is not present anywhere in this function body. Instead, this code only rejects folios with the private flag and delegates to `nfs_fscache_release_folio()`, which is unrelated to the described deadlock path. Therefore the vulnerable construct is absent here, and there is no evidence in this function body of the fix for that specific issue either."
+      }
+    },
+    {
+      "bic_found": "3577da4aa895847da74890903a3ae7e67ba1ee2f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "857bf9056291",
+          "anchor_file": "fs/nfs/write.c",
+          "anchor_lineno": 2024
+        },
+        "commit": "1b3b4a1a2deb7d3e5d66063bd76304d840c966b3",
+        "commit_short": "1b3b4a1a2deb",
+        "commit_msg": "NFS: Fix a write request leak in nfs_invalidate_page()\n\nRyusuke Konishi says:\n\nThe recent truncate_complete_page() clear",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/nfs/write.c",
+        "display_lineno": 1440,
+        "code_snippet": "commit 1b3b4a1a2deb7d3e5d66063bd76304d840c966b3\nAuthor: Trond Myklebust <Trond.Myklebust@netapp.com>\nDate:   Tue Aug 28 10:29:36 2007 -0400\n\n    NFS: Fix a write request leak in nfs_invalidate_page()\n    \n    Ryusuke Konishi says:\n    \n    The recent truncate_complete_page() clears the dirty flag from a page\n    before calling a_ops->invalidatepage(),\n    ^^^^^^\n    static void\n    truncate_complete_page(struct address_space *mapping, struct page *page)\n    {\n            ...\n            cancel_d",
+        "exists": false,
+        "reason": "The provided snippet is only the tail end of the previous function and the start of `nfs_wb_page_priority()` (`\"out: return ret; } int nfs_wb_page_priority(struct inode *inode, struct page *page, int how) {\"`). It does not show `nfs_release_folio()` or any reclaim-path logic, nor any writeback/commit path that could block on NFSv4.1 state recovery. The root cause is therefore not visible here, and this function body is unrelated to the described deadlock. The snippet also does not show any fix for that issue."
+      }
+    },
+    {
+      "bic_found": "1b3b4a1a2deb7d3e5d66063bd76304d840c966b3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "96780ca55e3cbf4f150fd5a833a61492c9947b5b": 1,
+        "3577da4aa895847da74890903a3ae7e67ba1ee2f": 1,
+        "1b3b4a1a2deb7d3e5d66063bd76304d840c966b3": 1
+      },
+      "bic_candidates": [
+        "96780ca55e3cbf4f150fd5a833a61492c9947b5b",
+        "3577da4aa895847da74890903a3ae7e67ba1ee2f",
+        "1b3b4a1a2deb7d3e5d66063bd76304d840c966b3"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

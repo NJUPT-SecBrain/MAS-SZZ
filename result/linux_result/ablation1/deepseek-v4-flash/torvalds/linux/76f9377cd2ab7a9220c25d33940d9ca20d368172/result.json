@@ -1,0 +1,271 @@
+{
+  "cveid": "CVE-2026-31465",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "76f9377cd2ab7a9220c25d33940d9ca20d368172"
+  ],
+  "ground_truth_bic": "0c58a97f919c24fe4245015f4375a39ff05665b6",
+  "predicted_bic": [
+    "f9a49aa302a05e91ca01f69031cb79a0ea33031f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 46689,
+  "root_cause": {
+    "text": "The `sync_inodes_sb()` function unconditionally waits for flusher threads to complete writeback initiation (`wb_wait_for_completion`) even for filesystems like fuse that cannot guarantee data persistence, causing a hang when the flusher thread is blocked (e.g., because the fuse daemon is frozen during suspend).",
+    "evidence": "The CVE description states: \"Prior to this commit, mappings with no data integrity guarantees skipped waiting on writeback completion but still waited on the flusher threads to finish initiating the writeback. Waiting on the flusher threads is unnecessary.\" The call trace in the description shows `wb_wait_for_completion` in `sync_inodes_sb` leading to a schedule hang. The patch adds a superblock flag `SB_I_NO_DATA_INTEGRITY` and in `sync_inodes_sb()` returns early after waking up flusher threads without waiting, thus avoiding the hang.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 2795,
+      "content": "if (!mapping_tagged(mapping, PAGECACHE_TAG_WRITEBACK) ||",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fs-writeback.c",
+      "lineno": 2796,
+      "content": "mapping_no_data_integrity(mapping))",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/fuse/file.c",
+      "lineno": 3206,
+      "content": "mapping_set_no_data_integrity(&inode->i_data);",
+      "confidence": 1.0
+    },
+    {
+      "file": "include/linux/pagemap.h",
+      "lineno": 213,
+      "content": "AS_NO_DATA_INTEGRITY = 11, /* no data integrity guarantees */",
+      "confidence": 1.0
+    },
+    {
+      "file": "include/linux/pagemap.h",
+      "lineno": 354,
+      "content": "static inline bool mapping_no_data_integrity(const struct address_space *mapping)",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `sync_inodes_sb()` function unconditionally waits for flusher threads to complete writeback initiation (`wb_wait_for_completion`) even for filesystems like fuse that cannot guarantee data persistence, causing a hang when the flusher thread is blocked (e.g., because the fuse daemon is frozen during suspend).",
+      "evidence_points": "The CVE description states: \"Prior to this commit, mappings with no data integrity guarantees skipped waiting on writeback completion but still waited on the flusher threads to finish initiating the writeback. Waiting on the flusher threads is unnecessary.\" The call trace in the description shows `wb_wait_for_completion` in `sync_inodes_sb` leading to a schedule hang. The patch adds a superblock flag `SB_I_NO_DATA_INTEGRITY` and in `sync_inodes_sb()` returns early after waking up flusher threads without waiting, thus avoiding the hang."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 2795,
+            "content": "if (!mapping_tagged(mapping, PAGECACHE_TAG_WRITEBACK) ||",
+            "rationale": "This line contains the condition that should skip waiting for mappings without data integrity, but it is placed only inside the per-mapping loop, not at the outer point where wb_wait_for_completion is called unconditionally."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "fs/fs-writeback.c",
+            "lineno": 2796,
+            "content": "mapping_no_data_integrity(mapping))",
+            "rationale": "This is the check for the AS_NO_DATA_INTEGRITY flag. Its existence in the pre-fix code suggests that the per-mapping skip logic was present, but the root cause is that the overall wait for completion remains unconditional."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/fuse/file.c",
+            "lineno": 3206,
+            "content": "mapping_set_no_data_integrity(&inode->i_data);",
+            "rationale": "This line marks fuse inode data as having no data integrity guarantees, which would allow the per-mapping skip to avoid waiting. If this setting is present, the unconditional wait should be avoided, but it is not respected by sync_inodes_sb()'s outer wait."
+          },
+          {
+            "hunk_index": 5,
+            "file_path": "include/linux/pagemap.h",
+            "lineno": 213,
+            "content": "AS_NO_DATA_INTEGRITY = 11, /* no data integrity guarantees */",
+            "rationale": "This defines the flag that indicates no data integrity. Its existence before the fix shows that the infrastructure was present, but the key downside is that the flag is not checked before the global wait in sync_inodes_sb()."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "include/linux/pagemap.h",
+            "lineno": 354,
+            "content": "static inline bool mapping_no_data_integrity(const struct address_space *mapping)",
+            "rationale": "This helper function checks the AS_NO_DATA_INTEGRITY flag. It is used in the per-mapping skip but not in the outer function that calls wb_wait_for_completion, leading to the unconditional hang."
+          }
+        ],
+        "confidence": "low",
+        "sufficient": false
+      }
+    },
+    {
+      "second_evidence_count": 3
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "if (!mapping_tagged(mapping, PAGECACHE_TAG_WRITEBACK) ||",
+            "location": "hunk",
+            "explanation": "This condition in the per-inode loop checks for no writeback tags and no data integrity, but it is evaluated only inside the loop, not before the global wb_wait_for_completion call. The unconditional wait for flusher threads ignores this check, causing a hang when the flusher is blocked (e.g., fuse daemon frozen during suspend)."
+          },
+          {
+            "vuln_file": "fs/fs-writeback.c",
+            "stmt_text": "mapping_no_data_integrity(mapping))",
+            "location": "hunk",
+            "explanation": "This line completes the per-inode condition that should skip waiting for inodes without data integrity guarantees. However, the outer sync_inodes_sb() function still calls wb_wait_for_completion unconditionally, not respecting this per-mapping skip logic, leading to the hang when filesystems like fuse set AS_NO_DATA_INTEGRITY."
+          },
+          {
+            "vuln_file": "fs/fuse/file.c",
+            "stmt_text": "mapping_set_no_data_integrity(&inode->i_data);",
+            "location": "hunk",
+            "explanation": "Fuse sets the AS_NO_DATA_INTEGRITY flag on its inodes using this call, attempting to indicate that data integrity guarantees are not needed. However, because sync_inodes_sb() does not check this flag before its unconditional wait, this setting does not prevent the hang when the flusher thread is blocked due to a frozen fuse daemon."
+          },
+          {
+            "vuln_file": "include/linux/pagemap.h",
+            "stmt_text": "AS_NO_DATA_INTEGRITY = 11, /* no data integrity guarantees */",
+            "location": "hunk",
+            "explanation": "This flag definition provides the infrastructure for filesystems to declare no data integrity guarantees. The vulnerability persists because sync_inodes_sb() does not examine this flag in its outer wait logic, making the flag ineffective at avoiding the hang."
+          },
+          {
+            "vuln_file": "include/linux/pagemap.h",
+            "stmt_text": "static inline bool mapping_no_data_integrity(const struct address_space *mapping)",
+            "location": "hunk",
+            "explanation": "This helper function checks the AS_NO_DATA_INTEGRITY flag. It is used in the per-inode condition but not in the outer sync_inodes_sb() control flow, so the unconditional wait for flusher completion still occurs, causing the hang for filesystems like fuse that rely on this flag."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7e57523490cd",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 2795
+        },
+        "commit": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+        "commit_short": "f9a49aa302a0",
+        "commit_msg": "fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n\nAbove the while() loop in wait_sb_inodes(), we doc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 2758,
+        "code_snippet": "commit f9a49aa302a05e91ca01f69031cb79a0ea33031f\nAuthor: Joanne Koong <joannelkoong@gmail.com>\nDate:   Mon Jan 5 13:17:27 2026 -0800\n\n    fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n    \n    Above the while() loop in wait_sb_inodes(), we document that we must wait\n    for all pages under writeback for data integrity.  Consequently, if a\n    mapping, like fuse, traditionally does not have data integrity semantics,\n    there is no need to wait at all; we can simply skip the",
+        "exists": false,
+        "reason": "The diff shows that wait_sb_inodes() now skips mappings with no data integrity (line 2754: 'mapping_no_data_integrity(mapping)'), thus preventing the unconditional wait that causes hangs for filesystems like fuse. The vulnerable construct (waiting without this check) is removed; the fix is present."
+      }
+    },
+    {
+      "bic_found": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7e57523490cd",
+          "anchor_file": "fs/fs-writeback.c",
+          "anchor_lineno": 2796
+        },
+        "commit": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+        "commit_short": "f9a49aa302a0",
+        "commit_msg": "fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n\nAbove the while() loop in wait_sb_inodes(), we doc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fs-writeback.c",
+        "display_lineno": 2759,
+        "code_snippet": "commit f9a49aa302a05e91ca01f69031cb79a0ea33031f\nAuthor: Joanne Koong <joannelkoong@gmail.com>\nDate:   Mon Jan 5 13:17:27 2026 -0800\n\n    fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n    \n    Above the while() loop in wait_sb_inodes(), we document that we must wait\n    for all pages under writeback for data integrity.  Consequently, if a\n    mapping, like fuse, traditionally does not have data integrity semantics,\n    there is no need to wait at all; we can simply skip the",
+        "exists": false,
+        "reason": "The diff shows the addition of a check for `mapping_no_data_integrity(mapping)` in `wait_sb_inodes()`, which skips inodes whose mappings lack data integrity semantics (such as fuse). This prevents the function from waiting indefinitely for writeback completion on such filesystems, directly addressing the root cause hang. The vulnerable construct (unconditional waiting for all writeback-tagged mappings) is no longer present."
+      }
+    },
+    {
+      "bic_found": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7e57523490cd",
+          "anchor_file": "fs/fuse/file.c",
+          "anchor_lineno": 3206
+        },
+        "commit": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+        "commit_short": "f9a49aa302a0",
+        "commit_msg": "fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n\nAbove the while() loop in wait_sb_inodes(), we doc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/fuse/file.c",
+        "display_lineno": 3205,
+        "code_snippet": "commit f9a49aa302a05e91ca01f69031cb79a0ea33031f\nAuthor: Joanne Koong <joannelkoong@gmail.com>\nDate:   Mon Jan 5 13:17:27 2026 -0800\n\n    fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n    \n    Above the while() loop in wait_sb_inodes(), we document that we must wait\n    for all pages under writeback for data integrity.  Consequently, if a\n    mapping, like fuse, traditionally does not have data integrity semantics,\n    there is no need to wait at all; we can simply skip the",
+        "exists": false,
+        "reason": "The provided diff only shows fuse_init_file_inode() setting the AS_NO_DATA_INTEGRITY flag. The vulnerable construct is the unconditional waiting in sync_inodes_sb() / wait_sb_inodes(), which is not present in this function. Therefore, this function does not contain the bug, and the fix for the vulnerability (skipping such mappings in wait_sb_inodes()) is not fully visible here."
+      }
+    },
+    {
+      "bic_found": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7e57523490cd",
+          "anchor_file": "include/linux/pagemap.h",
+          "anchor_lineno": 213
+        },
+        "commit": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+        "commit_short": "f9a49aa302a0",
+        "commit_msg": "fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n\nAbove the while() loop in wait_sb_inodes(), we doc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/linux/pagemap.h",
+        "display_lineno": 213,
+        "code_snippet": "commit f9a49aa302a05e91ca01f69031cb79a0ea33031f\nAuthor: Joanne Koong <joannelkoong@gmail.com>\nDate:   Mon Jan 5 13:17:27 2026 -0800\n\n    fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n    \n    Above the while() loop in wait_sb_inodes(), we document that we must wait\n    for all pages under writeback for data integrity.  Consequently, if a\n    mapping, like fuse, traditionally does not have data integrity semantics,\n    there is no need to wait at all; we can simply skip the",
+        "exists": false,
+        "reason": "The provided code only defines the AS_NO_DATA_INTEGRITY flag (line 213). It does not show the vulnerable function (sync_inodes_sb or wait_sb_inodes) or the fix logic that skips such mappings. Critical context is missing to determine if the vulnerable construct is present or fixed."
+      }
+    },
+    {
+      "bic_found": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "7e57523490cd",
+          "anchor_file": "include/linux/pagemap.h",
+          "anchor_lineno": 354
+        },
+        "commit": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+        "commit_short": "f9a49aa302a0",
+        "commit_msg": "fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n\nAbove the while() loop in wait_sb_inodes(), we doc",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "include/linux/pagemap.h",
+        "display_lineno": 354,
+        "code_snippet": "commit f9a49aa302a05e91ca01f69031cb79a0ea33031f\nAuthor: Joanne Koong <joannelkoong@gmail.com>\nDate:   Mon Jan 5 13:17:27 2026 -0800\n\n    fs/writeback: skip AS_NO_DATA_INTEGRITY mappings in wait_sb_inodes()\n    \n    Above the while() loop in wait_sb_inodes(), we document that we must wait\n    for all pages under writeback for data integrity.  Consequently, if a\n    mapping, like fuse, traditionally does not have data integrity semantics,\n    there is no need to wait at all; we can simply skip the",
+        "exists": false,
+        "reason": "The provided function body is a helper (mapping_no_data_integrity) that checks a flag. It does not contain the vulnerable wait logic from sync_inodes_sb() or wait_sb_inodes(). The vulnerability root cause involves unconditional waiting for flusher threads in those functions, and the fix would be to skip certain mappings in that loop. This helper alone does not show whether the caller has been modified. Therefore, critical context is missing."
+      }
+    },
+    {
+      "bic_found": "f9a49aa302a05e91ca01f69031cb79a0ea33031f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "f9a49aa302a05e91ca01f69031cb79a0ea33031f": 5
+      },
+      "bic_candidates": [
+        "f9a49aa302a05e91ca01f69031cb79a0ea33031f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

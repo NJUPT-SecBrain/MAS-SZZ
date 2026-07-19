@@ -1,0 +1,398 @@
+{
+  "cveid": "CVE-2026-52930",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "2e5c6f4fd4001562781e99bbfc7f1f0127187542"
+  ],
+  "ground_truth_bic": "4c677e2eefdba9c5bfc4474e2e91b26ae8458a1d",
+  "predicted_bic": [
+    "b34a6b1da371ed8af1221459a18c67970f7e3d53",
+    "83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8",
+    "4e9823111bdc76127b17fc70dc57f584fd7dd34c",
+    "4c677e2eefdba9c5bfc4474e2e91b26ae8458a1d"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 16,
+  "llm_tokens": 68174,
+  "root_cause": {
+    "text": "In shm_destroy_orphaned(), the decision to destroy a shared memory segment was made by checking shm_may_destroy() without holding the segment's shm_perm.lock, while shm_nattch (a key field in that check) is only updated under that lock, creating a race that can lead to use-after-free or premature destruction during concurrent attach operations.",
+    "evidence": "The CVE description and commit message state that \"shm_destroy_orphaned() walks the shm idr under shm_ids(ns).rwsem, but that does not serialize all fields tested by shm_may_destroy(). In particular, shm_nattch is updated while holding shm_perm.lock, and attach paths can do that without holding the rwsem.\" The patch moves the shm_may_destroy() check inside shm_lock_by_ptr (which acquires shm_perm.lock) and then unlocks the segment if it no longer qualifies for removal, matching the other destroy paths.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "ipc/shm.c",
+      "lineno": 426,
+      "content": "if (shm_may_destroy(shp))",
+      "confidence": 1.0
+    },
+    {
+      "file": "ipc/shm.c",
+      "lineno": 423,
+      "content": "if (!list_empty(&shp->shm_clist))",
+      "confidence": 1.0
+    },
+    {
+      "file": "ipc/shm.c",
+      "lineno": 428,
+      "content": "shm_destroy(ns, shp);",
+      "confidence": 1.0
+    },
+    {
+      "file": "ipc/shm.c",
+      "lineno": 427,
+      "content": "shm_lock_by_ptr(shp);",
+      "confidence": 1.0
+    },
+    {
+      "file": "ipc/shm.c",
+      "lineno": 424,
+      "content": "return 0;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In shm_destroy_orphaned(), the decision to destroy a shared memory segment was made by checking shm_may_destroy() without holding the segment's shm_perm.lock, while shm_nattch (a key field in that check) is only updated under that lock, creating a race that can lead to use-after-free or premature destruction during concurrent attach operations.",
+      "evidence_points": "The CVE description and commit message state that \"shm_destroy_orphaned() walks the shm idr under shm_ids(ns).rwsem, but that does not serialize all fields tested by shm_may_destroy(). In particular, shm_nattch is updated while holding shm_perm.lock, and attach paths can do that without holding the rwsem.\" The patch moves the shm_may_destroy() check inside shm_lock_by_ptr (which acquires shm_perm.lock) and then unlocks the segment if it no longer qualifies for removal, matching the other destroy paths."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "ipc/shm.c",
+            "lineno": 423,
+            "content": "if (!list_empty(&shp->shm_clist))",
+            "rationale": "Checks if the segment is not in the orphan list without holding shm_perm.lock; list_empty may race with concurrent operations, potentially missing a pending attach."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "ipc/shm.c",
+            "lineno": 424,
+            "content": "return 0;",
+            "rationale": "Early return when shm_clist is not empty; if the list check is racy, this may incorrectly skip destruction or proceed to a vulnerable check."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "ipc/shm.c",
+            "lineno": 426,
+            "content": "if (shm_may_destroy(shp))",
+            "rationale": "Key vulnerable check: shm_may_destroy() reads shm_nattch without holding shm_perm.lock, causing a race with concurrent attach operations that update nattch under the lock."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "ipc/shm.c",
+            "lineno": 427,
+            "content": "shm_lock_by_ptr(shp);",
+            "rationale": "Acquires the lock too late — the decision to destroy was already made without lock, so the lock does not protect the consistency of the check, leading to possible use-after-free."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "ipc/shm.c",
+            "lineno": 428,
+            "content": "shm_destroy(ns, shp);",
+            "rationale": "Destroys the segment based on a racy decision; if shm_nattch changed between check and lock, this may free a segment still in use, causing use-after-free."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "ipc/shm.c",
+            "lineno": 424,
+            "content": "return 0;",
+            "rationale": "Return from the function after destruction; the destruction itself is the harmful action, so this return is part of the vulnerable code path."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "ipc/shm.c",
+            "stmt_text": "if (shm_may_destroy(shp))",
+            "location": "hunk",
+            "explanation": "This check reads shm_nattch without holding shm_perm.lock, while nattch is only updated under the lock. A concurrent attach can change nattch, causing a false positive for destruction and leading to use-after-free."
+          },
+          {
+            "vuln_file": "ipc/shm.c",
+            "stmt_text": "if (!list_empty(&shp->shm_clist))",
+            "location": "hunk",
+            "explanation": "This list_empty check is performed without holding shm_perm.lock, allowing a race where a concurrent operation modifies the orphan list. This can cause an incorrect early return or proceed to the vulnerable shm_may_destroy check."
+          },
+          {
+            "vuln_file": "ipc/shm.c",
+            "stmt_text": "shm_destroy(ns, shp);",
+            "location": "hunk",
+            "explanation": "This destruction is executed based on the racy decision from shm_may_destroy. If a concurrent attach incremented nattch after the check, the segment may still be in use, leading to use-after-free."
+          },
+          {
+            "vuln_file": "ipc/shm.c",
+            "stmt_text": "shm_lock_by_ptr(shp);",
+            "location": "hunk",
+            "explanation": "This lock is acquired after the decision to destroy has been made without protection. It does not validate the earlier check, so the race remains exploitable and the destruction proceeds without proper synchronization."
+          },
+          {
+            "vuln_file": "ipc/shm.c",
+            "stmt_text": "return 0;",
+            "location": "hunk",
+            "explanation": "This early return is based on a racy list_empty check. If the list appears non-empty due to a race, the function returns without handling the segment correctly, potentially leaving a segment that should be destroyed or proceeding to a vulnerable path."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9d7bea186ba5",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 426
+        },
+        "commit": "85b6d24646e4125c591639841169baa98a2da503",
+        "commit_short": "85b6d24646e4",
+        "commit_msg": "shm: extend forced shm destroy to support objects from several IPC nses\n\nCurrently, the exit_shm() function not designed",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 407,
+        "code_snippet": "commit 85b6d24646e4125c591639841169baa98a2da503\nAuthor: Alexander Mikhalitsyn <alexander@mihalicyn.com>\nDate:   Fri Nov 19 16:43:21 2021 -0800\n\n    shm: extend forced shm destroy to support objects from several IPC nses\n    \n    Currently, the exit_shm() function not designed to work properly when\n    task->sysvshm.shm_clist holds shm objects from different IPC namespaces.\n    \n    This is a real pain when sysctl kernel.shm_rmid_forced = 1, because it\n    leads to use-after-free (reproducer exis",
+        "exists": true,
+        "reason": "The vulnerable construct is present in `shm_try_destroy_orphaned`: it calls `shm_may_destroy(shp)` without holding `shp->shm_perm.lock`. The `shm_may_destroy` function reads `shp->shm_nattch` (line 349 of the snippet) which is only updated under that lock, creating a race condition. The commit does not add any lock around this check, so the vulnerability remains unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "126e8bee943e",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 407
+        },
+        "commit": "83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8",
+        "commit_short": "83293c0f5a61",
+        "commit_msg": "shm: allow exit_shm in parallel if only marking orphans\n\nIf shm_rmid_force (the default state) is not set then the shmid",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 330,
+        "code_snippet": "commit 83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8\nAuthor: Jack Miller <millerjo@us.ibm.com>\nDate:   Fri Aug 8 14:23:21 2014 -0700\n\n    shm: allow exit_shm in parallel if only marking orphans\n    \n    If shm_rmid_force (the default state) is not set then the shmids are only\n    marked as orphaned and does not require any add, delete, or locking of the\n    tree structure.\n    \n    Seperate the sysctl on and off case, and only obtain the read lock.  The\n    newly added list head can be deleted under ",
+        "exists": true,
+        "reason": "In the write-lock path of exit_shm (the 'if (!ns->shm_rmid_forced) ... else' branch), after setting shp->shm_creator = NULL, the code calls shm_may_destroy(ns, shp) without first acquiring shp->shm_perm.lock. This replicates the race condition described in the root cause: shm_may_destroy checks shm_nattch, which is only updated under shp->shm_perm.lock, allowing a concurrent attach to modify the count between the check and subsequent shm_lock_by_ptr, potentially causing use-after-free or premature destruction."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ab602f799159",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 330
+        },
+        "commit": "b34a6b1da371ed8af1221459a18c67970f7e3d53",
+        "commit_short": "b34a6b1da371",
+        "commit_msg": "ipc: introduce shm_rmid_forced sysctl\n\nAdd support for the shm_rmid_forced sysctl.  If set to 1, all shared\nmemory objec",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 291,
+        "code_snippet": "commit b34a6b1da371ed8af1221459a18c67970f7e3d53\nAuthor: Vasiliy Kulikov <segoon@openwall.com>\nDate:   Tue Jul 26 16:08:48 2011 -0700\n\n    ipc: introduce shm_rmid_forced sysctl\n    \n    Add support for the shm_rmid_forced sysctl.  If set to 1, all shared\n    memory objects in current ipc namespace will be automatically forced to\n    use IPC_RMID.\n    \n    The POSIX way of handling shmem allows one to create shm objects and\n    call shmdt(), leaving shm object associated with no process, thus\n    ",
+        "exists": false,
+        "reason": "shm_try_destroy_orphaned() calls shm_lock() (which acquires the shm_perm.lock) before calling shm_may_destroy(), so the check of shm_nattch is properly locked. The root cause condition (checking without holding the segment lock) is not present in this commit."
+      }
+    },
+    {
+      "bic_found": "83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9d7bea186ba5",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 423
+        },
+        "commit": "85b6d24646e4125c591639841169baa98a2da503",
+        "commit_short": "85b6d24646e4",
+        "commit_msg": "shm: extend forced shm destroy to support objects from several IPC nses\n\nCurrently, the exit_shm() function not designed",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 404,
+        "code_snippet": "commit 85b6d24646e4125c591639841169baa98a2da503\nAuthor: Alexander Mikhalitsyn <alexander@mihalicyn.com>\nDate:   Fri Nov 19 16:43:21 2021 -0800\n\n    shm: extend forced shm destroy to support objects from several IPC nses\n    \n    Currently, the exit_shm() function not designed to work properly when\n    task->sysvshm.shm_clist holds shm objects from different IPC namespaces.\n    \n    This is a real pain when sysctl kernel.shm_rmid_forced = 1, because it\n    leads to use-after-free (reproducer exis",
+        "exists": true,
+        "reason": "The vulnerable construct is present in shm_try_destroy_orphaned(): it calls shm_may_destroy(shp) which reads shp->shm_nattch without holding shp->shm_perm.lock (lines: shm_may_destroy checks shp->shm_nattch == 0, and the call is made before any lock is acquired). The root cause describes exactly this race, and the commit does not introduce a fix for it."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "126e8bee943e",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 404
+        },
+        "commit": "83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8",
+        "commit_short": "83293c0f5a61",
+        "commit_msg": "shm: allow exit_shm in parallel if only marking orphans\n\nIf shm_rmid_force (the default state) is not set then the shmid",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 327,
+        "code_snippet": "commit 83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8\nAuthor: Jack Miller <millerjo@us.ibm.com>\nDate:   Fri Aug 8 14:23:21 2014 -0700\n\n    shm: allow exit_shm in parallel if only marking orphans\n    \n    If shm_rmid_force (the default state) is not set then the shmids are only\n    marked as orphaned and does not require any add, delete, or locking of the\n    tree structure.\n    \n    Seperate the sysctl on and off case, and only obtain the read lock.  The\n    newly added list head can be deleted under ",
+        "exists": true,
+        "reason": "In the commit's exit_shm function, the shm_rmid_forced path (after down_write) calls shm_may_destroy(ns, shp) before acquiring shp->shm_perm.lock via shm_lock_by_ptr. Since shm_nattch is only updated under that lock, a concurrent attach/detach can race, causing a use-after-free or premature destruction. The vulnerable pattern persists; no fix has been added."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ab602f799159",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 327
+        },
+        "commit": "b34a6b1da371ed8af1221459a18c67970f7e3d53",
+        "commit_short": "b34a6b1da371",
+        "commit_msg": "ipc: introduce shm_rmid_forced sysctl\n\nAdd support for the shm_rmid_forced sysctl.  If set to 1, all shared\nmemory objec",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 288,
+        "code_snippet": "commit b34a6b1da371ed8af1221459a18c67970f7e3d53\nAuthor: Vasiliy Kulikov <segoon@openwall.com>\nDate:   Tue Jul 26 16:08:48 2011 -0700\n\n    ipc: introduce shm_rmid_forced sysctl\n    \n    Add support for the shm_rmid_forced sysctl.  If set to 1, all shared\n    memory objects in current ipc namespace will be automatically forced to\n    use IPC_RMID.\n    \n    The POSIX way of handling shmem allows one to create shm objects and\n    call shmdt(), leaving shm object associated with no process, thus\n    ",
+        "exists": true,
+        "reason": "The commit introduces shm_try_destroy_orphaned() and shm_try_destroy_current() which call shm_may_destroy() after acquiring only the rw_mutex via shm_lock(), but without holding the per-segment spinlock (shp->shm_perm.lock).  Since shm_nattch is modified under that spinlock (e.g., in shm_close), this creates a race condition leading to potential use-after-free, matching the root cause.  No fix for this race is included in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "d40dcdb0172a",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 288
+        },
+        "commit": "516dffdcd8827a40532798602830dfcfc672294c",
+        "commit_short": "516dffdcd882",
+        "commit_msg": "[PATCH] Fix get_unmapped_area and fsync for hugetlb shm segments\n\nThis patch provides the following hugetlb-related fixe",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 299,
+        "code_snippet": "commit 516dffdcd8827a40532798602830dfcfc672294c\nAuthor: Adam Litke <agl@us.ibm.com>\nDate:   Thu Mar 1 15:46:08 2007 -0800\n\n    [PATCH] Fix get_unmapped_area and fsync for hugetlb shm segments\n    \n    This patch provides the following hugetlb-related fixes to the recent stacked\n    shm files changes:\n     - Update is_file_hugepages() so it will reconize hugetlb shm segments.\n     - get_unmapped_area must be called with the nested file struct to handle\n       the sfd->file->f_ops->get_unmapped_ar",
+        "exists": false,
+        "reason": "The commit only adds hugetlb support (shm_fsync, get_unmapped_area, is_file_shm_hugepages) and does not modify shm_destroy_orphaned or any locking related to shm_nattch. The vulnerable construct is not present in this diff."
+      }
+    },
+    {
+      "bic_found": "b34a6b1da371ed8af1221459a18c67970f7e3d53",
+      "depth": 3
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9d7bea186ba5",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 428
+        },
+        "commit": "4e9823111bdc76127b17fc70dc57f584fd7dd34c",
+        "commit_short": "4e9823111bdc",
+        "commit_msg": "[PATCH] IPC namespace - shm\n\nIPC namespace support for IPC shm code.\n\nSigned-off-by: Pavel Emelianiov <xemul@openvz.org>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 220,
+        "code_snippet": "commit 4e9823111bdc76127b17fc70dc57f584fd7dd34c\nAuthor: Kirill Korotaev <dev@openvz.org>\nDate:   Mon Oct 2 02:18:22 2006 -0700\n\n    [PATCH] IPC namespace - shm\n    \n    IPC namespace support for IPC shm code.\n    \n    Signed-off-by: Pavel Emelianiov <xemul@openvz.org>\n    Signed-off-by: Kirill Korotaev <dev@openvz.org>\n    Signed-off-by: Andrew Morton <akpm@osdl.org>\n    Signed-off-by: Linus Torvalds <torvalds@osdl.org>\n\ndiff --git a/ipc/shm.c b/ipc/shm.c\nindex 940b0c9b13aa..bfbd317ec11c 100644\n",
+        "exists": false,
+        "reason": "The provided function body is from the detach path (shm_close or similar), not from shm_destroy_orphaned(). It correctly acquires the per-segment lock via shm_lock() before checking shm_nattch and conditionally destroying the segment. The vulnerable construct described in the root cause (race in shm_destroy_orphaned) is not present in this function."
+      }
+    },
+    {
+      "bic_found": "4e9823111bdc76127b17fc70dc57f584fd7dd34c",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9d7bea186ba5",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 427
+        },
+        "commit": "4c677e2eefdba9c5bfc4474e2e91b26ae8458a1d",
+        "commit_short": "4c677e2eefdb",
+        "commit_msg": "shm: optimize locking and ipc_namespace getting\n\nshm_lock() does a lookup of shm segment in shm_ids(ns).ipcs_idr, which\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 288,
+        "code_snippet": "commit 4c677e2eefdba9c5bfc4474e2e91b26ae8458a1d\nAuthor: Vasiliy Kulikov <segoon@openwall.com>\nDate:   Fri Jul 29 03:56:40 2011 +0400\n\n    shm: optimize locking and ipc_namespace getting\n    \n    shm_lock() does a lookup of shm segment in shm_ids(ns).ipcs_idr, which\n    is redundant as we already know shmid_kernel address.  An actual lock is\n    also not required for reads until we really want to destroy the segment.\n    \n    exit_shm() and shm_destroy_orphaned() may avoid the loop by checking\n  ",
+        "exists": true,
+        "reason": "In the commit, shm_try_destroy_orphaned() and shm_try_destroy_current() call shm_may_destroy() before acquiring shm_perm.lock. For example, in shm_try_destroy_orphaned: 'if (shm_may_destroy(ns, shp)) { shm_lock_by_ptr(shp); shm_destroy(ns, shp); }'. The decision to destroy is made without holding the lock, while shm_nattch (checked by shm_may_destroy) is only updated under that lock. This creates a race condition leading to use-after-free. The lock is only taken after the check, and the check is not re-evaluated after locking, leaving the window open."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "5774ed014f02",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 288
+        },
+        "commit": "4e9823111bdc76127b17fc70dc57f584fd7dd34c",
+        "commit_short": "4e9823111bdc",
+        "commit_msg": "[PATCH] IPC namespace - shm\n\nIPC namespace support for IPC shm code.\n\nSigned-off-by: Pavel Emelianiov <xemul@openvz.org>",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 220,
+        "code_snippet": "commit 4e9823111bdc76127b17fc70dc57f584fd7dd34c\nAuthor: Kirill Korotaev <dev@openvz.org>\nDate:   Mon Oct 2 02:18:22 2006 -0700\n\n    [PATCH] IPC namespace - shm\n    \n    IPC namespace support for IPC shm code.\n    \n    Signed-off-by: Pavel Emelianiov <xemul@openvz.org>\n    Signed-off-by: Kirill Korotaev <dev@openvz.org>\n    Signed-off-by: Andrew Morton <akpm@osdl.org>\n    Signed-off-by: Linus Torvalds <torvalds@osdl.org>\n\ndiff --git a/ipc/shm.c b/ipc/shm.c\nindex 940b0c9b13aa..bfbd317ec11c 100644\n",
+        "exists": false,
+        "reason": "The vulnerability root cause describes a race condition in shm_destroy_orphaned() due to checking shm_may_destroy() without holding shm_perm.lock. However, the provided commit does not contain the function shm_destroy_orphaned() at all. It only adds IPC namespace support and modifies existing functions (shm_close, do_shmat, sys_shmctl, etc.), all of which correctly hold the per-object lock (via shm_lock) when accessing shm_nattch. Therefore the vulnerable construct is absent from this code."
+      }
+    },
+    {
+      "bic_found": "4c677e2eefdba9c5bfc4474e2e91b26ae8458a1d",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "9d7bea186ba5",
+          "anchor_file": "ipc/shm.c",
+          "anchor_lineno": 424
+        },
+        "commit": "b34a6b1da371ed8af1221459a18c67970f7e3d53",
+        "commit_short": "b34a6b1da371",
+        "commit_msg": "ipc: introduce shm_rmid_forced sysctl\n\nAdd support for the shm_rmid_forced sysctl.  If set to 1, all shared\nmemory objec",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "ipc/shm.c",
+        "display_lineno": 272,
+        "code_snippet": "commit b34a6b1da371ed8af1221459a18c67970f7e3d53\nAuthor: Vasiliy Kulikov <segoon@openwall.com>\nDate:   Tue Jul 26 16:08:48 2011 -0700\n\n    ipc: introduce shm_rmid_forced sysctl\n    \n    Add support for the shm_rmid_forced sysctl.  If set to 1, all shared\n    memory objects in current ipc namespace will be automatically forced to\n    use IPC_RMID.\n    \n    The POSIX way of handling shmem allows one to create shm objects and\n    call shmdt(), leaving shm object associated with no process, thus\n    ",
+        "exists": false,
+        "reason": "In this commit, all callers of shm_may_destroy() (shm_close, shm_try_destroy_current, shm_try_destroy_orphaned, do_shmat) acquire the segment's lock via shm_lock() before reading shp->shm_nattch. shm_try_destroy_orphaned is called from shm_destroy_orphaned() and holds the lock, so there is no race condition introduced. The vulnerable construct (checking shm_nattch without lock) is absent."
+      }
+    },
+    {
+      "bic_found": "b34a6b1da371ed8af1221459a18c67970f7e3d53",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8": 1,
+        "b34a6b1da371ed8af1221459a18c67970f7e3d53": 2,
+        "4e9823111bdc76127b17fc70dc57f584fd7dd34c": 1,
+        "4c677e2eefdba9c5bfc4474e2e91b26ae8458a1d": 1
+      },
+      "bic_candidates": [
+        "b34a6b1da371ed8af1221459a18c67970f7e3d53",
+        "83293c0f5a6130bf7d60b7b406f4a4de0cadd3d8",
+        "4e9823111bdc76127b17fc70dc57f584fd7dd34c",
+        "4c677e2eefdba9c5bfc4474e2e91b26ae8458a1d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

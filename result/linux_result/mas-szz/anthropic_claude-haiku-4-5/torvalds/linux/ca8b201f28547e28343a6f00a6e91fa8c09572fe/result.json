@@ -1,0 +1,340 @@
+{
+  "cveid": "CVE-2025-71065",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "ca8b201f28547e28343a6f00a6e91fa8c09572fe"
+  ],
+  "ground_truth_bic": "95fa90c9e5a7f14c2497d5b032544478c9377c3a",
+  "predicted_bic": [
+    "95fa90c9e5a7f14c2497d5b032544478c9377c3a",
+    "901c12d144570ed2558f4a6806201453c5b01bea"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 43294,
+  "root_cause": {
+    "text": "The `f2fs_handle_error()` function was acquiring the `sb_lock` (via `f2fs_down_write(&sbi->sb_lock)`) while holding other locks in contexts that could already hold `fs_reclaim` and `sb_internal` locks, creating a circular lock dependency chain that leads to deadlock.",
+    "evidence": "The patch removes the synchronous `f2fs_record_errors()` function that called `f2fs_down_write(&sbi->sb_lock)` and `f2fs_commit_super()` from within `f2fs_handle_error()`. The commit message explicitly states: \"In order to avoid such deadlock, we need to avoid grabbing sb_lock in f2fs_handle_error(), so, let's use asynchronous method instead\" and shows the deadlock chain where `f2fs_handle_error()` → `f2fs_record_errors()` → `f2fs_down_write()` (Lock D) → `f2fs_commit_super()` → `fs_reclaim_acquire` (Lock A) creates a cycle with locks already held by kswapd. The fix replaces the synchronous implementation with just `f2fs_save_errors()`, deferring the actual superblock update to an asynchronous path.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "fs/f2fs/super.c",
+      "lineno": 4568,
+      "content": "f2fs_down_write(&sbi->sb_lock);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/f2fs/super.c",
+      "lineno": 4585,
+      "content": "f2fs_record_errors(sbi, error);",
+      "confidence": 1.0
+    },
+    {
+      "file": "fs/f2fs/super.c",
+      "lineno": 4573,
+      "content": "err = f2fs_commit_super(sbi, false);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The `f2fs_handle_error()` function was acquiring the `sb_lock` (via `f2fs_down_write(&sbi->sb_lock)`) while holding other locks in contexts that could already hold `fs_reclaim` and `sb_internal` locks, creating a circular lock dependency chain that leads to deadlock.",
+      "evidence_points": "The patch removes the synchronous `f2fs_record_errors()` function that called `f2fs_down_write(&sbi->sb_lock)` and `f2fs_commit_super()` from within `f2fs_handle_error()`. The commit message explicitly states: \"In order to avoid such deadlock, we need to avoid grabbing sb_lock in f2fs_handle_error(), so, let's use asynchronous method instead\" and shows the deadlock chain where `f2fs_handle_error()` → `f2fs_record_errors()` → `f2fs_down_write()` (Lock D) → `f2fs_commit_super()` → `fs_reclaim_acquire` (Lock A) creates a cycle with locks already held by kswapd. The fix replaces the synchronous implementation with just `f2fs_save_errors()`, deferring the actual superblock update to an asynchronous path."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "fs/f2fs/compress.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "fs/f2fs/f2fs.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "fs/f2fs/super.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Simplify decompression error handling by removing context-aware branching and using a single synchronous error handler path.",
+        "what": "Removed conditional branching that called either `f2fs_handle_error_async()` or `f2fs_handle_error()` based on the `in_task` parameter. Now unconditionally calls `f2fs_handle_error()` in all cases.",
+        "how": "Previously, when not in task context (`!in_task`), the code would invoke the async error handler to avoid `f2fs_commit_super` in IRQ context. Now all error handling paths use the synchronous `f2fs_handle_error()` function regardless of execution context. This simplifies the error handling flow but removes the IRQ-context safety distinction that was previously enforced."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Remove unused or obsolete f2fs_handle_error_async function declaration from public API.",
+        "what": "Removed the function declaration `void f2fs_handle_error_async(struct f2fs_sb_info *sbi, unsigned char error);` from the header file.",
+        "how": "This removes the public interface declaration for an asynchronous error handling function. Code that previously could call this function will no longer have access to it through this header, either because the function was deleted entirely or made private/internal."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "refactor",
+        "intent_summary": "Simplify error handling by removing superblock persistence logic and consolidating f2fs_handle_error and f2fs_handle_error_async into a single lightweight error-saving operation.",
+        "what": "Removed two static functions (f2fs_update_errors and f2fs_record_errors) and simplified f2fs_handle_error to only call f2fs_save_errors, eliminating the f2fs_handle_error_async function entirely.",
+        "how": "The error handling path is simplified by removing the superblock commit logic that was conditionally executed when error_dirty flag was set. Now f2fs_handle_error only saves errors to the in-memory error array without attempting to persist them to the superblock. This removes the write lock acquisition and commit operation that previously occurred during error recording."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Simplify decompression error handling by removing context-aware branching and using a single synchronous error handler path."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Remove unused or obsolete f2fs_handle_error_async function declaration from public API."
+        },
+        {
+          "group_id": 2,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Simplify error handling by removing superblock persistence logic and consolidating f2fs_handle_error and f2fs_handle_error_async into a single lightweight error-saving operation."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": false,
+        "reason": "The group addresses decompression error handling simplification, which is unrelated to the circular lock dependency issue in `f2fs_handle_error()`. The vulnerability root cause involves lock ordering problems with `sb_lock`, `fs_reclaim`, and `sb_internal` locks, while this group's changes focus on decompression error paths and branching logic. These are separate concerns."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "This group only removes an unused function declaration from the public API. It does not address the core vulnerability issue, which is the circular lock dependency created by `f2fs_handle_error()` acquiring `sb_lock` while holding other locks. Removing an unused async variant does not fix the lock ordering problem or prevent the deadlock condition."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The group directly addresses the vulnerability root cause by removing superblock persistence logic and consolidating error handling functions. This simplification eliminates the `f2fs_down_write(&sbi->sb_lock)` acquisition that was creating the circular lock dependency chain. By making error handling lightweight and removing the lock acquisition, the group resolves the deadlock condition described in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "fs/f2fs/super.c",
+            "lineno": 4568,
+            "content": "f2fs_down_write(&sbi->sb_lock);",
+            "rationale": "This line in f2fs_record_errors() acquires sb_lock while potentially holding other locks (fs_reclaim, sb_internal) from callers, creating a circular lock dependency that leads to deadlock. The root cause is the acquisition of sb_lock in a context where lock ordering constraints are violated."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/f2fs/super.c",
+            "lineno": 4585,
+            "content": "f2fs_record_errors(sbi, error);",
+            "rationale": "This call in f2fs_handle_error() invokes f2fs_record_errors() which acquires sb_lock, propagating the lock dependency issue to callers that may already hold conflicting locks."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "fs/f2fs/super.c",
+            "lineno": 4573,
+            "content": "err = f2fs_commit_super(sbi, false);",
+            "rationale": "This superblock persistence operation within the sb_lock critical section in f2fs_record_errors() is part of the problematic lock-holding pattern that creates deadlock potential when called from contexts already holding fs_reclaim or sb_internal locks."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "fs/f2fs/super.c",
+            "stmt_text": "f2fs_down_write(&sbi->sb_lock);",
+            "location": "hunk",
+            "explanation": "This statement at line 4568 in f2fs_record_errors() directly acquires sb_lock while potentially holding other locks (fs_reclaim, sb_internal) from callers, creating a circular lock dependency chain that leads to deadlock. This is the primary vulnerable statement that violates lock ordering constraints."
+          },
+          {
+            "vuln_file": "fs/f2fs/super.c",
+            "stmt_text": "f2fs_record_errors(sbi, error);",
+            "location": "hunk",
+            "explanation": "This statement at line 4585 in f2fs_handle_error() calls f2fs_record_errors() which acquires sb_lock, propagating the lock dependency issue to callers that may already hold conflicting locks (fs_reclaim, sb_internal), thus contributing to the deadlock vulnerability."
+          },
+          {
+            "vuln_file": "fs/f2fs/super.c",
+            "stmt_text": "err = f2fs_commit_super(sbi, false);",
+            "location": "hunk",
+            "explanation": "This statement at line 4573 in f2fs_record_errors() performs superblock persistence while holding sb_lock, extending the critical section and increasing the likelihood of lock contention with contexts already holding fs_reclaim or sb_internal locks, exacerbating the deadlock vulnerability."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c1cdb0048832",
+          "anchor_file": "fs/f2fs/super.c",
+          "anchor_lineno": 4568
+        },
+        "commit": "95fa90c9e5a7f14c2497d5b032544478c9377c3a",
+        "commit_short": "95fa90c9e5a7",
+        "commit_msg": "f2fs: support recording errors into superblock\n\nThis patch supports to record detail reason of FSCORRUPTED error into\nf2",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/super.c",
+        "display_lineno": 3898,
+        "code_snippet": "commit 95fa90c9e5a7f14c2497d5b032544478c9377c3a\nAuthor: Chao Yu <chao@kernel.org>\nDate:   Wed Sep 28 23:38:54 2022 +0800\n\n    f2fs: support recording errors into superblock\n    \n    This patch supports to record detail reason of FSCORRUPTED error into\n    f2fs_super_block.s_errors[].\n    \n    Signed-off-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Jaegeuk Kim <jaegeuk@kernel.org>\n\ndiff --git a/fs/f2fs/super.c b/fs/f2fs/super.c\nindex 2533d309a924..6cf72fbf2054 100644\n--- a/fs/f2fs/super.c\n+++",
+        "exists": true,
+        "reason": "The newly introduced `f2fs_handle_error()` function (lines 3876-3895) acquires `sbi->sb_lock` via `f2fs_down_write(&sbi->sb_lock)` at line 3885. According to the vulnerability root cause, this function can be called from contexts that already hold `fs_reclaim` and `sb_internal` locks, creating a circular lock dependency. The function calls `f2fs_commit_super(sbi, false)` at line 3889 while holding `sb_lock`, which can trigger reclaim operations. The code does not implement any lock ordering protection, priority boosting, or deadlock prevention mechanism. The fix would require either: (1) not acquiring `sb_lock` in `f2fs_handle_error()`, (2) using a different synchronization mechanism, or (3) ensuring the function is never called from contexts holding conflicting locks. None of these fixes are present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a9cfee0ef98e",
+          "anchor_file": "fs/f2fs/super.c",
+          "anchor_lineno": 3898
+        },
+        "commit": "3c62be17d4f562f43fe1d03b48194399caa35aa5",
+        "commit_short": "3c62be17d4f5",
+        "commit_msg": "f2fs: support multiple devices\n\nThis patch implements multiple devices support for f2fs.\nGiven multiple devices by mkfs.",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/super.c",
+        "display_lineno": 1720,
+        "code_snippet": "commit 3c62be17d4f562f43fe1d03b48194399caa35aa5\nAuthor: Jaegeuk Kim <jaegeuk@kernel.org>\nDate:   Thu Oct 6 19:02:05 2016 -0700\n\n    f2fs: support multiple devices\n    \n    This patch implements multiple devices support for f2fs.\n    Given multiple devices by mkfs.f2fs, f2fs shows them entirely as one big\n    volume under one f2fs instance.\n    \n    Internal block management is very simple, but we will modify block allocation\n    and background GC policy to boost IO speed by exploiting them accoo",
+        "exists": false,
+        "reason": "The provided function body (lines 1691-1759) appears to be a device initialization/setup function that handles multiple F2FS devices. It does not contain any calls to `f2fs_handle_error()` or `f2fs_down_write(&sbi->sb_lock)` - the vulnerable constructs mentioned in the root cause. The vulnerability description specifically mentions a circular lock dependency involving `f2fs_handle_error()` acquiring `sb_lock`, but this function does not exhibit that pattern. Without seeing the actual `f2fs_handle_error()` function implementation or the context where it's being called with pre-held locks, it's impossible to determine if this commit introduces the vulnerability. The function shown here is device setup logic unrelated to error handling lock acquisition."
+      }
+    },
+    {
+      "bic_found": "95fa90c9e5a7f14c2497d5b032544478c9377c3a",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c1cdb0048832",
+          "anchor_file": "fs/f2fs/super.c",
+          "anchor_lineno": 4585
+        },
+        "commit": "901c12d144570ed2558f4a6806201453c5b01bea",
+        "commit_short": "901c12d14457",
+        "commit_msg": "f2fs: flush error flags in workqueue\n\nIn IRQ context, it wakes up workqueue to record errors into on-disk\nsuperblock fie",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/super.c",
+        "display_lineno": 4062,
+        "code_snippet": "commit 901c12d144570ed2558f4a6806201453c5b01bea\nAuthor: Chao Yu <chao@kernel.org>\nDate:   Thu May 18 10:14:12 2023 +0800\n\n    f2fs: flush error flags in workqueue\n    \n    In IRQ context, it wakes up workqueue to record errors into on-disk\n    superblock fields rather than in-memory fields.\n    \n    Fixes: 1aa161e43106 (\"f2fs: fix scheduling while atomic in decompression path\")\n    Fixes: 95fa90c9e5a7 (\"f2fs: support recording errors into superblock\")\n    Signed-off-by: Chao Yu <chao@kernel.org>",
+        "exists": false,
+        "reason": "This commit FIXES the vulnerability rather than introducing it. The root cause was that `f2fs_handle_error()` was acquiring `sb_lock` (via `f2fs_down_write(&sbi->sb_lock)`) in contexts that could already hold other locks, creating circular dependencies. This commit refactors the code to: (1) Extract the lock-holding logic into a new `f2fs_record_errors()` function that is called only from safe contexts, (2) Create a new `f2fs_handle_error_async()` function that uses `schedule_work()` to defer the actual error recording to a workqueue context, avoiding the lock acquisition in IRQ/atomic contexts. The original `f2fs_handle_error()` now only calls `f2fs_save_errors()` and `f2fs_record_errors()` synchronously. The async variant uses `schedule_work(&sbi->s_error_work)` to handle the lock acquisition asynchronously, breaking the circular lock dependency chain. This is the fix commit, not a bug-introducing commit."
+      }
+    },
+    {
+      "bic_found": "901c12d144570ed2558f4a6806201453c5b01bea",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "c1cdb0048832",
+          "anchor_file": "fs/f2fs/super.c",
+          "anchor_lineno": 4573
+        },
+        "commit": "95fa90c9e5a7f14c2497d5b032544478c9377c3a",
+        "commit_short": "95fa90c9e5a7",
+        "commit_msg": "f2fs: support recording errors into superblock\n\nThis patch supports to record detail reason of FSCORRUPTED error into\nf2",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/super.c",
+        "display_lineno": 3903,
+        "code_snippet": "commit 95fa90c9e5a7f14c2497d5b032544478c9377c3a\nAuthor: Chao Yu <chao@kernel.org>\nDate:   Wed Sep 28 23:38:54 2022 +0800\n\n    f2fs: support recording errors into superblock\n    \n    This patch supports to record detail reason of FSCORRUPTED error into\n    f2fs_super_block.s_errors[].\n    \n    Signed-off-by: Chao Yu <chao@kernel.org>\n    Signed-off-by: Jaegeuk Kim <jaegeuk@kernel.org>\n\ndiff --git a/fs/f2fs/super.c b/fs/f2fs/super.c\nindex 2533d309a924..6cf72fbf2054 100644\n--- a/fs/f2fs/super.c\n+++",
+        "exists": true,
+        "reason": "The newly introduced `f2fs_handle_error()` function (lines 3876-3893) acquires `sbi->sb_lock` via `f2fs_down_write(&sbi->sb_lock)` at line 3885. The vulnerability root cause states this creates a circular lock dependency when `f2fs_handle_error()` is called from contexts that already hold `fs_reclaim` and `sb_internal` locks. The function calls `f2fs_commit_super()` while holding `sb_lock`, which can trigger memory reclaim operations. The code does not implement any lock ordering fix or deadlock prevention mechanism - it simply acquires the lock unconditionally. The `f2fs_save_errors()` helper uses `spin_lock(&sbi->error_lock)` which is a separate, lower-level lock, but the problematic `sb_lock` acquisition remains unprotected against the circular dependency scenario described in the vulnerability root cause."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a9cfee0ef98e",
+          "anchor_file": "fs/f2fs/super.c",
+          "anchor_lineno": 3903
+        },
+        "commit": "7bb3a371d199156cb6a863feab377146b80942c5",
+        "commit_short": "7bb3a371d199",
+        "commit_msg": "f2fs: Fix zoned block device support\n\nThe introduction of the multi-device feature partially broke the support\nfor zoned",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "fs/f2fs/super.c",
+        "display_lineno": 1771,
+        "code_snippet": "commit 7bb3a371d199156cb6a863feab377146b80942c5\nAuthor: Masato Suzuki <masato.suzuki@wdc.com>\nDate:   Mon Feb 27 20:52:49 2017 +0900\n\n    f2fs: Fix zoned block device support\n    \n    The introduction of the multi-device feature partially broke the support\n    for zoned block devices. In the function f2fs_scan_devices, sbi->devs\n    allocation and initialization is skipped in the case of a single device\n    mount. This result in no device information structure being allocated\n    for the device.",
+        "exists": false,
+        "reason": "The provided function body is from f2fs_scan_devices() in fs/f2fs/super.c and contains device initialization logic for zoned block devices and multi-device support. However, the vulnerability root cause describes a deadlock issue in f2fs_handle_error() function related to acquiring sb_lock while holding other locks (fs_reclaim and sb_internal). The provided code snippet does not contain the f2fs_handle_error() function at all, nor does it show any lock acquisition patterns (f2fs_down_write, sb_lock, etc.) that would be relevant to the described vulnerability. The function shown here deals with device enumeration and initialization, not error handling or lock management. To properly assess whether this commit introduces or fixes the f2fs_handle_error() deadlock vulnerability, the actual f2fs_handle_error() function implementation from this commit would be needed."
+      }
+    },
+    {
+      "bic_found": "95fa90c9e5a7f14c2497d5b032544478c9377c3a",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "95fa90c9e5a7f14c2497d5b032544478c9377c3a": 2,
+        "901c12d144570ed2558f4a6806201453c5b01bea": 1
+      },
+      "bic_candidates": [
+        "95fa90c9e5a7f14c2497d5b032544478c9377c3a",
+        "901c12d144570ed2558f4a6806201453c5b01bea"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

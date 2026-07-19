@@ -1,0 +1,469 @@
+{
+  "cveid": "CVE-2026-31431",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "a664bf3d603dc3bdcf9ae47cc21e0daec706d7a5"
+  ],
+  "ground_truth_bic": "72548b093ee38a6d4f2a19e6ef1948ae05c181f7",
+  "predicted_bic": [
+    "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+    "72548b093ee38a6d4f2a19e6ef1948ae05c181f7"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 17,
+  "llm_tokens": 116041,
+  "root_cause": {
+    "text": "The in-place AEAD decryption implementation introduced in commit 72548b093ee3 had complex scatter-gather list offset and chaining logic that could lead to use-after-free or memory corruption due to improper handling of SG list lifetimes and offsets, especially when reassigning pages with offsets.",
+    "evidence": "The patch reverts the entire in-place SG manipulation logic in `_aead_recvmsg` (removing decryption-specific chaining of tag SGL and offset-based `af_alg_pull_tsgl`/`af_alg_count_tsgl`), simplifies to a direct copy of AAD using `memcpy_sglist`, and uses separate source and destination SGLs. The commit message explicitly states \"Get rid of all the complexity added for in-place operation and just copy the AD directly.\"",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "crypto/af_alg.c",
+      "lineno": -1,
+      "content": "sg_set_page(dst + j, page, plen - dst_offset, sg[i].offset + dst_offset);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/af_alg.c",
+      "lineno": 649,
+      "content": "if (dst_offset >= plen) { dst_offset -= plen; }",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/af_alg.c",
+      "lineno": 744,
+      "content": "sg[i].length -= plen;",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/algif_aead.c",
+      "lineno": -1,
+      "content": "areq->tsgl_entries = af_alg_count_tsgl(sk, processed, processed - as);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/algif_aead.c",
+      "lineno": 235,
+      "content": "af_alg_pull_tsgl(sk, processed, areq->tsgl, processed - as);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/algif_aead.c",
+      "lineno": 243,
+      "content": "sg_unmark_end(sg + sgl_prev->sgt.nents - 1);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/algif_aead.c",
+      "lineno": 244,
+      "content": "sg_chain(sg, sgl_prev->sgt.nents + 1, areq->tsgl);",
+      "confidence": 1.0
+    },
+    {
+      "file": "crypto/af_alg.c",
+      "lineno": 649,
+      "content": "if (offset >= sg[i].length) { offset -= sg[i].length; bytes -= sg[i].length; continue; }",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The in-place AEAD decryption implementation introduced in commit 72548b093ee3 had complex scatter-gather list offset and chaining logic that could lead to use-after-free or memory corruption due to improper handling of SG list lifetimes and offsets, especially when reassigning pages with offsets.",
+      "evidence_points": "The patch reverts the entire in-place SG manipulation logic in `_aead_recvmsg` (removing decryption-specific chaining of tag SGL and offset-based `af_alg_pull_tsgl`/`af_alg_count_tsgl`), simplifies to a direct copy of AAD using `memcpy_sglist`, and uses separate source and destination SGLs. The commit message explicitly states \"Get rid of all the complexity added for in-place operation and just copy the AD directly.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "crypto/af_alg.c",
+            "lineno": -1,
+            "content": "sg_set_page(dst + j, page, plen - dst_offset, sg[i].offset + dst_offset);",
+            "rationale": "The offset sg[i].offset + dst_offset may exceed the page boundary, causing memory corruption when the scatter-gather entry is used. This is a direct consequence of improper offset handling during page reassignment."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "crypto/af_alg.c",
+            "lineno": 649,
+            "content": "if (dst_offset >= plen) { dst_offset -= plen; }",
+            "rationale": "This discards the page entirely without correctly accounting for the page's reference count, potentially leading to a use-after-free if the page is released later."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "crypto/af_alg.c",
+            "lineno": 744,
+            "content": "sg[i].length -= plen;",
+            "rationale": "After reassigning part of a page to the destination SGL, the original TX SGL entry is not zeroed but only reduced in length, leaving a dangling reference that can cause double free or use-after-free."
+          },
+          {
+            "hunk_index": 7,
+            "file_path": "crypto/algif_aead.c",
+            "lineno": -1,
+            "content": "areq->tsgl_entries = af_alg_count_tsgl(sk, processed, processed - as);",
+            "rationale": "If the offset (processed - as) exceeds the total data, af_alg_count_tsgl may return 0, leading to an allocation of 1 entry. Later, af_alg_pull_tsgl may write into more entries than allocated, causing a buffer overflow and memory corruption."
+          },
+          {
+            "hunk_index": 7,
+            "file_path": "crypto/algif_aead.c",
+            "lineno": 235,
+            "content": "af_alg_pull_tsgl(sk, processed, areq->tsgl, processed - as);",
+            "rationale": "This call reassigns pages from the TX SGL into an array (areq->tsgl) that may be too small (if count_tsgl returned 0 then only 1 entry allocated). The function can write beyond the allocated entries, causing memory corruption."
+          },
+          {
+            "hunk_index": 7,
+            "file_path": "crypto/algif_aead.c",
+            "lineno": 243,
+            "content": "sg_unmark_end(sg + sgl_prev->sgt.nents - 1);",
+            "rationale": "Uses sgl_prev->sgt.nents, which may not reflect the actual number of live entries after the SG list has been manipulated, leading to incorrect chaining and use-after-free when the chain is followed."
+          },
+          {
+            "hunk_index": 7,
+            "file_path": "crypto/algif_aead.c",
+            "lineno": 244,
+            "content": "sg_chain(sg, sgl_prev->sgt.nents + 1, areq->tsgl);",
+            "rationale": "Chains the areq->tsgl to the RX SGL using a potentially stale nents count, which can cause the SGL to be interpreted incorrectly or lead to walking into freed memory."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "crypto/af_alg.c",
+            "lineno": 649,
+            "content": "if (offset >= sg[i].length) { offset -= sg[i].length; bytes -= sg[i].length; continue; }",
+            "rationale": "When offset is large, bytes may become negative, causing the loop to continue incorrectly and return a wrong count, which propagates errors into the allocation and reassignment steps."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "crypto/af_alg.c",
+            "stmt_text": "sg_set_page(dst + j, page, plen - dst_offset, sg[i].offset + dst_offset);",
+            "location": "hunk",
+            "explanation": "The offset calculation sg[i].offset + dst_offset may exceed the page boundary, causing memory corruption when the scatter-gather entry is used. This directly contributes to the improper SG list offset handling leading to use-after-free."
+          },
+          {
+            "vuln_file": "crypto/af_alg.c",
+            "stmt_text": "if (dst_offset >= plen) { dst_offset -= plen; }",
+            "location": "hunk",
+            "explanation": "This discards the page entirely without correctly accounting for the page's reference count, potentially leading to a use-after-free if the page is released later due to improper lifecycle management."
+          },
+          {
+            "vuln_file": "crypto/af_alg.c",
+            "stmt_text": "sg[i].length -= plen;",
+            "location": "hunk",
+            "explanation": "After reassigning part of a page to the destination SGL, the original TX SGL entry is not zeroed but only reduced in length, leaving a dangling reference that can cause double free or use-after-free when the SG list is later processed."
+          },
+          {
+            "vuln_file": "crypto/algif_aead.c",
+            "stmt_text": "areq->tsgl_entries = af_alg_count_tsgl(sk, processed, processed - as);",
+            "location": "hunk",
+            "explanation": "If the offset (processed - as) exceeds the total data, af_alg_count_tsgl may return 0, leading to allocation of only 1 entry. This undersized allocation later causes buffer overflow when af_alg_pull_tsgl writes more entries than allocated."
+          },
+          {
+            "vuln_file": "crypto/algif_aead.c",
+            "stmt_text": "af_alg_pull_tsgl(sk, processed, areq->tsgl, processed - as);",
+            "location": "hunk",
+            "explanation": "This call reassigns pages from the TX SGL into an array (areq->tsgl) that may be too small (if count_tsgl returned 0 then only 1 entry allocated). The function can write beyond the allocated entries, causing memory corruption."
+          },
+          {
+            "vuln_file": "crypto/algif_aead.c",
+            "stmt_text": "sg_unmark_end(sg + sgl_prev->sgt.nents - 1);",
+            "location": "hunk",
+            "explanation": "Uses sgl_prev->sgt.nents, which may not reflect the actual number of live entries after the SG list has been manipulated, leading to incorrect chaining and use-after-free when the chain is followed."
+          },
+          {
+            "vuln_file": "crypto/algif_aead.c",
+            "stmt_text": "sg_chain(sg, sgl_prev->sgt.nents + 1, areq->tsgl);",
+            "location": "hunk",
+            "explanation": "Chains the areq->tsgl to the RX SGL using a potentially stale nents count, which can cause the SGL to be interpreted incorrectly or lead to walking into freed memory."
+          },
+          {
+            "vuln_file": "crypto/af_alg.c",
+            "stmt_text": "if (offset >= sg[i].length) { offset -= sg[i].length; bytes -= sg[i].length; continue; }",
+            "location": "hunk",
+            "explanation": "When offset is large, bytes may become negative, causing the loop to continue incorrectly and return a wrong count, which propagates errors into the allocation and reassignment steps, contributing to the overall memory corruption."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 0"
+    },
+    {
+      "bic_found": null,
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "62397b493e14",
+          "anchor_file": "crypto/af_alg.c",
+          "anchor_lineno": 649
+        },
+        "commit": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+        "commit_short": "2d97591ef43d",
+        "commit_msg": "crypto: af_alg - consolidation of duplicate code\n\nConsolidate following data structures:\n\nskcipher_async_req, aead_async",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/af_alg.c",
+        "display_lineno": 560,
+        "code_snippet": "commit 2d97591ef43d0587be22ad1b0d758d6df4999a0b\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Wed Aug 2 07:56:19 2017 +0200\n\n    crypto: af_alg - consolidation of duplicate code\n    \n    Consolidate following data structures:\n    \n    skcipher_async_req, aead_async_req -> af_alg_async_req\n    skcipher_rsgl, aead_rsql -> af_alg_rsgl\n    skcipher_tsgl, aead_tsql -> af_alg_tsgl\n    skcipher_ctx, aead_ctx -> af_alg_ctx\n    \n    Consolidate following functions:\n    \n    skcipher_sndbuf, aead_",
+        "exists": true,
+        "reason": "The commit consolidates existing code from algif_aead and algif_skcipher into common functions in af_alg.c, including af_alg_pull_tsgl which contains the vulnerable construct of reassigning pages with offsets (lines: 'sg_set_page(dst + j, page, plen - dst_offset, sg[i].offset + dst_offset)') without proper handling of reference counts when dst_offset is non-zero. This matches the root cause of improper SG list lifetime and offset handling leading to use-after-free or memory corruption. The commit does not include any fix for this issue."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "62397b493e14",
+          "anchor_file": "crypto/af_alg.c",
+          "anchor_lineno": 744
+        },
+        "commit": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+        "commit_short": "2d97591ef43d",
+        "commit_msg": "crypto: af_alg - consolidation of duplicate code\n\nConsolidate following data structures:\n\nskcipher_async_req, aead_async",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/af_alg.c",
+        "display_lineno": 655,
+        "code_snippet": "commit 2d97591ef43d0587be22ad1b0d758d6df4999a0b\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Wed Aug 2 07:56:19 2017 +0200\n\n    crypto: af_alg - consolidation of duplicate code\n    \n    Consolidate following data structures:\n    \n    skcipher_async_req, aead_async_req -> af_alg_async_req\n    skcipher_rsgl, aead_rsql -> af_alg_rsgl\n    skcipher_tsgl, aead_tsql -> af_alg_tsgl\n    skcipher_ctx, aead_ctx -> af_alg_ctx\n    \n    Consolidate following functions:\n    \n    skcipher_sndbuf, aead_",
+        "exists": true,
+        "reason": "The commit introduces consolidated functions such as af_alg_pull_tsgl and af_alg_free_areq_sgls that handle scatter-gather list offset and chaining. These functions contain the complex SG list manipulation logic that can lead to use-after-free or memory corruption (e.g., improper page reference handling during offset reassignment in af_alg_pull_tsgl). The commit does not include any fix for this vulnerability, which was originally introduced in commit 72548b093ee3. Therefore, the vulnerable construct is present and not fixed."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace": "blame failed at depth 0"
+    },
+    {
+      "bic_found": null,
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "62397b493e14",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 235
+        },
+        "commit": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+        "commit_short": "2d97591ef43d",
+        "commit_msg": "crypto: af_alg - consolidation of duplicate code\n\nConsolidate following data structures:\n\nskcipher_async_req, aead_async",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 248,
+        "code_snippet": "commit 2d97591ef43d0587be22ad1b0d758d6df4999a0b\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Wed Aug 2 07:56:19 2017 +0200\n\n    crypto: af_alg - consolidation of duplicate code\n    \n    Consolidate following data structures:\n    \n    skcipher_async_req, aead_async_req -> af_alg_async_req\n    skcipher_rsgl, aead_rsql -> af_alg_rsgl\n    skcipher_tsgl, aead_tsql -> af_alg_tsgl\n    skcipher_ctx, aead_ctx -> af_alg_ctx\n    \n    Consolidate following functions:\n    \n    skcipher_sndbuf, aead_",
+        "exists": true,
+        "reason": "The commit consolidates duplicate code but retains the vulnerable in-place AEAD decryption logic. Specifically, in _aead_recvmsg, the decryption path still uses af_alg_pull_tsgl with an offset parameter to reassign pages, and chains the resulting tag SGL to the RX SGL using areq->last_rsgl. This follows the same pattern as the original vulnerability (commit 72548b093ee3) and does not introduce any fix for the use-after-free or memory corruption due to improper SG list lifetime/offset handling."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a92f7af3854c",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 248
+        },
+        "commit": "d887c52d6ae43aeebd249b5f2f1333e60236aa60",
+        "commit_short": "d887c52d6ae4",
+        "commit_msg": "crypto: algif_aead - overhaul memory management\n\nThe updated memory management is described in the top part of the code.",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 217,
+        "code_snippet": "commit d887c52d6ae43aeebd249b5f2f1333e60236aa60\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Sun Jun 25 17:12:59 2017 +0200\n\n    crypto: algif_aead - overhaul memory management\n    \n    The updated memory management is described in the top part of the code.\n    As one benefit of the changed memory management, the AIO and synchronous\n    operation is now implemented in one common function. The AF_ALG\n    operation uses the async kernel crypto API interface for each cipher\n    operation. ",
+        "exists": false,
+        "reason": "The commit completely replaces the old in-place AEAD decryption logic with a new memory management scheme. The vulnerable construct (complex SG offset reassignment with potential use-after-free) is absent. The new code explicitly handles SG list lifetimes using separate TSGL and RSGL lists, proper page reference counting via put_page(), and careful offset tracking, which prevents the previously described vulnerability."
+      }
+    },
+    {
+      "bic_found": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "62397b493e14",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 243
+        },
+        "commit": "c1abe6f570aff4b6d396dc551e60570d2f50bd79",
+        "commit_short": "c1abe6f570af",
+        "commit_msg": "crypto: af_alg: Use extract_iter_to_sg() to create scatterlists\n\nUse extract_iter_to_sg() to decant the destination iter",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 274,
+        "code_snippet": "commit c1abe6f570aff4b6d396dc551e60570d2f50bd79\nAuthor: David Howells <dhowells@redhat.com>\nDate:   Tue Jun 6 14:08:52 2023 +0100\n\n    crypto: af_alg: Use extract_iter_to_sg() to create scatterlists\n    \n    Use extract_iter_to_sg() to decant the destination iterator into a\n    scatterlist in af_alg_get_rsgl().  af_alg_make_sg() can then be removed.\n    \n    Signed-off-by: David Howells <dhowells@redhat.com>\n    cc: Herbert Xu <herbert@gondor.apana.org.au>\n    cc: \"David S. Miller\" <davem@daveml",
+        "exists": true,
+        "reason": "The function contains the in-place decryption path (lines 232-278) that allocates a separate TX SGL for the tag (areq->tsgl) and chains it to the RX SGL using sg_chain (line 274-275). This chaining logic, as described in the root cause, is prone to use-after-free or memory corruption due to improper handling of SG list lifetimes and offsets. The commit message indicates a change to use extract_iter_to_sg() in af_alg_get_rsgl, but the vulnerable chaining construct remains unmodified in this function. No additional fixes (e.g., offset adjustments or lifetime management) are visible in the shown code, so the vulnerable construct is present and unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "f9e7a5fa51fb",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 274
+        },
+        "commit": "72548b093ee38a6d4f2a19e6ef1948ae05c181f7",
+        "commit_short": "72548b093ee3",
+        "commit_msg": "crypto: algif_aead - copy AAD from src to dst\n\nUse the NULL cipher to copy the AAD and PT/CT from the TX SGL\nto the RX S",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 858,
+        "code_snippet": "commit 72548b093ee38a6d4f2a19e6ef1948ae05c181f7\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Sun Jul 30 14:32:58 2017 +0200\n\n    crypto: algif_aead - copy AAD from src to dst\n    \n    Use the NULL cipher to copy the AAD and PT/CT from the TX SGL\n    to the RX SGL. This allows an in-place crypto operation on the\n    RX SGL for encryption, because the TX data is always smaller or\n    equal to the RX data (the RX data will hold the tag).\n    \n    For decryption, a per-request TX SGL is cre",
+        "exists": true,
+        "reason": "This commit introduces the in-place AEAD decryption logic with offset handling in aead_pull_tsgl and the chaining of TX SGL for tag. The complex scatter-gather list offset and chaining logic as described in the vulnerability root cause is present, and there is no fix included. The code shows the vulnerable construct, e.g., improper handling of page references and offset reassignment in aead_pull_tsgl, which can lead to use-after-free or memory corruption."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "5703c826b758",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 858
+        },
+        "commit": "2a2a251f110576b1d89efbd0662677d7e7db21a8",
+        "commit_short": "2a2a251f1105",
+        "commit_msg": "crypto: algif_aead - Require setkey before accept(2)\n\nSome cipher implementations will crash if you try to use them\nwith",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 735,
+        "code_snippet": "commit 2a2a251f110576b1d89efbd0662677d7e7db21a8\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Mon Apr 24 11:15:23 2017 +0200\n\n    crypto: algif_aead - Require setkey before accept(2)\n    \n    Some cipher implementations will crash if you try to use them\n    without calling setkey first.  This patch adds a check so that\n    the accept(2) call will fail with -ENOKEY if setkey hasn't been\n    done on the socket yet.\n    \n    Fixes: 400c40cf78da (\"crypto: algif - add AEAD support\")\n    Cc: <",
+        "exists": false,
+        "reason": "The commit only adds a key check before accept(2) and introduces no changes to the in-place AEAD decryption logic. The vulnerable SG list offset/chaining construct is not present in this diff; the code does not touch aead_encrypt or aead_decrypt functions. Therefore, the vulnerable construct is absent (has_bug=false) and no fix for that vulnerability is included (is_fixed=false)."
+      }
+    },
+    {
+      "bic_found": "72548b093ee38a6d4f2a19e6ef1948ae05c181f7",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "62397b493e14",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 244
+        },
+        "commit": "c1abe6f570aff4b6d396dc551e60570d2f50bd79",
+        "commit_short": "c1abe6f570af",
+        "commit_msg": "crypto: af_alg: Use extract_iter_to_sg() to create scatterlists\n\nUse extract_iter_to_sg() to decant the destination iter",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 275,
+        "code_snippet": "commit c1abe6f570aff4b6d396dc551e60570d2f50bd79\nAuthor: David Howells <dhowells@redhat.com>\nDate:   Tue Jun 6 14:08:52 2023 +0100\n\n    crypto: af_alg: Use extract_iter_to_sg() to create scatterlists\n    \n    Use extract_iter_to_sg() to decant the destination iterator into a\n    scatterlist in af_alg_get_rsgl().  af_alg_make_sg() can then be removed.\n    \n    Signed-off-by: David Howells <dhowells@redhat.com>\n    cc: Herbert Xu <herbert@gondor.apana.org.au>\n    cc: \"David S. Miller\" <davem@daveml",
+        "exists": true,
+        "reason": "The function body shows the in-place AEAD decryption logic with scatter-gather list chaining, which is the vulnerable construct described in the root cause. However, the critical context of the helper functions `af_alg_get_rsgl()` and `af_alg_pull_tsgl()` is not provided. The commit message indicates a change to use `extract_iter_to_sg()` for scatterlist creation, but that logic is not visible in this snippet. Without these details, it is impossible to determine whether the fix is actually applied in this commit. Therefore, the provided code is insufficient to make a definitive determination."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "f9e7a5fa51fb",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 275
+        },
+        "commit": "72548b093ee38a6d4f2a19e6ef1948ae05c181f7",
+        "commit_short": "72548b093ee3",
+        "commit_msg": "crypto: algif_aead - copy AAD from src to dst\n\nUse the NULL cipher to copy the AAD and PT/CT from the TX SGL\nto the RX S",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 859,
+        "code_snippet": "commit 72548b093ee38a6d4f2a19e6ef1948ae05c181f7\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Sun Jul 30 14:32:58 2017 +0200\n\n    crypto: algif_aead - copy AAD from src to dst\n    \n    Use the NULL cipher to copy the AAD and PT/CT from the TX SGL\n    to the RX SGL. This allows an in-place crypto operation on the\n    RX SGL for encryption, because the TX data is always smaller or\n    equal to the RX data (the RX data will hold the tag).\n    \n    For decryption, a per-request TX SGL is cre",
+        "exists": true,
+        "reason": "The diff shows the in-place decryption implementation that uses aead_pull_tsgl with offset to reassign pages from TX SGL to a separate tag SGL and chains it to RX SGL. Specifically, in _aead_recvmsg decryption path, the call aead_pull_tsgl(sk, processed, areq->tsgl, processed - as) uses offset (processed - as) to reassign pages, and the subsequent sg_chain() links the tag SGL to the RX SGL. The root cause states this complex SG list offset and chaining logic leads to use-after-free or memory corruption. Since this commit introduces that logic, it contains the vulnerable construct and does not contain any fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "5703c826b758",
+          "anchor_file": "crypto/algif_aead.c",
+          "anchor_lineno": 859
+        },
+        "commit": "2a2a251f110576b1d89efbd0662677d7e7db21a8",
+        "commit_short": "2a2a251f1105",
+        "commit_msg": "crypto: algif_aead - Require setkey before accept(2)\n\nSome cipher implementations will crash if you try to use them\nwith",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/algif_aead.c",
+        "display_lineno": 736,
+        "code_snippet": "commit 2a2a251f110576b1d89efbd0662677d7e7db21a8\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Mon Apr 24 11:15:23 2017 +0200\n\n    crypto: algif_aead - Require setkey before accept(2)\n    \n    Some cipher implementations will crash if you try to use them\n    without calling setkey first.  This patch adds a check so that\n    the accept(2) call will fail with -ENOKEY if setkey hasn't been\n    done on the socket yet.\n    \n    Fixes: 400c40cf78da (\"crypto: algif - add AEAD support\")\n    Cc: <",
+        "exists": false,
+        "reason": "The diff only adds a setkey check (aead_check_key, nokey wrappers) and modifies aead_bind, aead_setkey, aead_accept_parent, etc. The vulnerable in-place AEAD decryption SG list logic (root cause) is not present in any of the changed or added functions. The existing aead_sendmsg/aead_recvmsg functions are untouched and not shown, so no vulnerable construct is introduced or fixed by this commit."
+      }
+    },
+    {
+      "bic_found": "72548b093ee38a6d4f2a19e6ef1948ae05c181f7",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "62397b493e14",
+          "anchor_file": "crypto/af_alg.c",
+          "anchor_lineno": 649
+        },
+        "commit": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+        "commit_short": "2d97591ef43d",
+        "commit_msg": "crypto: af_alg - consolidation of duplicate code\n\nConsolidate following data structures:\n\nskcipher_async_req, aead_async",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "crypto/af_alg.c",
+        "display_lineno": 560,
+        "code_snippet": "commit 2d97591ef43d0587be22ad1b0d758d6df4999a0b\nAuthor: Stephan Mueller <smueller@chronox.de>\nDate:   Wed Aug 2 07:56:19 2017 +0200\n\n    crypto: af_alg - consolidation of duplicate code\n    \n    Consolidate following data structures:\n    \n    skcipher_async_req, aead_async_req -> af_alg_async_req\n    skcipher_rsgl, aead_rsql -> af_alg_rsgl\n    skcipher_tsgl, aead_tsql -> af_alg_tsgl\n    skcipher_ctx, aead_ctx -> af_alg_ctx\n    \n    Consolidate following functions:\n    \n    skcipher_sndbuf, aead_",
+        "exists": true,
+        "reason": "The af_alg_pull_tsgl function (lines 599-663) contains the vulnerable construct: reassigning pages with offsets to a destination SGL without proper page reference count handling. In particular, when dst is non-NULL and dst_offset is less than plen, the code reassigns the page using sg_set_page without calling get_page, while the original SG entry is later cleared without put_page. This can lead to use-after-free or memory corruption if the destination SGL's lifetime is mismanaged. The vulnerability root cause explicitly mentions 'improper handling of SG list lifetimes and offsets, especially when reassigning pages with offsets', which matches this code. No fix is present in this commit."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+      "note": "max depth reached"
+    },
+    {
+      "bic_votes": {
+        "2d97591ef43d0587be22ad1b0d758d6df4999a0b": 4,
+        "72548b093ee38a6d4f2a19e6ef1948ae05c181f7": 2
+      },
+      "bic_candidates": [
+        "2d97591ef43d0587be22ad1b0d758d6df4999a0b",
+        "72548b093ee38a6d4f2a19e6ef1948ae05c181f7"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

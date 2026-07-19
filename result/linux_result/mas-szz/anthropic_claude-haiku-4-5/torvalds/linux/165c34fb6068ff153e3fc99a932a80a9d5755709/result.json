@@ -1,0 +1,208 @@
+{
+  "cveid": "CVE-2026-23150",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "165c34fb6068ff153e3fc99a932a80a9d5755709"
+  ],
+  "ground_truth_bic": "94f418a206648c9be6fd84d6681d6956b8f8b106",
+  "predicted_bic": [
+    "94f418a206648c9be6fd84d6681d6956b8f8b106",
+    "6709d4b7bc2e079241fdef15d1160581c5261c10"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 30975,
+  "root_cause": {
+    "text": "A race condition exists between `nfc_llcp_send_ui_frame()` and `local_cleanup()` where skb packets can be queued to `local->tx_queue` after the queue has been purged, due to lack of synchronization when checking if the nfc_llcp_local structure is being destroyed.",
+    "evidence": "The patch demonstrates the race condition through a CPU timeline showing that `nfc_llcp_send_ui_frame()` can allocate and queue skbs to `local->tx_queue` after `local_cleanup()` has called `skb_queue_purge(&local->tx_queue)`. The fix adds `spin_lock(&local->tx_queue.lock)` around the queue operation and checks `list_empty(&local->list)` before queuing, ensuring that once `nfc_llcp_remove_local()` calls `list_del_init(&local->list)` (also under the same lock), any subsequent `skb_queue_tail()` attempts will detect the removal and free the skb instead of queuing it. This synchronization prevents skbs from being queued after the queue is purged, eliminating the memory leak.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "net/nfc/llcp_commands.c",
+      "lineno": 782,
+      "content": "skb_queue_tail(&local->tx_queue, pdu);",
+      "confidence": 1.0
+    },
+    {
+      "file": "net/nfc/llcp_core.c",
+      "lineno": 319,
+      "content": "list_del(&local->list);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition exists between `nfc_llcp_send_ui_frame()` and `local_cleanup()` where skb packets can be queued to `local->tx_queue` after the queue has been purged, due to lack of synchronization when checking if the nfc_llcp_local structure is being destroyed.",
+      "evidence_points": "The patch demonstrates the race condition through a CPU timeline showing that `nfc_llcp_send_ui_frame()` can allocate and queue skbs to `local->tx_queue` after `local_cleanup()` has called `skb_queue_purge(&local->tx_queue)`. The fix adds `spin_lock(&local->tx_queue.lock)` around the queue operation and checks `list_empty(&local->list)` before queuing, ensuring that once `nfc_llcp_remove_local()` calls `list_del_init(&local->list)` (also under the same lock), any subsequent `skb_queue_tail()` attempts will detect the removal and free the skb instead of queuing it. This synchronization prevents skbs from being queued after the queue is purged, eliminating the memory leak."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "net/nfc/llcp_commands.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "net/nfc/llcp_core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Add proper synchronization and device validity check before enqueueing UI frames to prevent use-after-free and resource leaks when the local device is removed during frame transmission.",
+        "what": "Added explicit spin_lock/spin_unlock guards around tx_queue operations and replaced skb_queue_tail() with __skb_queue_tail(). Inserted a check for empty local->list that breaks the loop, frees the PDU, and returns -ENXIO if the list is empty.",
+        "how": "The change adds synchronization protection for the tx_queue access by acquiring the lock before checking if local->list is empty and before enqueueing the PDU. If local->list is empty (indicating the device/connection is no longer valid), it releases the lock, frees the allocated PDU, and exits the loop with an error code. The switch from skb_queue_tail() (which acquires the lock internally) to __skb_queue_tail() (lockless variant) prevents double-locking since the lock is now held explicitly."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect list removal with tx_queue spinlock and use list_del_init to prevent race conditions and use-after-free vulnerabilities during device removal.",
+        "what": "Replaced `list_del(&local->list)` with a protected sequence: acquire `local->tx_queue.lock`, call `list_del_init(&local->list)`, then release the lock. Also changed `list_del` to `list_del_init`.",
+        "how": "This change adds synchronization around the list removal operation by acquiring a spinlock on the transmit queue before modifying the list, preventing concurrent access to the list node during deletion. Using `list_del_init` instead of `list_del` also initializes the list pointers to point to itself, making the list node safe for subsequent operations and preventing use-after-free bugs if the node is accessed again."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Protect list removal with tx_queue spinlock and use list_del_init to prevent race conditions and use-after-free vulnerabilities during device removal."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Prevent use-after-free and race condition vulnerabilities during device removal by adding synchronization and validity checks around list operations and frame transmission.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the race condition root cause by adding synchronization (spinlock protection) and validity checks around frame transmission and queue operations. Hunk 0 adds device validity checks before enqueueing UI frames, and Hunk 1 protects list removal with tx_queue spinlock - both directly mitigate the lack of synchronization between nfc_llcp_send_ui_frame() and local_cleanup() that allows packets to be queued after purge."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "net/nfc/llcp_commands.c",
+            "lineno": 782,
+            "content": "skb_queue_tail(&local->tx_queue, pdu);",
+            "rationale": "This statement enqueues frames to local->tx_queue without checking if the local device is being destroyed. The race condition occurs when this line executes after local_cleanup() has purged the queue but before the local structure is fully freed, allowing packets to be queued to a queue that should no longer accept frames."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "net/nfc/llcp_core.c",
+            "lineno": 319,
+            "content": "list_del(&local->list);",
+            "rationale": "This statement removes the local device from the llcp_devices list without proper synchronization of the tx_queue. The lack of atomicity between list removal and queue purging creates a window where nfc_llcp_send_ui_frame() can still queue frames to a device that is being cleaned up, causing use-after-free conditions."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "net/nfc/llcp_commands.c",
+            "stmt_text": "skb_queue_tail(&local->tx_queue, pdu);",
+            "location": "hunk",
+            "explanation": "This statement enqueues UI frames to local->tx_queue without checking if the local device is being destroyed or if the queue has been purged. The race condition occurs when this line executes after local_cleanup() has purged the queue but before the local structure is fully freed, allowing packets to be queued to a queue that should no longer accept frames. This leads to use-after-free and resource leak vulnerabilities."
+          },
+          {
+            "vuln_file": "net/nfc/llcp_core.c",
+            "stmt_text": "list_del(&local->list);",
+            "location": "hunk",
+            "explanation": "This statement removes the local device from the llcp_devices list without proper synchronization of the tx_queue spinlock. The lack of atomicity between list removal and queue purging creates a race condition window where nfc_llcp_send_ui_frame() can still queue frames to a device that is being cleaned up, enabling the vulnerable skb_queue_tail() call to execute after queue purging."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2c84959167d6",
+          "anchor_file": "net/nfc/llcp_commands.c",
+          "anchor_lineno": 782
+        },
+        "commit": "94f418a206648c9be6fd84d6681d6956b8f8b106",
+        "commit_short": "94f418a20664",
+        "commit_msg": "NFC: UI frame sending routine implementation\n\nUI frames still need to follow the MIU rule, and they need to use the\nclie",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/nfc/llcp_commands.c",
+        "display_lineno": 619,
+        "code_snippet": "",
+        "exists": true,
+        "reason": "The function contains the vulnerable construct at line 619: `skb_queue_tail(&local->tx_queue, pdu)`. The vulnerability root cause describes a race condition where packets can be queued to `local->tx_queue` after the queue has been purged during `local_cleanup()`, due to lack of synchronization. The code at line 593-595 only checks if `local == NULL` but does not check if the nfc_llcp_local structure is being destroyed or if the tx_queue has been purged. There is no locking mechanism or flag check (such as checking if local is marked for cleanup) before queuing the frame at line 619. This allows the race condition where `nfc_llcp_send_ui_frame()` can queue frames after `local_cleanup()` has already purged the queue, since there's no synchronization between the two operations. The fix would require adding proper synchronization (mutex/lock) or checking a destruction flag before queuing."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 1"
+    },
+    {
+      "bic_found": "94f418a206648c9be6fd84d6681d6956b8f8b106",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2c84959167d6",
+          "anchor_file": "net/nfc/llcp_core.c",
+          "anchor_lineno": 319
+        },
+        "commit": "6709d4b7bc2e079241fdef15d1160581c5261c10",
+        "commit_short": "6709d4b7bc2e",
+        "commit_msg": "net: nfc: Fix use-after-free caused by nfc_llcp_find_local\n\nThis commit fixes several use-after-free that caused by func",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "net/nfc/llcp_core.c",
+        "display_lineno": 306,
+        "code_snippet": "commit 6709d4b7bc2e079241fdef15d1160581c5261c10\nAuthor: Lin Ma <linma@zju.edu.cn>\nDate:   Sun Jun 25 17:10:07 2023 +0800\n\n    net: nfc: Fix use-after-free caused by nfc_llcp_find_local\n    \n    This commit fixes several use-after-free that caused by function\n    nfc_llcp_find_local(). For example, one UAF can happen when below buggy\n    time window occurs.\n    \n    // nfc_genl_llc_get_params   | // nfc_unregister_device\n                                 |\n    dev = nfc_get_device(idx);   | device",
+        "exists": false,
+        "reason": "This commit is a FIX commit, not a bug-introducing commit. The diff shows the implementation of the fix for the race condition vulnerability described in the root cause. Key fixes present in this commit: (1) Addition of `llcp_devices_lock` spinlock to protect the `llcp_devices` list; (2) Re-implementation of `nfc_llcp_find_local()` to grab a reference via `nfc_llcp_local_get(local)` while holding the spinlock before returning; (3) Introduction of `nfc_llcp_remove_local()` helper that removes the local from the list during device unregistration; (4) Removal of `list_del(&local->list)` from `local_release()` and moving it to `nfc_llcp_remove_local()` to prevent premature removal; (5) Addition of `nfc_llcp_local_put()` calls in multiple functions (`nfc_llcp_general_bytes()`, `nfc_llcp_set_remote_gb()`, `nfc_llcp_data_received()`, `nfc_llcp_mac_is_down()`, `nfc_llcp_mac_is_up()`) to properly release references; (6) Change in `nfc_llcp_unregister_device()` to use `nfc_llcp_remove_local()` instead of `nfc_llcp_find_local()`. These changes directly address the race condition by ensuring proper synchronization and reference counting, preventing packets from being queued after cleanup."
+      }
+    },
+    {
+      "bic_found": "6709d4b7bc2e079241fdef15d1160581c5261c10",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "94f418a206648c9be6fd84d6681d6956b8f8b106": 1,
+        "6709d4b7bc2e079241fdef15d1160581c5261c10": 1
+      },
+      "bic_candidates": [
+        "94f418a206648c9be6fd84d6681d6956b8f8b106",
+        "6709d4b7bc2e079241fdef15d1160581c5261c10"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

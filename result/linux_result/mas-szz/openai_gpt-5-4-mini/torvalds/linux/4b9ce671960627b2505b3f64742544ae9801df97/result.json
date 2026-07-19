@@ -1,0 +1,363 @@
+{
+  "cveid": "CVE-2026-31528",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4b9ce671960627b2505b3f64742544ae9801df97"
+  ],
+  "ground_truth_bic": "bd27568117664b8b3e259721393df420ed51f57b",
+  "predicted_bic": [
+    "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+    "bd27568117664b8b3e259721393df420ed51f57b"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 22,
+  "llm_tokens": 51003,
+  "root_cause": {
+    "text": "The perf core used `event->pmu` instead of the group’s `pmu_ctx->pmu` when inheriting and reading group events, so inherited sibling counters could be placed in the wrong PMU context, causing the wrong PMU transaction callbacks to run and leading to rollback/out-of-bounds access during `group_sched_in()` failure.",
+    "evidence": "The patch changes `inherit_event()` from `find_get_pmu_context(child_event->pmu, ...)` to `find_get_pmu_context(parent_event->pmu_ctx->pmu, ...)`, and `__perf_event_read()` from `struct pmu *pmu = event->pmu;` to using `pmu = event->pmu_ctx->pmu;` for group reads; the commit message says inheriting with `event->pmu` “effectively undo[es] the move_group case for all inherited contexts” and caused “the transaction handlers of the wrong PMU” to be used.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/events/core.c",
+      "lineno": 4816,
+      "content": "struct pmu *pmu = event->pmu;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/events/core.c",
+      "lineno": 4844,
+      "content": "pmu->start_txn(pmu, PERF_PMU_TXN_READ);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/events/core.c",
+      "lineno": 4851,
+      "content": "data->ret = pmu->commit_txn(pmu);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/events/core.c",
+      "lineno": 14747,
+      "content": "pmu_ctx = find_get_pmu_context(child_event->pmu, child_ctx, child_event);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The perf core used `event->pmu` instead of the group’s `pmu_ctx->pmu` when inheriting and reading group events, so inherited sibling counters could be placed in the wrong PMU context, causing the wrong PMU transaction callbacks to run and leading to rollback/out-of-bounds access during `group_sched_in()` failure.",
+      "evidence_points": "The patch changes `inherit_event()` from `find_get_pmu_context(child_event->pmu, ...)` to `find_get_pmu_context(parent_event->pmu_ctx->pmu, ...)`, and `__perf_event_read()` from `struct pmu *pmu = event->pmu;` to using `pmu = event->pmu_ctx->pmu;` for group reads; the commit message says inheriting with `event->pmu` “effectively undo[es] the move_group case for all inherited contexts” and caused “the transaction handlers of the wrong PMU” to be used."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "kernel/events/core.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Defer initialization of the PMU pointer so `__perf_event_read()` can use the correct PMU value at runtime.",
+        "what": "In `__perf_event_read()`, the local variable `pmu` is no longer initialized from `event->pmu` at declaration time; it is now declared without an initializer.",
+        "how": "This changes the point at which `pmu` must be assigned before use, allowing the function to choose or recompute the PMU value later instead of unconditionally using `event->pmu` from the start."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "refactor",
+        "intent_summary": "Convert manual spinlock acquisition in `__perf_event_read()` to a scoped guard-based lock for safer lock management.",
+        "what": "The call to `raw_spin_lock(&ctx->lock);` was replaced with `guard(raw_spinlock)(&ctx->lock);` in `__perf_event_read()`, while the surrounding logic and subsequent function calls remain unchanged.",
+        "how": "This changes the lock acquisition to use a scoped guard-style helper, so the spinlock is automatically released when the guarded scope ends instead of relying on an explicit unlock elsewhere. Runtime behavior should remain functionally the same, but lock handling becomes safer and less error-prone."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix __perf_event_read() to use the proper PMU read helper and current PMU context while simplifying early returns for inactive and ungrouped events.",
+        "what": "In __perf_event_read(), two goto unlock paths were replaced with direct returns, the ungrouped read path now calls perf_pmu_read(event) instead of pmu->read(event), the grouped path now reloads pmu from event->pmu_ctx->pmu before starting the transaction, and the explicit unlock label plus the final raw_spin_unlock(&ctx->lock) were removed from this function body.",
+        "how": "The function now exits earlier on inactive events and ungrouped reads, and it uses the perf_pmu_read() wrapper consistently for the main event and sibling events. Reloading pmu from the event context before the transaction ensures the operation uses the current PMU instance for grouped reads. The lock release is no longer performed in this snippet, implying it is handled elsewhere in the surrounding flow."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix event inheritance to look up the PMU context using the parent event's PMU instead of the child event's PMU.",
+        "what": "In inherit_event(), the call to find_get_pmu_context() was changed from passing child_event->pmu as the first argument to passing parent_event->pmu_ctx->pmu instead.",
+        "how": "At runtime, the PMU context lookup for the newly inherited child event is now driven by the parent event's PMU rather than the child event's PMU field, which changes which PMU context is acquired during event inheritance and avoids using the child event's potentially inappropriate PMU reference at that point."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Fix __perf_event_read() to use the proper PMU read helper and current PMU context while simplifying early returns for inactive and ungrouped events."
+        },
+        {
+          "group_id": 1,
+          "category": "refactor",
+          "hunk_count": 1,
+          "intent": "Convert manual spinlock acquisition in `__perf_event_read()` to a scoped guard-based lock for safer lock management."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix event inheritance to look up the PMU context using the parent event's PMU instead of the child event's PMU."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Fix __perf_event_read() to use the proper PMU read helper and current PMU context while simplifying early returns for inactive and ungrouped events.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The fix explicitly changes __perf_event_read() to use the current PMU context rather than a stale event->pmu value, which matches the root cause of inherited/grouped events being associated with the wrong PMU context and triggering incorrect PMU callbacks."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The change is only a lock-management refactor in __perf_event_read() and does not address the PMU context selection bug involving event->pmu vs pmu_ctx->pmu, inherited sibling placement, or transaction callback rollback."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": true,
+        "reason": "The change directly matches the root cause: it fixes event inheritance to use the parent event’s PMU rather than the child/event->pmu, which addresses the गलत PMU context selection that led to incorrect transaction callbacks and group_sched_in rollback issues."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 3,
+            "file_path": "kernel/events/core.c",
+            "lineno": 14747,
+            "content": "pmu_ctx = find_get_pmu_context(child_event->pmu, child_ctx, child_event);",
+            "rationale": "The root cause says inheritance looked up the PMU context using the child event's PMU instead of the group/parent PMU context, which can place inherited sibling counters into the wrong PMU context."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/events/core.c",
+            "lineno": 4816,
+            "content": "struct pmu *pmu = event->pmu;",
+            "rationale": "Caching event->pmu at function entry is the problematic choice described by the root cause; __perf_event_read() should use the group's pmu_ctx->pmu when reading inherited group events."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "kernel/events/core.c",
+            "lineno": 4844,
+            "content": "pmu->start_txn(pmu, PERF_PMU_TXN_READ);",
+            "rationale": "Using the wrong PMU here means the transaction callbacks run on the wrong PMU, which matches the described failure mode leading to rollback/out-of-bounds access during group scheduling."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "kernel/events/core.c",
+            "lineno": 4851,
+            "content": "data->ret = pmu->commit_txn(pmu);",
+            "rationale": "If the wrong PMU context is selected earlier, commit_txn executes on the wrong PMU, directly contributing to the incorrect transaction handling described in the root cause."
+          }
+        ],
+        "confidence": "medium",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/events/core.c",
+            "stmt_text": "struct pmu *pmu = event->pmu;",
+            "location": "hunk",
+            "explanation": "Caching event->pmu at function entry causes __perf_event_read() to operate on the event's PMU instead of the group's pmu_ctx->pmu, which can select the wrong PMU transaction path for inherited group events."
+          },
+          {
+            "vuln_file": "kernel/events/core.c",
+            "stmt_text": "pmu->start_txn(pmu, PERF_PMU_TXN_READ);",
+            "location": "hunk",
+            "explanation": "This starts the read transaction on the PMU chosen above; if that PMU is wrong, the callback runs in the wrong PMU context and can trigger the rollback/out-of-bounds failure described in the root cause."
+          },
+          {
+            "vuln_file": "kernel/events/core.c",
+            "stmt_text": "data->ret = pmu->commit_txn(pmu);",
+            "location": "hunk",
+            "explanation": "Committing the transaction through the incorrectly selected PMU continues the wrong-context transaction handling, directly contributing to the failure during group event read/scheduling."
+          },
+          {
+            "vuln_file": "kernel/events/core.c",
+            "stmt_text": "pmu_ctx = find_get_pmu_context(child_event->pmu, child_ctx, child_event);",
+            "location": "hunk",
+            "explanation": "Using child_event->pmu to look up the PMU context for inherited events places sibling counters into the wrong PMU context instead of the group's pmu_ctx->pmu, matching the inheritance bug in the root cause."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f1cac6ac62d2",
+          "anchor_file": "kernel/events/core.c",
+          "anchor_lineno": 4816
+        },
+        "commit": "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+        "commit_short": "4a00c16e552e",
+        "commit_msg": "perf/core: Define PERF_PMU_TXN_READ interface\n\nDefine a new PERF_PMU_TXN_READ interface to read a group of counters\nat o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/events/core.c",
+        "display_lineno": 3202,
+        "code_snippet": "commit 4a00c16e552ea5e71756cd29cd2df7557ec9cac4\nAuthor: Sukadev Bhattiprolu <sukadev@linux.vnet.ibm.com>\nDate:   Thu Sep 3 20:07:51 2015 -0700\n\n    perf/core: Define PERF_PMU_TXN_READ interface\n    \n    Define a new PERF_PMU_TXN_READ interface to read a group of counters\n    at once.\n    \n            pmu->start_txn()                // Initialize before first event\n    \n            for each event in group\n                    pmu->read(event);       // Queue each event to be read\n    \n            ",
+        "exists": false,
+        "reason": "The snippet already contains the corrective change for the root cause. It explicitly switches to using the event-local PMU for single-event reads: `pmu->read(event);` where `struct pmu *pmu = event->pmu;`, and for sibling/group reads it also preserves per-sibling PMU handling with the comment `Use sibling's PMU rather than @event's since sibling could be on different (eg: software) PMU.` followed by `sub->pmu->read(sub);`. The group path now wraps reads with `pmu->start_txn(pmu, PERF_PMU_TXN_READ);` and `data->ret = pmu->commit_txn(pmu);`, which is the new transaction interface, so the vulnerable misuse of the wrong PMU context is not present here."
+      }
+    },
+    {
+      "bic_found": "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f1cac6ac62d2",
+          "anchor_file": "kernel/events/core.c",
+          "anchor_lineno": 4844
+        },
+        "commit": "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+        "commit_short": "4a00c16e552e",
+        "commit_msg": "perf/core: Define PERF_PMU_TXN_READ interface\n\nDefine a new PERF_PMU_TXN_READ interface to read a group of counters\nat o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/events/core.c",
+        "display_lineno": 3230,
+        "code_snippet": "commit 4a00c16e552ea5e71756cd29cd2df7557ec9cac4\nAuthor: Sukadev Bhattiprolu <sukadev@linux.vnet.ibm.com>\nDate:   Thu Sep 3 20:07:51 2015 -0700\n\n    perf/core: Define PERF_PMU_TXN_READ interface\n    \n    Define a new PERF_PMU_TXN_READ interface to read a group of counters\n    at once.\n    \n            pmu->start_txn()                // Initialize before first event\n    \n            for each event in group\n                    pmu->read(event);       // Queue each event to be read\n    \n            ",
+        "exists": false,
+        "reason": "The snippet already contains the corrective handling for the root cause: it avoids using only `event->pmu` for all group members and explicitly reads siblings with `sub->pmu->read(sub)` inside the comment \"Use sibling's PMU rather than @event's since sibling could be on different (eg: software) PMU.\" It also introduces transaction-aware grouping with `pmu->start_txn(pmu, PERF_PMU_TXN_READ)` and `data->ret = pmu->commit_txn(pmu)`, which uses the selected PMU context rather than blindly applying the leader's PMU to all counters. Because the vulnerable construct described in the root cause is the incorrect use of `event->pmu` for inheriting/reading group events, and this code already corrects that by switching to the sibling's PMU for sibling reads, the bug is not present here and the fix is already in place."
+      }
+    },
+    {
+      "bic_found": "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f1cac6ac62d2",
+          "anchor_file": "kernel/events/core.c",
+          "anchor_lineno": 4851
+        },
+        "commit": "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+        "commit_short": "4a00c16e552e",
+        "commit_msg": "perf/core: Define PERF_PMU_TXN_READ interface\n\nDefine a new PERF_PMU_TXN_READ interface to read a group of counters\nat o",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/events/core.c",
+        "display_lineno": 3245,
+        "code_snippet": "commit 4a00c16e552ea5e71756cd29cd2df7557ec9cac4\nAuthor: Sukadev Bhattiprolu <sukadev@linux.vnet.ibm.com>\nDate:   Thu Sep 3 20:07:51 2015 -0700\n\n    perf/core: Define PERF_PMU_TXN_READ interface\n    \n    Define a new PERF_PMU_TXN_READ interface to read a group of counters\n    at once.\n    \n            pmu->start_txn()                // Initialize before first event\n    \n            for each event in group\n                    pmu->read(event);       // Queue each event to be read\n    \n            ",
+        "exists": false,
+        "reason": "The snippet already contains the corrective handling for the root cause. It explicitly avoids using only the parent event's PMU for sibling reads: in the group path it does `pmu = event->pmu;`, then reads the leader with `pmu->read(event);`, but for siblings it switches to `sub->pmu->read(sub);` with the comment `Use sibling's PMU rather than @event's since sibling could be on different (eg: software) PMU.` This directly addresses the bug description about using the wrong PMU context for inherited/group events. The vulnerable construct is therefore not present in this function body as shown, and the fix is already present."
+      }
+    },
+    {
+      "bic_found": "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "f1cac6ac62d2",
+          "anchor_file": "kernel/events/core.c",
+          "anchor_lineno": 14747
+        },
+        "commit": "bd27568117664b8b3e259721393df420ed51f57b",
+        "commit_short": "bd2756811766",
+        "commit_msg": "perf: Rewrite core context handling\n\nThere have been various issues and limitations with the way perf uses\n(task) contex",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/events/core.c",
+        "display_lineno": 13151,
+        "code_snippet": "commit bd27568117664b8b3e259721393df420ed51f57b\nAuthor: Peter Zijlstra <peterz@infradead.org>\nDate:   Sat Oct 8 11:54:24 2022 +0530\n\n    perf: Rewrite core context handling\n    \n    There have been various issues and limitations with the way perf uses\n    (task) contexts to track events. Most notable is the single hardware\n    PMU task context, which has resulted in a number of yucky things (both\n    proposed and merged).\n    \n    Notably:\n     - HW breakpoint PMU\n     - ARM big.little PMU / Int",
+        "exists": false,
+        "reason": "The shown commit has already rewritten the perf core context model to use per-PMU context state, which removes the vulnerable construct described in the root cause. In particular, the old single-context logic based on `event->pmu` / `ctx->pmu` is replaced by `event->pmu_ctx` / `pmu_ctx->pmu`, e.g. `group_sched_in()` now uses `struct pmu *pmu = group_event->pmu_ctx->pmu;`, `visit_groups_merge()` takes an explicit `struct pmu *pmu`, and scheduling paths operate on `struct perf_event_pmu_context` via `perf_ctx_disable()/perf_ctx_enable()`. The diff also changes inheritance and install paths to assign and look up `event->pmu_ctx` (`find_get_pmu_context(...)`, `child_event->pmu_ctx = pmu_ctx;`, `group_leader->pmu_ctx = pmu_ctx;`). Because the vulnerable construct (using the wrong PMU context for inherited/group events) is not present here and the fix is already in place, `has_bug` is NO and `is_fixed` is YES."
+      }
+    },
+    {
+      "bic_found": "bd27568117664b8b3e259721393df420ed51f57b",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "4a00c16e552ea5e71756cd29cd2df7557ec9cac4": 3,
+        "bd27568117664b8b3e259721393df420ed51f57b": 1
+      },
+      "bic_candidates": [
+        "4a00c16e552ea5e71756cd29cd2df7557ec9cac4",
+        "bd27568117664b8b3e259721393df420ed51f57b"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

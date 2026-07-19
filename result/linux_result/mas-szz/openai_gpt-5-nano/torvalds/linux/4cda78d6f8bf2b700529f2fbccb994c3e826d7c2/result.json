@@ -1,0 +1,372 @@
+{
+  "cveid": "CVE-2026-31667",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "4cda78d6f8bf2b700529f2fbccb994c3e826d7c2"
+  ],
+  "ground_truth_bic": "ff462551235d8d7d843a005950bc90924fcedede",
+  "predicted_bic": [
+    "05cebd3816dabfb223abe27b3ad3b50140c457a0"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 32,
+  "llm_tokens": 31047,
+  "root_cause": {
+    "text": "The uinput force-feedback request path incorrectly used udev->mutex in uinput_request_send() to protect only device state/dev access, creating an inconsistent lock ordering with input core and ff-core locks that formed a circular dependency (ff->mutex → udev->mutex → input_mutex → dev->mutex → ff->mutex).",
+    "evidence": "The commit explicitly traces the cycle through uinput_request_send() acquiring udev->mutex while called under ff->mutex, and the patch fixes it by replacing that mutex acquisition with a new state_lock spinlock for udev->state/udev->dev access in uinput_request_send(), with the stated goal of breaking the ff->mutex -> udev->mutex link.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "drivers/input/misc/uinput.c",
+      "lineno": 151,
+      "content": "retval = mutex_lock_interruptible(&udev->mutex);",
+      "confidence": 1.0
+    },
+    {
+      "file": "drivers/input/misc/uinput.c",
+      "lineno": 169,
+      "content": "mutex_unlock(&udev->mutex);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The uinput force-feedback request path incorrectly used udev->mutex in uinput_request_send() to protect only device state/dev access, creating an inconsistent lock ordering with input core and ff-core locks that formed a circular dependency (ff->mutex → udev->mutex → input_mutex → dev->mutex → ff->mutex).",
+      "evidence_points": "The commit explicitly traces the cycle through uinput_request_send() acquiring udev->mutex while called under ff->mutex, and the patch fixes it by replacing that mutex acquisition with a new state_lock spinlock for udev->state/udev->dev access in uinput_request_send(), with the stated goal of breaking the ff->mutex -> udev->mutex link."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "drivers/input/misc/uinput.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "drivers/input/misc/uinput.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 2,
+        "file_path": "drivers/input/misc/uinput.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 3,
+        "file_path": "drivers/input/misc/uinput.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 4,
+        "file_path": "drivers/input/misc/uinput.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 5,
+        "file_path": "drivers/input/misc/uinput.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 6,
+        "file_path": "drivers/input/misc/uinput.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "other",
+        "intent_summary": "Add a dedicated spinlock to `uinput_device` to support safe synchronization of device state changes.",
+        "what": "A new field, `spinlock_t state_lock;`, was added to the `struct uinput_device` definition immediately after the existing `state` member.",
+        "how": "This change extends the device structure with a dedicated spinlock that can be used to protect access to the `state` field or related state transitions in contexts where a mutex may be insufficient, enabling safer synchronization at runtime."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix uinput_request_send() to use the state spinlock instead of an interruptible mutex and ensure retval is initialized while relying on external completion initialization.",
+        "what": "The function uinput_request_send() changes the local variable initialization from an uninitialized `int retval;` to `int retval = 0;`, removes the `mutex_lock_interruptible(&udev->mutex)` call and its early-return error handling, replaces it with `spin_lock(&udev->state_lock)`, and deletes the `init_completion(&request->done);` call before request processing.",
+        "how": "At runtime, the function no longer acquires the device mutex in an interruptible sleepable way and instead takes the state spinlock to protect the state check, avoiding interruption-related lock failure paths. Initializing `retval` to 0 ensures a defined success value if no error is assigned before reaching the exit path. Removing completion reinitialization means the function now relies on the completion object being initialized elsewhere rather than resetting it here."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 2,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix uinput_request_send() to release udev->state_lock with spin_unlock() instead of incorrectly unlocking udev->mutex.",
+        "what": "The unlock operation in the out: path of uinput_request_send() was changed from mutex_unlock(&udev->mutex) to spin_unlock(&udev->state_lock).",
+        "how": "At runtime, the function now releases a spinlock named state_lock instead of a mutex named mutex, aligning the lock release with a different synchronization primitive and lock variable; this fixes the locking behavior if the function now holds state_lock rather than mutex and prevents incorrect unlocking of the wrong lock type."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 3,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize the request completion before reserving the slot to avoid a race with asynchronous flush handling.",
+        "what": "A call to init_completion(&request->done) and an explanatory comment were added at the start of uinput_request_submit(), before calling uinput_request_reserve_slot(udev, request).",
+        "how": "This ensures the request completion object is initialized before the request slot becomes visible to other code paths such as uinput_flush_requests(), preventing a race where the request could be completed using an uninitialized completion structure."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 4,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect the uinput device state update with `state_lock` during destruction to prevent races with concurrent request handling.",
+        "what": "A comment was added explaining synchronization intent, and the assignment `udev->state = UIST_NEW_DEVICE;` in `uinput_destroy_device()` was wrapped with `spin_lock(&udev->state_lock);` and `spin_unlock(&udev->state_lock);`.",
+        "how": "This makes the state transition to `UIST_NEW_DEVICE` occur under `state_lock`, ensuring concurrent code such as `uinput_request_send()` observes the updated state before pending requests are flushed and the device is torn down, preventing races during device destruction."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 5,
+        "change_category": "bug_fix",
+        "intent_summary": "Protect the uinput device state update with state_lock to fix a race during device creation.",
+        "what": "The change adds a spin_lock(&udev->state_lock) before assigning udev->state = UIST_CREATED and a corresponding spin_unlock(&udev->state_lock) after the assignment in uinput_create_device().",
+        "how": "This makes the state transition to UIST_CREATED occur under the device's state lock, preventing concurrent access races on udev->state during device creation and ensuring other threads do not observe or modify the state unsafely."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 6,
+        "change_category": "bug_fix",
+        "intent_summary": "Initialize newdev->state_lock during device setup to prevent use of an uninitialized spinlock.",
+        "what": "A new initialization call, spin_lock_init(&newdev->state_lock), was added in uinput_open() after mutex_init(&newdev->mutex) and before the existing initialization of newdev->requests_lock and wait queues.",
+        "how": "This ensures the state_lock spinlock in the newly allocated uinput device structure is properly initialized before any runtime use, preventing undefined behavior such as invalid locking operations on an uninitialized lock."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "other",
+          "hunk_count": 1,
+          "intent": "Add a dedicated spinlock to `uinput_device` to support safe synchronization of device state changes."
+        },
+        {
+          "group_id": 1,
+          "category": "bug_fix",
+          "hunk_count": 5,
+          "intent": "Initialize newdev->state_lock during device setup to prevent use of an uninitialized spinlock."
+        },
+        {
+          "group_id": 2,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Initialize the request completion before reserving the slot to avoid a race with asynchronous flush handling."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "core_intent": "Correct uinput device state synchronization by consistently using and initializing state_lock around request handling and device state transitions.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 2,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The change adds a dedicated lock for uinput device state synchronization, which directly relates to the root cause of using udev->mutex for state/dev protection and causing bad lock ordering. Introducing a separate lock is aimed at correcting that locking design."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": true,
+        "reason": "The changes directly replace use of udev->mutex in the uinput request/state path with state_lock and protect state transitions consistently, which addresses the incorrect locking and lock-ordering that caused the circular dependency in the force-feedback request path."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 2,
+        "is_relevant": false,
+        "reason": "The group fixes a race in request completion/slot reservation with asynchronous flush handling, not the inconsistent lock ordering involving udev->mutex, input core, and ff-core locks that caused the circular dependency."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/input/misc/uinput.c",
+            "lineno": 151,
+            "content": "retval = mutex_lock_interruptible(&udev->mutex);",
+            "rationale": "This is the core vulnerable statement: uinput_request_send() acquires udev->mutex for request-path synchronization, introducing the inconsistent lock ordering with ff/input-core locks that leads to the circular dependency described in the root cause."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "drivers/input/misc/uinput.c",
+            "lineno": 169,
+            "content": "mutex_unlock(&udev->mutex);",
+            "rationale": "This matching unlock confirms the request path was protected by udev->mutex end-to-end; that locking choice is the mechanism that created the problematic lock chain."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "drivers/input/misc/uinput.c",
+            "lineno": 148,
+            "content": "if (udev->state != UIST_CREATED) {",
+            "rationale": "The request path only needed to protect device state/dev access, but it performed that check under udev->mutex rather than a dedicated state lock, contributing directly to the incorrect synchronization design behind the lock-ordering bug."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "drivers/input/misc/uinput.c",
+            "stmt_text": "retval = mutex_lock_interruptible(&udev->mutex);",
+            "location": "hunk",
+            "explanation": "This statement acquires udev->mutex in uinput_request_send() for the force-feedback request path. Using this mutex for request synchronization created the inconsistent lock ordering with ff-core and input-core locks described in the root cause, enabling the circular dependency."
+          },
+          {
+            "vuln_file": "drivers/input/misc/uinput.c",
+            "stmt_text": "mutex_unlock(&udev->mutex);",
+            "location": "hunk",
+            "explanation": "This matching unlock shows the request path was intentionally serialized under udev->mutex. That end-to-end use of udev->mutex, rather than the dedicated state lock, is part of the flawed locking design that produced the lock-order inversion."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "0d9363a764d9",
+          "anchor_file": "drivers/input/misc/uinput.c",
+          "anchor_lineno": 151
+        },
+        "commit": "05cebd3816dabfb223abe27b3ad3b50140c457a0",
+        "commit_short": "05cebd3816da",
+        "commit_msg": "Input: uinput - flush all pending ff effects before destroying device\n\nThe destruction of a input device in uinput is tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/input/misc/uinput.c",
+        "display_lineno": 111,
+        "code_snippet": "commit 05cebd3816dabfb223abe27b3ad3b50140c457a0\nAuthor: Aristeu Sergio Rozanski Filho <aris@ruivo.org>\nDate:   Thu May 14 22:01:57 2009 -0700\n\n    Input: uinput - flush all pending ff effects before destroying device\n    \n    The destruction of a input device in uinput is triggered by an ioctl().\n    If a process tries to destroy an input device while other is uploading a\n    force feedback effect by evdev to the same device, they'll deadlock.\n    This patch fixes the problem by flushing all pen",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the force-feedback request path and the locking used in request submission. The vulnerable construct is present in `uinput_request_submit()`: it first reserves a slot, then takes `mutex_lock_interruptible(&udev->mutex)`, checks `udev->state`, and while still holding `udev->mutex` calls `uinput_dev_event(udev->dev, EV_UINPUT, request->code, request->id);`. This matches the root cause: the FF request path uses `udev->mutex` to protect device state/dev access during request send, creating the problematic lock ordering. The commit adds flushing in `uinput_destroy_device()` (`uinput_flush_requests(udev);` before `input_unregister_device(dev);`) and sets `udev->state = UIST_NEW_DEVICE` early to block new submissions, but it does not remove the problematic `udev->mutex` acquisition from the request-send path or otherwise change the lock ordering described in the root cause. Therefore the bug is still present and the later fix for the circular dependency is not yet in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3d5cb60ef304",
+          "anchor_file": "drivers/input/misc/uinput.c",
+          "anchor_lineno": 111
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/input/misc/uinput.c",
+        "display_lineno": 124,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The provided function bodies are sufficient to assess the specific root cause. The vulnerability description refers to the force-feedback request path incorrectly using `udev->mutex` in `uinput_request_send()` and thereby creating a lock-order cycle. In this commit, there is no `udev->mutex` at all in the shown code, and there is no function named `uinput_request_send()`. The FF request path is implemented through `uinput_dev_upload_effect()`, `uinput_dev_erase_effect()`, `uinput_request_init()`, and `uinput_request_submit()`. These use waitqueues and `requests_sem` for request ID allocation, e.g. `down(&udev->requests_sem); ... up(&udev->requests_sem);`, but there is no locking with `udev->mutex` around request submission or device access. Because the vulnerable construct named in the root cause is absent from this commit version, `has_bug` is false. Since the later fix would address misuse of `udev->mutex` in that request-send path, and this code predates that exact construct rather than already containing the corrected handling, `is_fixed` is false."
+      }
+    },
+    {
+      "bic_found": "05cebd3816dabfb223abe27b3ad3b50140c457a0",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "0d9363a764d9",
+          "anchor_file": "drivers/input/misc/uinput.c",
+          "anchor_lineno": 169
+        },
+        "commit": "05cebd3816dabfb223abe27b3ad3b50140c457a0",
+        "commit_short": "05cebd3816da",
+        "commit_msg": "Input: uinput - flush all pending ff effects before destroying device\n\nThe destruction of a input device in uinput is tr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/input/misc/uinput.c",
+        "display_lineno": 124,
+        "code_snippet": "commit 05cebd3816dabfb223abe27b3ad3b50140c457a0\nAuthor: Aristeu Sergio Rozanski Filho <aris@ruivo.org>\nDate:   Thu May 14 22:01:57 2009 -0700\n\n    Input: uinput - flush all pending ff effects before destroying device\n    \n    The destruction of a input device in uinput is triggered by an ioctl().\n    If a process tries to destroy an input device while other is uploading a\n    force feedback effect by evdev to the same device, they'll deadlock.\n    This patch fixes the problem by flushing all pen",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact force-feedback request submission and teardown paths involved in the locking issue. The vulnerable construct is present in `uinput_request_submit()`: it takes `mutex_lock_interruptible(&udev->mutex);` and, while holding that mutex, calls `uinput_dev_event(udev->dev, EV_UINPUT, request->code, request->id);`. Per the root cause, using `udev->mutex` in the FF request send path is the problematic behavior because it creates the inconsistent lock ordering with input/ff core locks. This commit adds state checks and request flushing, e.g. `if (udev->state != UIST_CREATED) { retval = -ENODEV; goto out; }` and `uinput_flush_requests(udev);` during destroy, which addresses teardown deadlock/pending requests, but it does not remove or replace the problematic locking in the request-send path. Therefore the vulnerable construct still exists, and the later fix for the lock-order issue is not yet present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3d5cb60ef304",
+          "anchor_file": "drivers/input/misc/uinput.c",
+          "anchor_lineno": 124
+        },
+        "commit": "ff462551235d8d7d843a005950bc90924fcedede",
+        "commit_short": "ff462551235d",
+        "commit_msg": "Input: uinput - switch to the new FF interface\n\nThe userspace interface of the force feedback part is changed and\ndocume",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "drivers/input/misc/uinput.c",
+        "display_lineno": 125,
+        "code_snippet": "commit ff462551235d8d7d843a005950bc90924fcedede\nAuthor: Anssi Hannula <anssi.hannula@gmail.com>\nDate:   Wed Jul 19 01:41:09 2006 -0400\n\n    Input: uinput - switch to the new FF interface\n    \n    The userspace interface of the force feedback part is changed and\n    documentation in uinput.h is updated accordingly. MODULE_VERSION\n    is also incremented to reflect the revision.\n    \n    Signed-off-by: Anssi Hannula <anssi.hannula@gmail.com>\n    Signed-off-by: Dmitry Torokhov <dtor@mail.ru>\n\ndiff ",
+        "exists": false,
+        "reason": "The provided function body only contains `return uinput_dev_event(dev, EV_FF, effect_id, value);` and does not itself show any locking or mutex usage. The root cause is specifically about `uinput_request_send()` using `udev->mutex` and creating a circular lock ordering. That vulnerable construct is not present in this function body. Likewise, no fix-related handling is visible here either. Because the vulnerable statement/function is completely absent from this snippet, `has_bug` is false. The snippet is still sufficient for this determination because it clearly shows this function is only a thin wrapper calling `uinput_dev_event()` and does not contain the relevant locking logic."
+      }
+    },
+    {
+      "bic_found": "05cebd3816dabfb223abe27b3ad3b50140c457a0",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "05cebd3816dabfb223abe27b3ad3b50140c457a0": 2
+      },
+      "bic_candidates": [
+        "05cebd3816dabfb223abe27b3ad3b50140c457a0"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

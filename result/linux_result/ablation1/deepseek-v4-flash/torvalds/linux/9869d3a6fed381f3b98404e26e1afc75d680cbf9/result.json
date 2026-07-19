@@ -1,0 +1,541 @@
+{
+  "cveid": "CVE-2025-68807",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "9869d3a6fed381f3b98404e26e1afc75d680cbf9"
+  ],
+  "ground_truth_bic": "78c271344b6f64ce24c845e54903e09928cf2061",
+  "predicted_bic": [
+    "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c",
+    "78c271344b6f64ce24c845e54903e09928cf2061",
+    "cecf5d87ff2035127bb5a9ee054d0023a4a7cad3",
+    "8f5845e0743bf3512b71b3cb8afe06c192d6acc4",
+    "8330cdb0fe55c9a9a8e440e56c19233229e0e259"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 23,
+  "llm_tokens": 93041,
+  "root_cause": {
+    "text": "Race condition where `wbt_enable_default()` (which includes `wbt_init()` initialization of the inflight counter) is called concurrently with IO submission, allowing the inflight counter to be decremented before proper initialization completes, leading to a negative counter and hung tasks in `wbt_wait()`.",
+    "evidence": "",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "block/blk-sysfs.c",
+      "lineno": 934,
+      "content": "blk_queue_flag_set(QUEUE_FLAG_REGISTERED, q);",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/blk-sysfs.c",
+      "lineno": 935,
+      "content": "wbt_enable_default(disk);",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/blk-wbt.c",
+      "lineno": 728,
+      "content": "wbt_init(disk);",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/blk-wbt.c",
+      "lineno": 724,
+      "content": "if (!blk_queue_registered(q))",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/blk-wbt.c",
+      "lineno": 727,
+      "content": "if (queue_is_mq(q) && enable)",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/elevator.c",
+      "lineno": 642,
+      "content": "if (enable_wbt)",
+      "confidence": 1.0
+    },
+    {
+      "file": "block/elevator.c",
+      "lineno": 643,
+      "content": "wbt_enable_default(q->disk);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "Race condition where `wbt_enable_default()` (which includes `wbt_init()` initialization of the inflight counter) is called concurrently with IO submission, allowing the inflight counter to be decremented before proper initialization completes, leading to a negative counter and hung tasks in `wbt_wait()`.",
+      "evidence_points": ""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "block/blk-sysfs.c",
+            "lineno": 934,
+            "content": "blk_queue_flag_set(QUEUE_FLAG_REGISTERED, q);",
+            "rationale": "This statement sets the QUEUE_FLAG_REGISTERED flag, which allows I/O submission to proceed. Placing it before wbt_enable_default() creates a window where I/O can decrement the inflight counter before it is initialized by wbt_init(), leading to a negative count and potentially hanging tasks in wbt_wait()."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "block/blk-sysfs.c",
+            "lineno": 935,
+            "content": "wbt_enable_default(disk);",
+            "rationale": "This is the call to wbt_enable_default() that triggers wbt_init() to initialize the inflight counter. Because it is called after the queue is marked as registered, I/O can already be in flight, causing a race condition where the counter is decremented before initialization completes."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "block/blk-wbt.c",
+            "lineno": 724,
+            "content": "if (!blk_queue_registered(q))",
+            "rationale": "This check inside wbt_enable_default() tests whether the queue is registered, but due to the ordering in the caller, the queue is already registered when wbt_enable_default() is called. The check passes, allowing wbt_init() to run after I/O has already started, which is the core of the race."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "block/blk-wbt.c",
+            "lineno": 727,
+            "content": "if (queue_is_mq(q) && enable)",
+            "rationale": "This condition gates the call to wbt_init(). If it evaluates true (as it does for multiqueue devices with wbt enabled), wbt_init() is executed. The race arises because this initialization happens after the queue is already accepting I/O, leaving the inflight counter uninitialized during I/O submission."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "block/blk-wbt.c",
+            "lineno": 728,
+            "content": "wbt_init(disk);",
+            "rationale": "This is the direct call to wbt_init() that initializes the inflight counter (among other wbt structures). If called too late (after I/O has started), the counter is zero or uninitialized when I/O decrements it, causing it to become negative and leading to hung tasks in wbt_wait()."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "block/elevator.c",
+            "lineno": 642,
+            "content": "if (enable_wbt)",
+            "rationale": "This conditional checks whether wbt should be enabled after an elevator switch. If true, it calls wbt_enable_default(), which may race with I/O submissions that started before the new elevator is fully set up, potentially before the inflight counter is initialized."
+          },
+          {
+            "hunk_index": 6,
+            "file_path": "block/elevator.c",
+            "lineno": 643,
+            "content": "wbt_enable_default(q->disk);",
+            "rationale": "This call site for wbt_enable_default() occurs after the elevator has been unregistered and the new elevator is about to be registered, but I/O might already be in flight due to the previous elevator. The inflight counter may not be initialized yet, causing a race condition similar to the sysfs path."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "block/blk-sysfs.c",
+            "stmt_text": "blk_queue_flag_set(QUEUE_FLAG_REGISTERED, q);",
+            "location": "hunk",
+            "explanation": "This statement sets QUEUE_FLAG_REGISTERED, which allows I/O submission to proceed. Placing it before wbt_enable_default() creates a window where I/O can decrement the inflight counter before it is initialized by wbt_init(), leading to a negative count and potentially hanging tasks in wbt_wait()."
+          },
+          {
+            "vuln_file": "block/blk-sysfs.c",
+            "stmt_text": "wbt_enable_default(disk);",
+            "location": "hunk",
+            "explanation": "This is the call to wbt_enable_default() that triggers wbt_init() to initialize the inflight counter. Because it is called after the queue is marked as registered, I/O can already be in flight, causing a race condition where the counter is decremented before initialization completes."
+          },
+          {
+            "vuln_file": "block/blk-wbt.c",
+            "stmt_text": "wbt_init(disk);",
+            "location": "hunk",
+            "explanation": "This is the direct call to wbt_init() that initializes the inflight counter (among other wbt structures). If called too late (after I/O has started), the counter is zero or uninitialized when I/O decrements it, causing it to become negative and leading to hung tasks in wbt_wait()."
+          },
+          {
+            "vuln_file": "block/blk-wbt.c",
+            "stmt_text": "if (!blk_queue_registered(q))",
+            "location": "hunk",
+            "explanation": "This check inside wbt_enable_default() tests whether the queue is registered, but due to the ordering in the caller, the queue is already registered when wbt_enable_default() is called. The check passes, allowing wbt_init() to run after I/O has already started, which is the core of the race."
+          },
+          {
+            "vuln_file": "block/blk-wbt.c",
+            "stmt_text": "if (queue_is_mq(q) && enable)",
+            "location": "hunk",
+            "explanation": "This condition gates the call to wbt_init(). If it evaluates true (as it does for multiqueue devices with wbt enabled), wbt_init() is executed. The race arises because this initialization happens after the queue is already accepting I/O, leaving the inflight counter uninitialized during I/O submission."
+          },
+          {
+            "vuln_file": "block/elevator.c",
+            "stmt_text": "if (enable_wbt)",
+            "location": "hunk",
+            "explanation": "This conditional checks whether wbt should be enabled after an elevator switch. If true, it calls wbt_enable_default(), which may race with I/O submissions that started before the new elevator is fully set up, potentially before the inflight counter is initialized."
+          },
+          {
+            "vuln_file": "block/elevator.c",
+            "stmt_text": "wbt_enable_default(q->disk);",
+            "location": "hunk",
+            "explanation": "This call site for wbt_enable_default() occurs after the elevator has been unregistered and the new elevator is about to be registered, but I/O might already be in flight due to the previous elevator. The inflight counter may not be initialized yet, causing a race condition similar to the sysfs path."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63276182c513",
+          "anchor_file": "block/blk-sysfs.c",
+          "anchor_lineno": 934
+        },
+        "commit": "cecf5d87ff2035127bb5a9ee054d0023a4a7cad3",
+        "commit_short": "cecf5d87ff20",
+        "commit_msg": "block: split .sysfs_lock into two locks\n\nThe kernfs built-in lock of 'kn->count' is held in sysfs .show/.store\npath. Mea",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-sysfs.c",
+        "display_lineno": 1006,
+        "code_snippet": "commit cecf5d87ff2035127bb5a9ee054d0023a4a7cad3\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Tue Aug 27 19:01:48 2019 +0800\n\n    block: split .sysfs_lock into two locks\n    \n    The kernfs built-in lock of 'kn->count' is held in sysfs .show/.store\n    path. Meantime, inside block's .show/.store callback, q->sysfs_lock is\n    required.\n    \n    However, when mq & iosched kobjects are removed via\n    blk_mq_unregister_dev() & elv_unregister_queue(), q->sysfs_lock is held\n    too. This way causes",
+        "exists": false,
+        "reason": "The commit reorders blk_register_queue: QUEUE_FLAG_REGISTERED is now set after wbt_enable_default() and blk_throtl_register_queue() under q->sysfs_lock. This prevents I/O submission (which checks QUEUE_FLAG_REGISTERED) from occurring before wbt_init() completes, thus fixing the race condition where inflight counter could be decremented before proper initialization."
+      }
+    },
+    {
+      "bic_found": "cecf5d87ff2035127bb5a9ee054d0023a4a7cad3",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63276182c513",
+          "anchor_file": "block/blk-sysfs.c",
+          "anchor_lineno": 935
+        },
+        "commit": "8f5845e0743bf3512b71b3cb8afe06c192d6acc4",
+        "commit_short": "8f5845e0743b",
+        "commit_msg": "block: restore default wbt enablement\n\nThe commit 245618f8e45f (\"block: protect wbt_lat_usec using\nq->elevator_lock\") pr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-sysfs.c",
+        "display_lineno": 907,
+        "code_snippet": "commit 8f5845e0743bf3512b71b3cb8afe06c192d6acc4\nAuthor: Julian Sun <sunjunchao2870@gmail.com>\nDate:   Tue Aug 12 23:42:57 2025 +0800\n\n    block: restore default wbt enablement\n    \n    The commit 245618f8e45f (\"block: protect wbt_lat_usec using\n    q->elevator_lock\") protected wbt_enable_default() with\n    q->elevator_lock; however, it also placed wbt_enable_default()\n    before blk_queue_flag_set(QUEUE_FLAG_REGISTERED, q);, resulting\n    in wbt failing to be enabled.\n    \n    Moreover, the prot",
+        "exists": false,
+        "reason": "The diff shows the relocation of wbt_enable_default() to after blk_queue_flag_set(QUEUE_FLAG_REGISTERED, q). This ordering ensures that wbt_init() (called within wbt_enable_default()) completes before the queue is marked as registered, preventing concurrent IO submission from decrementing the inflight counter prior to its initialization. Therefore, the vulnerable construct (race condition) is not present in this fixed version."
+      }
+    },
+    {
+      "bic_found": "8f5845e0743bf3512b71b3cb8afe06c192d6acc4",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63276182c513",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 728
+        },
+        "commit": "958f29654747a54f2272eb478e493eb97f492e06",
+        "commit_short": "958f29654747",
+        "commit_msg": "blk-wbt: pass a gendisk to wbt_init\n\nPass a gendisk to wbt_init to prepare for phasing out usage of the\nrequest_queue in",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 674,
+        "code_snippet": "commit 958f29654747a54f2272eb478e493eb97f492e06\nAuthor: Christoph Hellwig <hch@lst.de>\nDate:   Fri Feb 3 16:03:50 2023 +0100\n\n    blk-wbt: pass a gendisk to wbt_init\n    \n    Pass a gendisk to wbt_init to prepare for phasing out usage of the\n    request_queue in the blk-cgroup code.\n    \n    Signed-off-by: Christoph Hellwig <hch@lst.de>\n    Reviewed-by: Andreas Herrmann <aherrmann@suse.de>\n    Acked-by: Tejun Heo <tj@kernel.org>\n    Link: https://lore.kernel.org/r/20230203150400.3199230-10-hch@l",
+        "exists": true,
+        "reason": "The commit only refactors the parameter type of wbt_init from request_queue to gendisk and updates the call site in wbt_enable_default. It does not add any synchronization or change the initialization logic. The race condition where IO submission decrements the inflight counter before wbt_init completes remains present. Therefore, the vulnerable construct is still in the code and no fix is introduced."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "04aad37be1a8",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 674
+        },
+        "commit": "8330cdb0fe55c9a9a8e440e56c19233229e0e259",
+        "commit_short": "8330cdb0fe55",
+        "commit_msg": "block: Make writeback throttling defaults consistent for SQ devices\n\nWhen CFQ is used as an elevator, it disables writeb",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 683,
+        "code_snippet": "commit 8330cdb0fe55c9a9a8e440e56c19233229e0e259\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 19 11:33:27 2017 +0200\n\n    block: Make writeback throttling defaults consistent for SQ devices\n    \n    When CFQ is used as an elevator, it disables writeback throttling\n    because they don't play well together. Later when a different elevator\n    is chosen for the device, writeback throttling doesn't get enabled\n    again as it should. Make sure CFQ enables writeback throttling (if it\n    should be",
+        "exists": true,
+        "reason": "The added `wbt_enable_default()` function performs `wbt_init(q)` without any synchronization against concurrent IO submission. The check `if (q->rq_wb) return;` is not atomic with the subsequent call, so a race exists where the inflight counter can be decremented before initialization completes, leading to a negative counter and hung tasks in `wbt_wait()`. The code does not contain any fix for this race condition."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ea25da48086d",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 683
+        },
+        "commit": "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c",
+        "commit_short": "e34cbd307477",
+        "commit_msg": "blk-wbt: add general throttling mechanism\n\nWe can hook this up to the block layer, to help throttle buffered\nwrites.\n\nwb",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 677,
+        "code_snippet": "commit e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c\nAuthor: Jens Axboe <axboe@kernel.dk>\nDate:   Wed Nov 9 12:36:15 2016 -0700\n\n    blk-wbt: add general throttling mechanism\n    \n    We can hook this up to the block layer, to help throttle buffered\n    writes.\n    \n    wbt registers a few trace points that can be used to track what is\n    happening in the system:\n    \n    wbt_lat: 259:0: latency 2446318\n    wbt_stat: 259:0: rmean=2446318, rmin=2446318, rmax=2446318, rsamples=1,\n                   wm",
+        "exists": false,
+        "reason": "The provided code is the entire initial blk-wbt implementation. The vulnerable race condition described requires a concurrent reinitialization of the inflight counter (e.g., via wbt_enable_default()), which does not exist in this commit. In wbt_init(), inflight counters are atomically set to 0 (lines ~725-727) before q->rq_wb is assigned (line ~744), and no later call resets them while I/O may be in flight. Therefore, the vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "8330cdb0fe55c9a9a8e440e56c19233229e0e259",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63276182c513",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 724
+        },
+        "commit": "58c898ba370e68d39470cd0d932b524682c1f9be",
+        "commit_short": "58c898ba370e",
+        "commit_msg": "block: add helper for checking if queue is registered\n\nThere are 4 users which check if queue is registered, so add one ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 659,
+        "code_snippet": "commit 58c898ba370e68d39470cd0d932b524682c1f9be\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Tue Aug 27 19:01:47 2019 +0800\n\n    block: add helper for checking if queue is registered\n    \n    There are 4 users which check if queue is registered, so add one helper\n    to check it.\n    \n    Cc: Christoph Hellwig <hch@infradead.org>\n    Cc: Hannes Reinecke <hare@suse.com>\n    Cc: Greg KH <gregkh@linuxfoundation.org>\n    Cc: Mike Snitzer <snitzer@redhat.com>\n    Cc: Bart Van Assche <bvanassche@acm",
+        "exists": true,
+        "reason": "The commit only replaces a direct flag check with a helper (blk_queue_registered) but does not alter the race condition described: wbt_enable_default() still calls wbt_init() after the registration check without serialization against concurrent IO submissions. The vulnerable logic (decrement of inflight counter before initialization completes) remains present, and no fix is added."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "c6ba933358f0",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 659
+        },
+        "commit": "8330cdb0fe55c9a9a8e440e56c19233229e0e259",
+        "commit_short": "8330cdb0fe55",
+        "commit_msg": "block: Make writeback throttling defaults consistent for SQ devices\n\nWhen CFQ is used as an elevator, it disables writeb",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 678,
+        "code_snippet": "commit 8330cdb0fe55c9a9a8e440e56c19233229e0e259\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 19 11:33:27 2017 +0200\n\n    block: Make writeback throttling defaults consistent for SQ devices\n    \n    When CFQ is used as an elevator, it disables writeback throttling\n    because they don't play well together. Later when a different elevator\n    is chosen for the device, writeback throttling doesn't get enabled\n    again as it should. Make sure CFQ enables writeback throttling (if it\n    should be",
+        "exists": true,
+        "reason": "The commit introduces wbt_enable_default() which calls wbt_init() without any synchronization. The function checks if q->rq_wb is NULL and then proceeds to initialize the inflight counter. There is no locking to prevent concurrent IO submissions from decrementing the counter before initialization completes, leading to the race condition described in the root cause."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ea25da48086d",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 678
+        },
+        "commit": "80e091d10e8bf7b801d634ea8870b9e907314424",
+        "commit_short": "80e091d10e8b",
+        "commit_msg": "blk-wbt: allow reset of default latency through sysfs\n\nAllow a write of '-1' to reset the default latency target for\na g",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 688,
+        "code_snippet": "commit 80e091d10e8bf7b801d634ea8870b9e907314424\nAuthor: Jens Axboe <axboe@kernel.dk>\nDate:   Mon Nov 28 09:22:47 2016 -0700\n\n    blk-wbt: allow reset of default latency through sysfs\n    \n    Allow a write of '-1' to reset the default latency target for\n    a given device. This removes knowledge of the different default\n    settings for rotational vs non-rotational from user space.\n    \n    Signed-off-by: Jens Axboe <axboe@fb.com>\n\ndiff --git a/block/blk-wbt.c b/block/blk-wbt.c\nindex 9f97594e68c",
+        "exists": true,
+        "reason": "The diff shows the wbt_init function, which is part of the vulnerable initialization path. The race condition described (concurrent IO submission decrementing inflight counter before proper initialization) is not addressed; the commit only refactors the setting of min_lat_nsec. The inflight counter initialization (likely in wbt_init or wbt_set_queue_depth) remains unchanged, so the vulnerable construct persists. No synchronization or ordering fix is present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 3,
+        "blame_input": {
+          "anchor_commit": "feffa5cc7b47",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 688
+        },
+        "commit": "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c",
+        "commit_short": "e34cbd307477",
+        "commit_msg": "blk-wbt: add general throttling mechanism\n\nWe can hook this up to the block layer, to help throttle buffered\nwrites.\n\nwb",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 684,
+        "code_snippet": "commit e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c\nAuthor: Jens Axboe <axboe@kernel.dk>\nDate:   Wed Nov 9 12:36:15 2016 -0700\n\n    blk-wbt: add general throttling mechanism\n    \n    We can hook this up to the block layer, to help throttle buffered\n    writes.\n    \n    wbt registers a few trace points that can be used to track what is\n    happening in the system:\n    \n    wbt_lat: 259:0: latency 2446318\n    wbt_stat: 259:0: rmean=2446318, rmin=2446318, rmax=2446318, rsamples=1,\n                   wm",
+        "exists": true,
+        "reason": "The code in __wbt_done() unconditionally decrements the inflight counter (line: inflight = atomic_dec_return(&rqw->inflight);). The initialization in wbt_init() sets the counter to 0 and then makes the rwb accessible via q->rq_wb (line: q->rq_wb = rwb;). There is no synchronization to prevent a race where IO completions (calling __wbt_done) occur concurrently with or before the completion of wbt_init(), potentially decrementing a counter that was not properly initialized or causing a negative inflight count, leading to hung tasks in wbt_wait(). The fix would require moving the initialization before the rwb is made visible or adding proper atomic ordering."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 4"
+    },
+    {
+      "bic_found": "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63276182c513",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 727
+        },
+        "commit": "8a2b20a997a3779ae9fcae268f2959eb82ec05a1",
+        "commit_short": "8a2b20a997a3",
+        "commit_msg": "blk-wbt: fix that wbt can't be disabled by default\n\ncommit b11d31ae01e6 (\"blk-wbt: remove unnecessary check in\nwbt_enabl",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 751,
+        "code_snippet": "commit 8a2b20a997a3779ae9fcae268f2959eb82ec05a1\nAuthor: Yu Kuai <yukuai3@huawei.com>\nDate:   Mon May 22 20:18:54 2023 +0800\n\n    blk-wbt: fix that wbt can't be disabled by default\n    \n    commit b11d31ae01e6 (\"blk-wbt: remove unnecessary check in\n    wbt_enable_default()\") removes the checking of CONFIG_BLK_WBT_MQ by\n    mistake, which is used to control enable or disable wbt by default.\n    \n    Fix the problem by adding back the checking. This patch also do a litter\n    cleanup to make relate",
+        "exists": true,
+        "reason": "The function wbt_enable_default() at this commit calls wbt_init(disk) (line 751 in the diff) without any synchronization to prevent the race condition described in the root cause. The race occurs when IO submission decrements the inflight counter before wbt_init() completes initialization. No fix for this race is present; the commit only adds a CONFIG_BLK_WBT_MQ check to control enablement. Therefore, the vulnerable construct remains."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "e3afec91aad2",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 751
+        },
+        "commit": "8330cdb0fe55c9a9a8e440e56c19233229e0e259",
+        "commit_short": "8330cdb0fe55",
+        "commit_msg": "block: Make writeback throttling defaults consistent for SQ devices\n\nWhen CFQ is used as an elevator, it disables writeb",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 684,
+        "code_snippet": "commit 8330cdb0fe55c9a9a8e440e56c19233229e0e259\nAuthor: Jan Kara <jack@suse.cz>\nDate:   Wed Apr 19 11:33:27 2017 +0200\n\n    block: Make writeback throttling defaults consistent for SQ devices\n    \n    When CFQ is used as an elevator, it disables writeback throttling\n    because they don't play well together. Later when a different elevator\n    is chosen for the device, writeback throttling doesn't get enabled\n    again as it should. Make sure CFQ enables writeback throttling (if it\n    should be",
+        "exists": true,
+        "reason": "The added function `wbt_enable_default()` calls `wbt_init(q)` without any synchronization mechanism (e.g., locks or barriers) to prevent concurrent IO submissions from accessing the inflight counter before initialization completes. This race condition can cause the inflight counter to be decremented before proper initialization, leading to a negative counter and hung tasks in `wbt_wait()`. The code does not include any fix for this race."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ea25da48086d",
+          "anchor_file": "block/blk-wbt.c",
+          "anchor_lineno": 684
+        },
+        "commit": "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c",
+        "commit_short": "e34cbd307477",
+        "commit_msg": "blk-wbt: add general throttling mechanism\n\nWe can hook this up to the block layer, to help throttle buffered\nwrites.\n\nwb",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/blk-wbt.c",
+        "display_lineno": 678,
+        "code_snippet": "commit e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c\nAuthor: Jens Axboe <axboe@kernel.dk>\nDate:   Wed Nov 9 12:36:15 2016 -0700\n\n    blk-wbt: add general throttling mechanism\n    \n    We can hook this up to the block layer, to help throttle buffered\n    writes.\n    \n    wbt registers a few trace points that can be used to track what is\n    happening in the system:\n    \n    wbt_lat: 259:0: latency 2446318\n    wbt_stat: 259:0: rmean=2446318, rmin=2446318, rmax=2446318, rsamples=1,\n                   wm",
+        "exists": true,
+        "reason": "The function initializes inflight counters to 0 and assigns q->rq_wb = rwb (line 712) without any synchronization to prevent concurrent I/O completions. Requests issued before wbt is enabled will not have incremented the inflight counter, but after q->rq_wb is set, their completions will decrement it, causing a negative counter and potential hangs. The vulnerable construct (unsafe initialization order leading to race) is present, and no fix (e.g., checking for existing in-flight IOs or proper sequencing) is included."
+      }
+    },
+    {
+      "bic_trace": "blame failed at depth 3"
+    },
+    {
+      "bic_found": "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c",
+      "note": "max depth reached"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63276182c513",
+          "anchor_file": "block/elevator.c",
+          "anchor_lineno": 642
+        },
+        "commit": "78c271344b6f64ce24c845e54903e09928cf2061",
+        "commit_short": "78c271344b6f",
+        "commit_msg": "block: move wbt_enable_default() out of queue freezing from sched ->exit()\n\nscheduler's ->exit() is called with queue fr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/elevator.c",
+        "display_lineno": 645,
+        "code_snippet": "commit 78c271344b6f64ce24c845e54903e09928cf2061\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Mon May 5 22:18:03 2025 +0800\n\n    block: move wbt_enable_default() out of queue freezing from sched ->exit()\n    \n    scheduler's ->exit() is called with queue frozen and elevator lock is held, and\n    wbt_enable_default() can't be called with queue frozen, otherwise the\n    following lockdep warning is triggered:\n    \n            #6 (&q->rq_qos_mutex){+.+.}-{4:4}:\n            #5 (&eq->sysfs_lock){+.+",
+        "exists": true,
+        "reason": "The function calls wbt_enable_default(q->disk) at line 646, which is the vulnerable construct identified in the root cause (initialization of the inflight counter). There is no synchronization, such as queue freezing or locking, visible in this function to prevent concurrent IO submission from decrementing the counter before initialization completes. Therefore, the vulnerable construct is present and no fix is implemented in this code."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7ed7fa561c35",
+          "anchor_file": "block/elevator.c",
+          "anchor_lineno": 645
+        },
+        "commit": "559dc11143eb468b2099b403d3a8d5c7fce32b96",
+        "commit_short": "559dc11143eb",
+        "commit_msg": "block: move elv_register[unregister]_queue out of elevator_lock\n\nMove elv_register[unregister]_queue out of ->elevator_l",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/elevator.c",
+        "display_lineno": 645,
+        "code_snippet": "commit 559dc11143eb468b2099b403d3a8d5c7fce32b96\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Mon May 5 22:17:59 2025 +0800\n\n    block: move elv_register[unregister]_queue out of elevator_lock\n    \n    Move elv_register[unregister]_queue out of ->elevator_lock & queue freezing,\n    so we can kill many lockdep warnings.\n    \n    elv_register[unregister]_queue() is serialized, and just dealing with sysfs/\n    debugfs things, no need to be done with queue frozen:\n    \n    - when it is called from ",
+        "exists": false,
+        "reason": "The commit modifies elevator.c functions (elevator_switch, elevator_change, elv_update_nr_hw_queues) and moves elv_register/unregister_queue out of elevator_lock. It does not touch wbt initialization (wbt_enable_default or wbt_init) or inflight counter logic. The vulnerable construct (race condition in wbt initialization vs IO submission) is completely absent from the shown code."
+      }
+    },
+    {
+      "bic_found": "78c271344b6f64ce24c845e54903e09928cf2061",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "63276182c513",
+          "anchor_file": "block/elevator.c",
+          "anchor_lineno": 643
+        },
+        "commit": "78c271344b6f64ce24c845e54903e09928cf2061",
+        "commit_short": "78c271344b6f",
+        "commit_msg": "block: move wbt_enable_default() out of queue freezing from sched ->exit()\n\nscheduler's ->exit() is called with queue fr",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/elevator.c",
+        "display_lineno": 646,
+        "code_snippet": "commit 78c271344b6f64ce24c845e54903e09928cf2061\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Mon May 5 22:18:03 2025 +0800\n\n    block: move wbt_enable_default() out of queue freezing from sched ->exit()\n    \n    scheduler's ->exit() is called with queue frozen and elevator lock is held, and\n    wbt_enable_default() can't be called with queue frozen, otherwise the\n    following lockdep warning is triggered:\n    \n            #6 (&q->rq_qos_mutex){+.+.}-{4:4}:\n            #5 (&eq->sysfs_lock){+.+",
+        "exists": true,
+        "reason": "The function at line 646 calls wbt_enable_default(q->disk), which initializes the inflight counter. No synchronization or ordering is visible in this snippet to prevent concurrent IO from decrementing the counter before initialization completes, leading to the described race condition (negative counter and hung tasks). The fix is not present in this function."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7ed7fa561c35",
+          "anchor_file": "block/elevator.c",
+          "anchor_lineno": 646
+        },
+        "commit": "559dc11143eb468b2099b403d3a8d5c7fce32b96",
+        "commit_short": "559dc11143eb",
+        "commit_msg": "block: move elv_register[unregister]_queue out of elevator_lock\n\nMove elv_register[unregister]_queue out of ->elevator_l",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "block/elevator.c",
+        "display_lineno": 646,
+        "code_snippet": "commit 559dc11143eb468b2099b403d3a8d5c7fce32b96\nAuthor: Ming Lei <ming.lei@redhat.com>\nDate:   Mon May 5 22:17:59 2025 +0800\n\n    block: move elv_register[unregister]_queue out of elevator_lock\n    \n    Move elv_register[unregister]_queue out of ->elevator_lock & queue freezing,\n    so we can kill many lockdep warnings.\n    \n    elv_register[unregister]_queue() is serialized, and just dealing with sysfs/\n    debugfs things, no need to be done with queue frozen:\n    \n    - when it is called from ",
+        "exists": false,
+        "reason": "The provided diff only modifies elevator.c functions (elevator_switch, elevator_change_done, etc.) and does not involve wbt code. The vulnerable construct (wbt_enable_default / wbt_init) is not present in this file. Therefore, this commit does not contain the race condition in wbt's inflight counter, nor does it fix it."
+      }
+    },
+    {
+      "bic_found": "78c271344b6f64ce24c845e54903e09928cf2061",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "cecf5d87ff2035127bb5a9ee054d0023a4a7cad3": 1,
+        "8f5845e0743bf3512b71b3cb8afe06c192d6acc4": 1,
+        "8330cdb0fe55c9a9a8e440e56c19233229e0e259": 1,
+        "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c": 2,
+        "78c271344b6f64ce24c845e54903e09928cf2061": 2
+      },
+      "bic_candidates": [
+        "e34cbd307477ae07c5d8a8d0bd15e65a9ddaba5c",
+        "78c271344b6f64ce24c845e54903e09928cf2061",
+        "cecf5d87ff2035127bb5a9ee054d0023a4a7cad3",
+        "8f5845e0743bf3512b71b3cb8afe06c192d6acc4",
+        "8330cdb0fe55c9a9a8e440e56c19233229e0e259"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

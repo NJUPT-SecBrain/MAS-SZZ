@@ -1,0 +1,224 @@
+{
+  "cveid": "CVE-2026-31648",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "f58df566524ebcdfa394329c64f47e3c9257516e"
+  ],
+  "ground_truth_bic": "743a2753a02e805347969f6f89f38b736850d808",
+  "predicted_bic": [
+    "74207de2ba10c2973334906822dc94d2e859ffc5",
+    "f9ce0be71d1fbb038ada15ced83474b0e63f264d"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 11,
+  "llm_tokens": 54052,
+  "root_cause": {
+    "text": "In `filemap_map_pages()`, the calculation of `end_pgoff` (based on `i_size`) was performed after retrieving the folio via `next_uptodate_folio()`, allowing a concurrent truncation to shrink `i_size` between the folio retrieval and the `end_pgoff` computation, which caused `nr_pages` to overflow (wrap negative) when `xas.xa_index > end_pgoff`, leading to mapping beyond the folio’s boundaries and corrupting page metadata.",
+    "evidence": "The commit description and race diagram show CPU 0 getting a folio with the old `i_size`, then CPU 1 shrinking `i_size` before CPU 0 calculates `file_end` and `end_pgoff`. The subsequent `nr_pages = min(end, end_pgoff) - xas.xa_index + 1` underflows because `end_pgoff` is now less than `xas.xa_index`, causing `nr_pages` to become a large or negative value. This results in `set_pte_range()` mapping pages outside the folio, as confirmed by the `VM_WARN_ON_FOLIO` warning and the \"Bad page state\" crash. The fix moves the `end_pgoff` calculation before `next_uptodate_folio()` to ensure the folio retrieved is already consistent with the current file size.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/filemap.c",
+      "lineno": 3891,
+      "content": "file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/filemap.c",
+      "lineno": 3892,
+      "content": "end_pgoff = min(end_pgoff, file_end);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "In `filemap_map_pages()`, the calculation of `end_pgoff` (based on `i_size`) was performed after retrieving the folio via `next_uptodate_folio()`, allowing a concurrent truncation to shrink `i_size` between the folio retrieval and the `end_pgoff` computation, which caused `nr_pages` to overflow (wrap negative) when `xas.xa_index > end_pgoff`, leading to mapping beyond the folio’s boundaries and corrupting page metadata.",
+      "evidence_points": "The commit description and race diagram show CPU 0 getting a folio with the old `i_size`, then CPU 1 shrinking `i_size` before CPU 0 calculates `file_end` and `end_pgoff`. The subsequent `nr_pages = min(end, end_pgoff) - xas.xa_index + 1` underflows because `end_pgoff` is now less than `xas.xa_index`, causing `nr_pages` to become a large or negative value. This results in `set_pte_range()` mapping pages outside the folio, as confirmed by the `VM_WARN_ON_FOLIO` warning and the \"Bad page state\" crash. The fix moves the `end_pgoff` calculation before `next_uptodate_folio()` to ensure the folio retrieved is already consistent with the current file size."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/filemap.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Move file_end calculation and end_pgoff capping before folio lookup in filemap_map_pages to prevent race with concurrent truncation that could map pages beyond i_size.",
+        "what": "Moved the calculation of file_end (from i_size) and the min(end_pgoff, file_end) before rcu_read_lock() and next_uptodate_folio() call, instead of after.",
+        "how": "The end_pgoff is now capped to the file's end before looking up folios, preventing next_uptodate_folio() from iterating beyond the truncated file size and thus avoiding mapping pages past i_size, which could break SIGBUS semantics."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Move file_end calculation and end_pgoff capping before folio lookup in filemap_map_pages to prevent race with concurrent truncation that could map pages beyond i_size."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group directly addresses the root cause by moving the file_end calculation and end_pgoff capping before the folio lookup, preventing the race condition with concurrent truncation that could lead to nr_pages overflow and page metadata corruption."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "mm/filemap.c",
+            "lineno": 3891,
+            "content": "file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;",
+            "rationale": "Computes file_end after folio lookup, allowing a concurrent truncation to shrink i_size and cause end_pgoff to be capped to a smaller value after the folio index has already been retrieved, leading to nr_pages overflow."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "mm/filemap.c",
+            "lineno": 3892,
+            "content": "end_pgoff = min(end_pgoff, file_end);",
+            "rationale": "Caps end_pgoff after folio lookup, so if truncation reduces i_size, the capping may set end_pgoff lower than xas.xa_index, causing nr_pages to wrap negative and map beyond the folio."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/filemap.c",
+            "stmt_text": "file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;",
+            "location": "hunk",
+            "explanation": "This statement computes file_end based on i_size after the folio lookup via next_uptodate_folio(). A concurrent truncation can shrink i_size between the folio retrieval and this calculation, leading to an inconsistent end_pgoff cap that may cause nr_pages to overflow and map beyond the folio boundaries."
+          },
+          {
+            "vuln_file": "mm/filemap.c",
+            "stmt_text": "end_pgoff = min(end_pgoff, file_end);",
+            "location": "hunk",
+            "explanation": "This statement caps end_pgoff using file_end after the folio lookup. If truncation reduces i_size and thus file_end after the folio index is already determined, the capping may set end_pgoff lower than xas.xa_index, causing nr_pages to wrap negative and map beyond the folio's boundaries, corrupting page metadata."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2697dd8ae721",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3891
+        },
+        "commit": "74207de2ba10c2973334906822dc94d2e859ffc5",
+        "commit_short": "74207de2ba10",
+        "commit_msg": "mm/memory: do not populate page table entries beyond i_size\n\nPatch series \"Fix SIGBUS semantics with large folios\", v3.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 3822,
+        "code_snippet": "commit 74207de2ba10c2973334906822dc94d2e859ffc5\nAuthor: Kiryl Shutsemau <kas@kernel.org>\nDate:   Mon Oct 27 11:56:35 2025 +0000\n\n    mm/memory: do not populate page table entries beyond i_size\n    \n    Patch series \"Fix SIGBUS semantics with large folios\", v3.\n    \n    Accessing memory within a VMA, but beyond i_size rounded up to the next\n    page size, is supposed to generate SIGBUS.\n    \n    Darrick reported[1] an xfstests regression in v6.18-rc1.  generic/749\n    failed due to missing SIGBUS",
+        "exists": false,
+        "reason": "The diff shows the fix applied to filemap_map_pages(): the file_end and end_pgoff capping is moved before any mapping decisions (lines after folio retrieval), and an early check `if (folio->index > end_pgoff) goto out;` prevents the nr_pages overflow scenario described in the root cause. The vulnerable construct (computing end_pgoff after the loop without proper capping) is removed."
+      }
+    },
+    {
+      "bic_found": "74207de2ba10c2973334906822dc94d2e859ffc5",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2697dd8ae721",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3892
+        },
+        "commit": "74207de2ba10c2973334906822dc94d2e859ffc5",
+        "commit_short": "74207de2ba10",
+        "commit_msg": "mm/memory: do not populate page table entries beyond i_size\n\nPatch series \"Fix SIGBUS semantics with large folios\", v3.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 3823,
+        "code_snippet": "commit 74207de2ba10c2973334906822dc94d2e859ffc5\nAuthor: Kiryl Shutsemau <kas@kernel.org>\nDate:   Mon Oct 27 11:56:35 2025 +0000\n\n    mm/memory: do not populate page table entries beyond i_size\n    \n    Patch series \"Fix SIGBUS semantics with large folios\", v3.\n    \n    Accessing memory within a VMA, but beyond i_size rounded up to the next\n    page size, is supposed to generate SIGBUS.\n    \n    Darrick reported[1] an xfstests regression in v6.18-rc1.  generic/749\n    failed due to missing SIGBUS",
+        "exists": true,
+        "reason": "The commit moves the clamping of end_pgoff (line `end_pgoff = min(end_pgoff, file_end);`) to immediately after folio retrieval, but the race window between `next_uptodate_folio()` and this clamp still exists. If i_size shrinks concurrently, `end_pgoff` can become less than `xas.xa_index` before the loop (line `nr_pages = end - xas.xa_index + 1;`), causing unsigned underflow to a large positive value and mapping beyond the folio. No additional check prevents this overflow; thus the vulnerable construct remains unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "895b4c0c79b0",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3823
+        },
+        "commit": "f9ce0be71d1fbb038ada15ced83474b0e63f264d",
+        "commit_short": "f9ce0be71d1f",
+        "commit_msg": "mm: Cleanup faultaround and finish_fault() codepaths\n\nalloc_set_pte() has two users with different requirements: in the\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 3035,
+        "code_snippet": "commit f9ce0be71d1fbb038ada15ced83474b0e63f264d\nAuthor: Kiryl Shutsemau <kas@kernel.org>\nDate:   Sat Dec 19 15:19:23 2020 +0300\n\n    mm: Cleanup faultaround and finish_fault() codepaths\n    \n    alloc_set_pte() has two users with different requirements: in the\n    faultaround code, it called from an atomic context and PTE page table\n    has to be preallocated. finish_fault() can sleep and allocate page table\n    as needed.\n    \n    PTL locking rules are also strange, hard to follow and overkill ",
+        "exists": true,
+        "reason": "The commit restructures filemap_map_pages but retains the vulnerable pattern: the i_size read (DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE)) is performed inside next_uptodate_page() after the page has already been retrieved (via xas_find or xas_next_entry). This allows a concurrent truncation to shrink i_size between page lookup and the check, enabling a stale page to be considered valid and potentially causing out-of-bounds mapping. No fix that moves the i_size check before page retrieval or uses a consistent snapshot is present."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "19c329f68089",
+          "anchor_file": "mm/filemap.c",
+          "anchor_lineno": 3035
+        },
+        "commit": "1da177e4c3f41524e886b7f1b8a0c1fc7321cac2",
+        "commit_short": "1da177e4c3f4",
+        "commit_msg": "Linux-2.6.12-rc2\n\nInitial git repository build. I'm not bothering with the full history,\neven though we have it. We can ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/filemap.c",
+        "display_lineno": 1536,
+        "code_snippet": "commit 1da177e4c3f41524e886b7f1b8a0c1fc7321cac2\nAuthor: Linus Torvalds <torvalds@ppc970.osdl.org>\nDate:   Sat Apr 16 15:20:36 2005 -0700\n\n    Linux-2.6.12-rc2\n    \n    Initial git repository build. I'm not bothering with the full history,\n    even though we have it. We can create a separate \"historical\" git\n    archive of that later if we want to, and in the meantime it's about\n    3.2GB when imported into git - space that would just make the early\n    git days unnecessarily complicated, when we",
+        "exists": false,
+        "reason": "The function filemap_map_pages() is completely absent from this commit's code. The vulnerability is about a function that does not exist in this initial kernel version. Therefore, no vulnerable construct is present."
+      }
+    },
+    {
+      "bic_found": "f9ce0be71d1fbb038ada15ced83474b0e63f264d",
+      "depth": 2
+    },
+    {
+      "bic_votes": {
+        "74207de2ba10c2973334906822dc94d2e859ffc5": 1,
+        "f9ce0be71d1fbb038ada15ced83474b0e63f264d": 1
+      },
+      "bic_candidates": [
+        "74207de2ba10c2973334906822dc94d2e859ffc5",
+        "f9ce0be71d1fbb038ada15ced83474b0e63f264d"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

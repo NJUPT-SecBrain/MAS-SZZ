@@ -1,0 +1,320 @@
+{
+  "cveid": "CVE-2026-46121",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "1e68eb96e8beb1abefd12dd22c5637795d8a877e"
+  ],
+  "ground_truth_bic": "4f489fe6afb395dbc79840efa3c05440b760d883",
+  "predicted_bic": [
+    "7ee161f18b5da5170b5d6a51aace49d312099128"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 21,
+  "llm_tokens": 48523,
+  "root_cause": {
+    "text": "The DAMON sysfs schemes code accessed and replaced `damon_sysfs_scheme_filter->memcg_path` from `memcg_path_show()` and `memcg_path_store()` without holding `damon_sysfs_lock`, allowing a concurrent store to `kfree()` the buffer while another read still dereferenced it.",
+    "evidence": "The commit message states that direct user reads and writes of `memcg_path` \"are not protected by any lock, while the write is deallocating the memcg_path-pointing buffer,\" causing readers to \"read the already freed buffer\"; the patch adds `mutex_trylock(&damon_sysfs_lock)` around both `memcg_path_show()` and `memcg_path_store()`, specifically around the `kfree(filter->memcg_path)` and read of `filter->memcg_path`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/damon/sysfs-schemes.c",
+      "lineno": 553,
+      "content": "kfree(filter->memcg_path);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/sysfs-schemes.c",
+      "lineno": 554,
+      "content": "filter->memcg_path = path;",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/damon/sysfs-schemes.c",
+      "lineno": 538,
+      "content": "filter->memcg_path ? filter->memcg_path : \"\");",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The DAMON sysfs schemes code accessed and replaced `damon_sysfs_scheme_filter->memcg_path` from `memcg_path_show()` and `memcg_path_store()` without holding `damon_sysfs_lock`, allowing a concurrent store to `kfree()` the buffer while another read still dereferenced it.",
+      "evidence_points": "The commit message states that direct user reads and writes of `memcg_path` \"are not protected by any lock, while the write is deallocating the memcg_path-pointing buffer,\" causing readers to \"read the already freed buffer\"; the patch adds `mutex_trylock(&damon_sysfs_lock)` around both `memcg_path_show()` and `memcg_path_store()`, specifically around the `kfree(filter->memcg_path)` and read of `filter->memcg_path`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "mm/damon/sysfs-schemes.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "mm/damon/sysfs-schemes.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "guard",
+        "intent_summary": "Protect `memcg_path_show()` with a non-blocking sysfs mutex lock to avoid unsynchronized access to `memcg_path` and return `-EBUSY` when the state is busy.",
+        "what": "The function `memcg_path_show()` was modified to declare a local `int len`, acquire `damon_sysfs_lock` with `mutex_trylock()` before reading `filter->memcg_path`, return `-EBUSY` if the lock cannot be acquired, store the result of `sysfs_emit()` in `len`, release the mutex with `mutex_unlock()`, and then return `len` instead of returning `sysfs_emit()` directly.",
+        "how": "At runtime, the sysfs show handler now avoids reading `filter->memcg_path` without synchronization, preventing concurrent access races with other paths that may modify the same state. If the lock is already held, the read request fails immediately with `-EBUSY` rather than blocking or accessing potentially changing data."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Protect memcg_path updates with damon_sysfs_lock and fail with -EBUSY when the sysfs state is busy to avoid concurrent unsafe modification.",
+        "what": "The change adds a non-blocking mutex acquisition with mutex_trylock(&damon_sysfs_lock) after copying the input path, frees the newly allocated path and returns -EBUSY if the lock cannot be acquired, and wraps the existing update of filter->memcg_path with the lock and a corresponding mutex_unlock(&damon_sysfs_lock).",
+        "how": "At runtime, updating filter->memcg_path now only proceeds while holding damon_sysfs_lock, preventing concurrent unsynchronized replacement of the pointer; if the lock is already held, the function aborts safely by freeing the temporary allocation and returning -EBUSY instead of modifying shared state."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "guard",
+          "hunk_count": 2,
+          "intent": "Protect memcg_path updates with damon_sysfs_lock and fail with -EBUSY when the sysfs state is busy to avoid concurrent unsafe modification."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Protect memcg_path reads and writes with damon_sysfs_lock using a non-blocking busy check so concurrent unsafe sysfs access fails with -EBUSY.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by adding damon_sysfs_lock protection around both memcg_path_show() and memcg_path_store(), preventing concurrent read/write and free/use races on memcg_path, with -EBUSY used when the sysfs state is busy."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "mm/damon/sysfs-schemes.c",
+            "lineno": 538,
+            "content": "filter->memcg_path ? filter->memcg_path : \"\");",
+            "rationale": "This dereferences filter->memcg_path in memcg_path_show() without holding damon_sysfs_lock, so a concurrent store can free or replace the buffer while it is being read."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "mm/damon/sysfs-schemes.c",
+            "lineno": 553,
+            "content": "kfree(filter->memcg_path);",
+            "rationale": "This frees the current memcg_path without synchronization, allowing a concurrent reader in memcg_path_show() to dereference freed memory."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "mm/damon/sysfs-schemes.c",
+            "lineno": 554,
+            "content": "filter->memcg_path = path;",
+            "rationale": "This replaces the shared memcg_path pointer without holding damon_sysfs_lock, participating in the racy update that can occur concurrently with unsynchronized reads."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/damon/sysfs-schemes.c",
+            "stmt_text": "kfree(filter->memcg_path);",
+            "location": "hunk",
+            "explanation": "This statement frees the shared memcg_path buffer without holding damon_sysfs_lock. A concurrent memcg_path_show() can still dereference filter->memcg_path, causing a use-after-free."
+          },
+          {
+            "vuln_file": "mm/damon/sysfs-schemes.c",
+            "stmt_text": "filter->memcg_path = path;",
+            "location": "hunk",
+            "explanation": "This unsynchronized replacement of the shared memcg_path pointer races with readers in memcg_path_show(), contributing to unsafe concurrent access to the pointer."
+          },
+          {
+            "vuln_file": "mm/damon/sysfs-schemes.c",
+            "stmt_text": "filter->memcg_path ? filter->memcg_path : \"\");",
+            "location": "hunk",
+            "explanation": "This statement dereferences filter->memcg_path in memcg_path_show() without holding damon_sysfs_lock, so it can read memory that was concurrently freed or replaced by memcg_path_store()."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2aeb64a2b90d",
+          "anchor_file": "mm/damon/sysfs-schemes.c",
+          "anchor_lineno": 553
+        },
+        "commit": "4f489fe6afb395dbc79840efa3c05440b760d883",
+        "commit_short": "4f489fe6afb3",
+        "commit_msg": "mm/damon/sysfs-schemes: free old damon_sysfs_scheme_filter->memcg_path on write\n\nmemcg_path_store() assigns a newly allo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/sysfs-schemes.c",
+        "display_lineno": 475,
+        "code_snippet": "commit 4f489fe6afb395dbc79840efa3c05440b760d883\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Thu Jun 19 11:36:07 2025 -0700\n\n    mm/damon/sysfs-schemes: free old damon_sysfs_scheme_filter->memcg_path on write\n    \n    memcg_path_store() assigns a newly allocated memory buffer to\n    filter->memcg_path, without deallocating the previously allocated and\n    assigned memory buffer.  As a result, users can leak kernel memory by\n    continuously writing a data to memcg_path DAMOS sysfs file.  Fix th",
+        "exists": true,
+        "reason": "The snippet is sufficient because it shows the exact write-side logic for `memcg_path_store()` and the vulnerability root cause is about unsynchronized replacement/free of `filter->memcg_path`. In this commit version, the function does `kfree(filter->memcg_path);` followed by `filter->memcg_path = path;` with no indication of holding `damon_sysfs_lock` or any other synchronization around the access/replacement. That means the vulnerable construct is present: the old `memcg_path` is freed on write while another concurrent reader in `memcg_path_show()` could still dereference it. Therefore `has_bug=true`. The fix described in the root cause would require protecting accesses in `memcg_path_show()` and `memcg_path_store()` with `damon_sysfs_lock`; that handling is not present in the shown code, so `is_fixed=false`."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "f5769359c5b2",
+          "anchor_file": "mm/damon/sysfs-schemes.c",
+          "anchor_lineno": 475
+        },
+        "commit": "7ee161f18b5da5170b5d6a51aace49d312099128",
+        "commit_short": "7ee161f18b5d",
+        "commit_msg": "mm/damon/sysfs-schemes: implement filter directory\n\nImplement DAMOS filter directory which will be located under the fil",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/sysfs-schemes.c",
+        "display_lineno": 353,
+        "code_snippet": "commit 7ee161f18b5da5170b5d6a51aace49d312099128\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Mon Dec 5 23:08:25 2022 +0000\n\n    mm/damon/sysfs-schemes: implement filter directory\n    \n    Implement DAMOS filter directory which will be located under the filters\n    directory.  The directory provides three files, namely type, matching, and\n    memcg_path.  'type' and 'matching' will be directly connected to the\n    fields of 'struct damos_filter' having same name.  'memcg_path' will\n    receive t",
+        "exists": true,
+        "reason": "The snippet is sufficient because it fully shows the relevant `memcg_path_show()` and `memcg_path_store()` implementations. The vulnerable construct is present: `memcg_path_show()` directly dereferences `filter->memcg_path` in `return sysfs_emit(buf, \"%s\\n\", filter->memcg_path ? filter->memcg_path : \"\");` with no locking. `memcg_path_store()` allocates a new buffer and then directly replaces the pointer via `filter->memcg_path = path;` also with no locking and no synchronization against concurrent readers. The root cause describes that accesses and replacements of `memcg_path` must be protected by `damon_sysfs_lock`; this code contains no such locking in either function. Therefore a concurrent show/store can race on the shared pointer. Since the fix would require correct locking/handling around these accesses and it is absent here, `has_bug` is true and `is_fixed` is false."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "ac35264b9e88",
+          "anchor_file": "mm/damon/sysfs-schemes.c",
+          "anchor_lineno": 353
+        },
+        "commit": "c8e7b4d0ba348a8ef14956a80c780f152f433764",
+        "commit_short": "c8e7b4d0ba34",
+        "commit_msg": "mm/damon/sysfs: split out schemes directory implementation to separate file\n\nDAMON sysfs interface for 'schemes' directo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/sysfs-schemes.c",
+        "display_lineno": 146,
+        "code_snippet": "commit c8e7b4d0ba348a8ef14956a80c780f152f433764\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Wed Oct 26 22:59:41 2022 +0000\n\n    mm/damon/sysfs: split out schemes directory implementation to separate file\n    \n    DAMON sysfs interface for 'schemes' directory is implemented using about\n    one thousand lines of code.  It has no strong dependency with other\n    parts of its file, so split it out to another file for better code\n    management.\n    \n    Link: https://lkml.kernel.org/r/202210262259",
+        "exists": false,
+        "reason": "The provided snippet does not include any executable logic from the relevant functions. It only shows the start of `metric_show()` at lines 148-150, while the root cause specifically concerns concurrent access to `damon_sysfs_scheme_filter->memcg_path` in `memcg_path_show()` and `memcg_path_store()`. Since neither `memcg_path_show()` nor `memcg_path_store()` nor any locking around `damon_sysfs_lock` is shown, the relevant vulnerable construct cannot be inspected in this snippet."
+      }
+    },
+    {
+      "bic_found": "7ee161f18b5da5170b5d6a51aace49d312099128",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2aeb64a2b90d",
+          "anchor_file": "mm/damon/sysfs-schemes.c",
+          "anchor_lineno": 554
+        },
+        "commit": "7ee161f18b5da5170b5d6a51aace49d312099128",
+        "commit_short": "7ee161f18b5d",
+        "commit_msg": "mm/damon/sysfs-schemes: implement filter directory\n\nImplement DAMOS filter directory which will be located under the fil",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/sysfs-schemes.c",
+        "display_lineno": 353,
+        "code_snippet": "commit 7ee161f18b5da5170b5d6a51aace49d312099128\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Mon Dec 5 23:08:25 2022 +0000\n\n    mm/damon/sysfs-schemes: implement filter directory\n    \n    Implement DAMOS filter directory which will be located under the filters\n    directory.  The directory provides three files, namely type, matching, and\n    memcg_path.  'type' and 'matching' will be directly connected to the\n    fields of 'struct damos_filter' having same name.  'memcg_path' will\n    receive t",
+        "exists": true,
+        "reason": "The snippet is sufficient because it directly contains the relevant `memcg_path_show()` and `memcg_path_store()` implementations. The vulnerable construct is present: `memcg_path_show()` reads `filter->memcg_path` and dereferences it in `sysfs_emit(buf, \"%s\\n\", filter->memcg_path ? filter->memcg_path : \"\");` with no locking. `memcg_path_store()` allocates a new buffer and then updates `filter->memcg_path = path;` with no locking and no synchronization against concurrent readers. The root cause description says accesses/replacements of `memcg_path` must be protected by `damon_sysfs_lock` to avoid races where a concurrent store can free/replace the buffer while a read dereferences it. This commit shows no use of `damon_sysfs_lock` in either function, so the vulnerable unsynchronized access is present. Therefore the function set contains the bug and does not yet contain the fix."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ac35264b9e88",
+          "anchor_file": "mm/damon/sysfs-schemes.c",
+          "anchor_lineno": 353
+        },
+        "commit": "c8e7b4d0ba348a8ef14956a80c780f152f433764",
+        "commit_short": "c8e7b4d0ba34",
+        "commit_msg": "mm/damon/sysfs: split out schemes directory implementation to separate file\n\nDAMON sysfs interface for 'schemes' directo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/sysfs-schemes.c",
+        "display_lineno": 146,
+        "code_snippet": "commit c8e7b4d0ba348a8ef14956a80c780f152f433764\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Wed Oct 26 22:59:41 2022 +0000\n\n    mm/damon/sysfs: split out schemes directory implementation to separate file\n    \n    DAMON sysfs interface for 'schemes' directory is implemented using about\n    one thousand lines of code.  It has no strong dependency with other\n    parts of its file, so split it out to another file for better code\n    management.\n    \n    Link: https://lkml.kernel.org/r/202210262259",
+        "exists": false,
+        "reason": "The provided snippet does not include any executable logic of the function body—only the signature of `metric_show()` is shown (`static ssize_t metric_show(...)`) and no statements are present. The root cause concerns unsynchronized access to `damon_sysfs_scheme_filter->memcg_path` in `memcg_path_show()` and `memcg_path_store()`, but neither of those functions nor any relevant locking/dereference/free logic appears in the snippet. Therefore the snippet is insufficient to determine whether the vulnerable construct is present or fixed in this commit."
+      }
+    },
+    {
+      "bic_found": "7ee161f18b5da5170b5d6a51aace49d312099128",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "2aeb64a2b90d",
+          "anchor_file": "mm/damon/sysfs-schemes.c",
+          "anchor_lineno": 538
+        },
+        "commit": "7ee161f18b5da5170b5d6a51aace49d312099128",
+        "commit_short": "7ee161f18b5d",
+        "commit_msg": "mm/damon/sysfs-schemes: implement filter directory\n\nImplement DAMOS filter directory which will be located under the fil",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/sysfs-schemes.c",
+        "display_lineno": 338,
+        "code_snippet": "commit 7ee161f18b5da5170b5d6a51aace49d312099128\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Mon Dec 5 23:08:25 2022 +0000\n\n    mm/damon/sysfs-schemes: implement filter directory\n    \n    Implement DAMOS filter directory which will be located under the filters\n    directory.  The directory provides three files, namely type, matching, and\n    memcg_path.  'type' and 'matching' will be directly connected to the\n    fields of 'struct damos_filter' having same name.  'memcg_path' will\n    receive t",
+        "exists": true,
+        "reason": "The snippet directly shows the relevant logic for the vulnerable memcg_path sysfs attribute, so it is sufficient. The root cause is unsynchronized access/replacement of `filter->memcg_path` between show and store. In `memcg_path_show()`, the code dereferences the pointer without any locking: `return sysfs_emit(buf, \"%s\\n\", filter->memcg_path ? filter->memcg_path : \"\");`. In `memcg_path_store()`, the code allocates a new buffer and then assigns it directly with `filter->memcg_path = path;`, also without taking any lock. There is no use of `damon_sysfs_lock` or any other synchronization in either function. This means concurrent show/store can race on the shared pointer. The fix described in the root cause would require holding `damon_sysfs_lock` around accesses/replacement of `memcg_path`, but that handling is absent here. Therefore the vulnerable construct is present and the fix is not yet included."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "ac35264b9e88",
+          "anchor_file": "mm/damon/sysfs-schemes.c",
+          "anchor_lineno": 338
+        },
+        "commit": "c8e7b4d0ba348a8ef14956a80c780f152f433764",
+        "commit_short": "c8e7b4d0ba34",
+        "commit_msg": "mm/damon/sysfs: split out schemes directory implementation to separate file\n\nDAMON sysfs interface for 'schemes' directo",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/damon/sysfs-schemes.c",
+        "display_lineno": 131,
+        "code_snippet": "commit c8e7b4d0ba348a8ef14956a80c780f152f433764\nAuthor: SeongJae Park <sj@kernel.org>\nDate:   Wed Oct 26 22:59:41 2022 +0000\n\n    mm/damon/sysfs: split out schemes directory implementation to separate file\n    \n    DAMON sysfs interface for 'schemes' directory is implemented using about\n    one thousand lines of code.  It has no strong dependency with other\n    parts of its file, so split it out to another file for better code\n    management.\n    \n    Link: https://lkml.kernel.org/r/202210262259",
+        "exists": false,
+        "reason": "The provided function body is only a constructor-like allocator for `struct damon_sysfs_watermarks` (`kmalloc`, NULL check, field initialization, and return). It does not reference `damon_sysfs_scheme_filter->memcg_path`, `memcg_path_show()`, `memcg_path_store()`, `damon_sysfs_lock`, or any locking/freeing logic related to the stated root cause. Because the vulnerability concerns concurrent access and replacement of `memcg_path` during show/store operations, this snippet does not contain the relevant logic needed to determine whether the vulnerable construct is present or fixed."
+      }
+    },
+    {
+      "bic_found": "7ee161f18b5da5170b5d6a51aace49d312099128",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "7ee161f18b5da5170b5d6a51aace49d312099128": 3
+      },
+      "bic_candidates": [
+        "7ee161f18b5da5170b5d6a51aace49d312099128"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

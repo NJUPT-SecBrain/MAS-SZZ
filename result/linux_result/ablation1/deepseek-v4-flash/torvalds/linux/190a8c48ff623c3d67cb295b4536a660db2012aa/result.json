@@ -1,0 +1,609 @@
+{
+  "cveid": "CVE-2026-23415",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "190a8c48ff623c3d67cb295b4536a660db2012aa"
+  ],
+  "ground_truth_bic": "c042c505210dc3453f378df432c10fff3d471bc5",
+  "predicted_bic": [
+    "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+    "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+    "c042c505210dc3453f378df432c10fff3d471bc5"
+  ],
+  "correct": true,
+  "bic_method": "blame_trace",
+  "llm_calls": 24,
+  "llm_tokens": 85093,
+  "root_cause": {
+    "text": "The mempolicy object is freed immediately via kmem_cache_free() in __mpol_put() without waiting for an RCU grace period, while concurrent readers in __futex_key_to_node() that access vma->vm_policy under speculative mmap lock and RCU can dereference the freed pointer, causing a use-after-free.",
+    "evidence": "CVE description states: \"vma->vm_policy is read under speculative mmap lock and RCU. Concurrently, mbind() may call vma_replace_policy() which frees the old mempolicy immediately via kmem_cache_free(). This creates a race where __futex_key_to_node() dereferences a freed mempolicy pointer.\" The patch addresses this by adding an rcu_head to struct mempolicy, changing __mpol_put() to use kfree_rcu() instead of kmem_cache_free(), and using READ_ONCE/WRITE_ONCE for vma->vm_policy.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "mm/mempolicy.c",
+      "lineno": 490,
+      "content": "kmem_cache_free(policy_cache, pol);",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/mempolicy.c",
+      "lineno": 488,
+      "content": "if (!atomic_dec_and_test(&pol->refcnt))",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/mempolicy.c",
+      "lineno": 1024,
+      "content": "mpol_put(old);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/futex/core.c",
+      "lineno": 345,
+      "content": "mpol = vma_policy(vma);",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/futex/core.c",
+      "lineno": 346,
+      "content": "if (!mpol)",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/mempolicy.c",
+      "lineno": 1022,
+      "content": "old = vma->vm_policy;",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/mempolicy.c",
+      "lineno": 1023,
+      "content": "vma->vm_policy = new; /* protected by mmap_lock */",
+      "confidence": 1.0
+    },
+    {
+      "file": "mm/mempolicy.c",
+      "lineno": 489,
+      "content": "return;",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "The mempolicy object is freed immediately via kmem_cache_free() in __mpol_put() without waiting for an RCU grace period, while concurrent readers in __futex_key_to_node() that access vma->vm_policy under speculative mmap lock and RCU can dereference the freed pointer, causing a use-after-free.",
+      "evidence_points": "CVE description states: \"vma->vm_policy is read under speculative mmap lock and RCU. Concurrently, mbind() may call vma_replace_policy() which frees the old mempolicy immediately via kmem_cache_free(). This creates a race where __futex_key_to_node() dereferences a freed mempolicy pointer.\" The patch addresses this by adding an rcu_head to struct mempolicy, changing __mpol_put() to use kfree_rcu() instead of kmem_cache_free(), and using READ_ONCE/WRITE_ONCE for vma->vm_policy."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 2,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 490,
+            "content": "kmem_cache_free(policy_cache, pol);",
+            "rationale": "This statement immediately frees the mempolicy object without waiting for an RCU grace period, allowing use-after-free when concurrent readers still access the pointer."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 488,
+            "content": "if (!atomic_dec_and_test(&pol->refcnt))",
+            "rationale": "This condition checks whether the reference count has dropped to zero; if true, the subsequent free is executed, and the lack of RCU delay makes the free unsafe."
+          },
+          {
+            "hunk_index": 2,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 489,
+            "content": "return;",
+            "rationale": "When the reference count is not zero, the function returns without freeing; this is part of the put path that eventually leads to the free when count reaches zero."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 1024,
+            "content": "mpol_put(old);",
+            "rationale": "This call decrements the reference count of the old mempolicy and may trigger the unsafe free via __mpol_put, while a concurrent reader may still be accessing the old policy."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 1022,
+            "content": "old = vma->vm_policy;",
+            "rationale": "This reads the old policy pointer before replacing it; although not directly freeing, it is part of the same critical section that precedes the put which can cause UAF."
+          },
+          {
+            "hunk_index": 3,
+            "file_path": "mm/mempolicy.c",
+            "lineno": 1023,
+            "content": "vma->vm_policy = new; /* protected by mmap_lock */",
+            "rationale": "This sets the new policy; after this write, a concurrent reader under RCU might still have a reference to the old policy and later access it after it is freed."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/futex/core.c",
+            "lineno": 345,
+            "content": "mpol = vma_policy(vma);",
+            "rationale": "This is the read-side access to vma->vm_policy under speculative mmap lock and RCU; it may dereference a freed mempolicy if the writer frees it concurrently."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "kernel/futex/core.c",
+            "lineno": 346,
+            "content": "if (!mpol)",
+            "rationale": "This checks the result of vma_policy; if the pointer is dangling (freed but not yet null), this condition might pass and lead to use of freed memory."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "mm/mempolicy.c",
+            "stmt_text": "kmem_cache_free(policy_cache, pol);",
+            "location": "hunk",
+            "explanation": "Immediately frees the mempolicy object without waiting for an RCU grace period, allowing use-after-free when concurrent readers still access the pointer."
+          },
+          {
+            "vuln_file": "mm/mempolicy.c",
+            "stmt_text": "if (!atomic_dec_and_test(&pol->refcnt))",
+            "location": "hunk",
+            "explanation": "Decrements the reference count; when it reaches zero, the subsequent free is executed without RCU delay, causing the vulnerability."
+          },
+          {
+            "vuln_file": "mm/mempolicy.c",
+            "stmt_text": "mpol_put(old);",
+            "location": "hunk",
+            "explanation": "Triggers the put path that calls __mpol_put, which may free the old mempolicy while a concurrent reader may still be accessing it under RCU."
+          },
+          {
+            "vuln_file": "kernel/futex/core.c",
+            "stmt_text": "mpol = vma_policy(vma);",
+            "location": "hunk",
+            "explanation": "Read-side access to vma->vm_policy under speculative mmap lock and RCU; may dereference a freed mempolicy if the writer frees it concurrently."
+          },
+          {
+            "vuln_file": "kernel/futex/core.c",
+            "stmt_text": "if (!mpol)",
+            "location": "hunk",
+            "explanation": "Checks the result of vma_policy; if the pointer is dangling (freed but not yet null), this check may pass and lead to use of freed memory."
+          },
+          {
+            "vuln_file": "mm/mempolicy.c",
+            "stmt_text": "old = vma->vm_policy;",
+            "location": "hunk",
+            "explanation": "Reads the old policy pointer before replacement; part of the write-side critical section that precedes the unsafe put."
+          },
+          {
+            "vuln_file": "mm/mempolicy.c",
+            "stmt_text": "vma->vm_policy = new; /* protected by mmap_lock */",
+            "location": "hunk",
+            "explanation": "Sets the new policy; after this write, a concurrent reader under RCU might still have a reference to the old policy and later access it after it is freed."
+          },
+          {
+            "vuln_file": "mm/mempolicy.c",
+            "stmt_text": "return;",
+            "location": "hunk",
+            "explanation": "Early return when the reference count is not zero; part of the __mpol_put logic that eventually leads to the unsafe free when count reaches zero."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 490
+        },
+        "commit": "c36f6e6dff4d32ec8b6da8f553933727a57a7a4a",
+        "commit_short": "c36f6e6dff4d",
+        "commit_msg": "mempolicy trivia: slightly more consistent naming\n\nBefore getting down to work, do a little cleanup, mainly of inconsist",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 311,
+        "code_snippet": "commit c36f6e6dff4d32ec8b6da8f553933727a57a7a4a\nAuthor: Hugh Dickins <hughd@google.com>\nDate:   Tue Oct 3 02:20:14 2023 -0700\n\n    mempolicy trivia: slightly more consistent naming\n    \n    Before getting down to work, do a little cleanup, mainly of inconsistent\n    variable naming.  I gave up trying to rationalize mpol versus pol versus\n    policy, and node versus nid, but let's avoid p and nd.  Remove a few\n    superfluous blank lines, but add one; and here prefer vma->vm_policy to\n    vma_pol",
+        "exists": true,
+        "reason": "The commit only renames variables and makes cosmetic changes; __mpol_put still frees the mempolicy via kmem_cache_free(policy_cache, pol) without an RCU grace period. The vulnerable construct (free without RCU delay) is present and not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7f1ee4e20708",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 311
+        },
+        "commit": "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+        "commit_short": "52cd3b074050",
+        "commit_msg": "mempolicy: rework mempolicy Reference Counting [yet again]\n\nAfter further discussion with Christoph Lameter, it has beco",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 251,
+        "code_snippet": "commit 52cd3b074050dd664380b5e8cfc85d4a6ed8ad48\nAuthor: Lee Schermerhorn <lee.schermerhorn@hp.com>\nDate:   Mon Apr 28 02:13:16 2008 -0700\n\n    mempolicy: rework mempolicy Reference Counting [yet again]\n    \n    After further discussion with Christoph Lameter, it has become clear that my\n    earlier attempts to clean up the mempolicy reference counting were a bit of\n    overkill in some areas, resulting in superflous ref/unref in what are usually\n    fast paths.  In other areas, further inspectio",
+        "exists": true,
+        "reason": "The __mpol_put() function in this commit (lines 244-248) immediately calls kmem_cache_free() after decrementing the refcount, without any RCU grace period. This matches the root cause: freeing the mempolicy object without waiting for RCU, allowing a concurrent reader (e.g., in __futex_key_to_node) to dereference freed memory. No RCU-based fix is added in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "a6020ed75940",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 251
+        },
+        "commit": "37012946da940521fb997a758a219d2f1ab56e51",
+        "commit_short": "37012946da94",
+        "commit_msg": "mempolicy: create mempolicy_operations structure\n\nCreate a mempolicy_operations structure that currently points to two\nf",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 235,
+        "code_snippet": "commit 37012946da940521fb997a758a219d2f1ab56e51\nAuthor: David Rientjes <rientjes@google.com>\nDate:   Mon Apr 28 02:12:33 2008 -0700\n\n    mempolicy: create mempolicy_operations structure\n    \n    Create a mempolicy_operations structure that currently points to two\n    functions[*] for the various modes:\n    \n            int (*create)(struct mempolicy *, const nodemask_t *);\n            void (*rebind)(struct mempolicy *, const nodemask_t *);\n    \n    This splits the implementation for the various ",
+        "exists": false,
+        "reason": "The commit only refactors mpol_new() and mpol_rebind_policy() by introducing a mempolicy_operations structure. It does not modify __mpol_put(), which frees the policy without RCU grace period, nor the futex code where the use-after-free occurs. The vulnerable construct (immediate kmem_cache_free without RCU) is absent from the provided diff."
+      }
+    },
+    {
+      "bic_found": "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 488
+        },
+        "commit": "c36f6e6dff4d32ec8b6da8f553933727a57a7a4a",
+        "commit_short": "c36f6e6dff4d",
+        "commit_msg": "mempolicy trivia: slightly more consistent naming\n\nBefore getting down to work, do a little cleanup, mainly of inconsist",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 309,
+        "code_snippet": "commit c36f6e6dff4d32ec8b6da8f553933727a57a7a4a\nAuthor: Hugh Dickins <hughd@google.com>\nDate:   Tue Oct 3 02:20:14 2023 -0700\n\n    mempolicy trivia: slightly more consistent naming\n    \n    Before getting down to work, do a little cleanup, mainly of inconsistent\n    variable naming.  I gave up trying to rationalize mpol versus pol versus\n    policy, and node versus nid, but let's avoid p and nd.  Remove a few\n    superfluous blank lines, but add one; and here prefer vma->vm_policy to\n    vma_pol",
+        "exists": true,
+        "reason": "The __mpol_put function is present with the vulnerable logic: it calls kmem_cache_free() directly without any RCU synchronization (lines 307-309 in the diff showing 'kmem_cache_free(policy_cache, pol)'). The commit only renames the parameter from 'p' to 'pol' and does not introduce any RCU wait or call_rcu, so the use-after-free condition remains unfixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "7f1ee4e20708",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 309
+        },
+        "commit": "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+        "commit_short": "52cd3b074050",
+        "commit_msg": "mempolicy: rework mempolicy Reference Counting [yet again]\n\nAfter further discussion with Christoph Lameter, it has beco",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 248,
+        "code_snippet": "commit 52cd3b074050dd664380b5e8cfc85d4a6ed8ad48\nAuthor: Lee Schermerhorn <lee.schermerhorn@hp.com>\nDate:   Mon Apr 28 02:13:16 2008 -0700\n\n    mempolicy: rework mempolicy Reference Counting [yet again]\n    \n    After further discussion with Christoph Lameter, it has become clear that my\n    earlier attempts to clean up the mempolicy reference counting were a bit of\n    overkill in some areas, resulting in superflous ref/unref in what are usually\n    fast paths.  In other areas, further inspectio",
+        "exists": true,
+        "reason": "The commit introduces __mpol_put() (lines 247-253) which frees the mempolicy via kmem_cache_free() immediately after atomic decrement, without any RCU grace period. This directly matches the root cause: a use-after-free when concurrent readers access vma->vm_policy under RCU. No RCU-based fix (e.g., call_rcu) is added in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "a6020ed75940",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 248
+        },
+        "commit": "37012946da940521fb997a758a219d2f1ab56e51",
+        "commit_short": "37012946da94",
+        "commit_msg": "mempolicy: create mempolicy_operations structure\n\nCreate a mempolicy_operations structure that currently points to two\nf",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 232,
+        "code_snippet": "commit 37012946da940521fb997a758a219d2f1ab56e51\nAuthor: David Rientjes <rientjes@google.com>\nDate:   Mon Apr 28 02:12:33 2008 -0700\n\n    mempolicy: create mempolicy_operations structure\n    \n    Create a mempolicy_operations structure that currently points to two\n    functions[*] for the various modes:\n    \n            int (*create)(struct mempolicy *, const nodemask_t *);\n            void (*rebind)(struct mempolicy *, const nodemask_t *);\n    \n    This splits the implementation for the various ",
+        "exists": false,
+        "reason": "The commit refactors mpol_new() and mpol_rebind_policy() using a mempolicy_operations structure, but does not modify the __mpol_put() function which contains the vulnerable free (kmem_cache_free without RCU grace period). The vulnerable construct (free without RCU synchronization) is absent from the shown code; only error-path freeing in mpol_new is present, which is not the root cause. No RCU grace period or fix is introduced."
+      }
+    },
+    {
+      "bic_found": "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 1024
+        },
+        "commit": "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+        "commit_short": "869833f2c5c6",
+        "commit_msg": "mempolicy: remove mempolicy sharing\n\nDave Jones' system call fuzz testing tool \"trinity\" triggered the\nfollowing bug err",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 638,
+        "code_snippet": "commit 869833f2c5c6e4dd09a5378cfc665ffb4615e5d2\nAuthor: KOSAKI Motohiro <kosaki.motohiro@jp.fujitsu.com>\nDate:   Mon Oct 8 16:29:16 2012 -0700\n\n    mempolicy: remove mempolicy sharing\n    \n    Dave Jones' system call fuzz testing tool \"trinity\" triggered the\n    following bug error with slab debugging enabled\n    \n        =============================================================================\n        BUG numa_policy (Not tainted): Poison overwritten\n        --------------------------------",
+        "exists": true,
+        "reason": "The commit introduces vma_replace_policy() which calls mpol_put(old) to release the old VMA policy. This call chain leads to __mpol_put() that frees the mempolicy immediately via kmem_cache_free() without an RCU grace period, as described in the vulnerability root cause. Concurrent readers under RCU (e.g., in __futex_key_to_node()) can still access the freed vma->vm_policy. No RCU synchronization or delayed freeing is added, so the vulnerable construct remains present and not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8d34694c1abf",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 638
+        },
+        "commit": "9d8cebd4bcd7c3878462fdfda34bbcdeb4df7ef4",
+        "commit_short": "9d8cebd4bcd7",
+        "commit_msg": "mm: fix mbind vma merge problem\n\nStrangely, current mbind() doesn't merge vma with neighbor vma although it's possible.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 572,
+        "code_snippet": "commit 9d8cebd4bcd7c3878462fdfda34bbcdeb4df7ef4\nAuthor: KOSAKI Motohiro <kosaki.motohiro@jp.fujitsu.com>\nDate:   Fri Mar 5 13:41:57 2010 -0800\n\n    mm: fix mbind vma merge problem\n    \n    Strangely, current mbind() doesn't merge vma with neighbor vma although it's possible.\n    Unfortunately, many vma can reduce performance...\n    \n    This patch fixes it.\n    \n        reproduced program\n        ----------------------------------------------------------------\n         #include <numaif.h>\n      ",
+        "exists": false,
+        "reason": "The commit modifies mbind_range to support vma merging, but does not touch __mpol_put() or any RCU synchronization. The vulnerable use-after-free (freed mempolicy accessed under RCU) is not present in this code."
+      }
+    },
+    {
+      "bic_found": "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "kernel/futex/core.c",
+          "anchor_lineno": 345
+        },
+        "commit": "c042c505210dc3453f378df432c10fff3d471bc5",
+        "commit_short": "c042c505210d",
+        "commit_msg": "futex: Implement FUTEX2_MPOL\n\nExtend the futex2 interface to be aware of mempolicy.\n\nWhen FUTEX2_MPOL is specified and t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/futex/core.c",
+        "display_lineno": 344,
+        "code_snippet": "commit c042c505210dc3453f378df432c10fff3d471bc5\nAuthor: Peter Zijlstra <peterz@infradead.org>\nDate:   Wed Apr 16 18:29:17 2025 +0200\n\n    futex: Implement FUTEX2_MPOL\n    \n    Extend the futex2 interface to be aware of mempolicy.\n    \n    When FUTEX2_MPOL is specified and there is a MPOL_PREFERRED or\n    home_node specified covering the futex address, use that hash-map.\n    \n    Notably, in this case the futex will go to the global node hashtable,\n    even if it is a PRIVATE futex.\n    \n    When",
+        "exists": true,
+        "reason": "The function __futex_key_to_node() accesses vma->vm_policy via vma_policy(vma) and dereferences the returned mempolicy pointer (mpol->mode, etc.) under an RCU read-side critical section. However, the mempolicy object can be freed via kmem_cache_free() in __mpol_put() without waiting for an RCU grace period, leading to a use-after-free. The code does not include any fix (e.g., using get_vma_policy() or ensuring RCU-safe freeing)."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "cec199c5e39b",
+          "anchor_file": "kernel/futex/core.c",
+          "anchor_lineno": 344
+        },
+        "commit": "80367ad01d93ac781b0e1df246edaf006928002f",
+        "commit_short": "80367ad01d93",
+        "commit_msg": "futex: Add basic infrastructure for local task local hash\n\nThe futex hash is system wide and shared by all tasks. Each s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/futex/core.c",
+        "display_lineno": 213,
+        "code_snippet": "commit 80367ad01d93ac781b0e1df246edaf006928002f\nAuthor: Sebastian Andrzej Siewior <bigeasy@linutronix.de>\nDate:   Wed Apr 16 18:29:12 2025 +0200\n\n    futex: Add basic infrastructure for local task local hash\n    \n    The futex hash is system wide and shared by all tasks. Each slot\n    is hashed based on futex address and the VMA of the thread. Due to\n    randomized VMAs (and memory allocations) the same logical lock (pointer)\n    can end up in a different hash bucket on each invocation of the\n  ",
+        "exists": false,
+        "reason": "The commit introduces futex private hash infrastructure and does not contain any mempolicy-related code. The vulnerable construct (__mpol_put freeing without RCU grace period) is absent."
+      }
+    },
+    {
+      "bic_found": "c042c505210dc3453f378df432c10fff3d471bc5",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "kernel/futex/core.c",
+          "anchor_lineno": 346
+        },
+        "commit": "c042c505210dc3453f378df432c10fff3d471bc5",
+        "commit_short": "c042c505210d",
+        "commit_msg": "futex: Implement FUTEX2_MPOL\n\nExtend the futex2 interface to be aware of mempolicy.\n\nWhen FUTEX2_MPOL is specified and t",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/futex/core.c",
+        "display_lineno": 345,
+        "code_snippet": "commit c042c505210dc3453f378df432c10fff3d471bc5\nAuthor: Peter Zijlstra <peterz@infradead.org>\nDate:   Wed Apr 16 18:29:17 2025 +0200\n\n    futex: Implement FUTEX2_MPOL\n    \n    Extend the futex2 interface to be aware of mempolicy.\n    \n    When FUTEX2_MPOL is specified and there is a MPOL_PREFERRED or\n    home_node specified covering the futex address, use that hash-map.\n    \n    Notably, in this case the futex will go to the global node hashtable,\n    even if it is a PRIVATE futex.\n    \n    When",
+        "exists": true,
+        "reason": "The commit introduces __futex_key_to_node() which calls vma_policy(vma) and dereferences the returned mempolicy pointer (mpol->mode, mpol->nodes, mpol->home_node) without ensuring the mempolicy object is not freed during access. The root cause states that __mpol_put() frees the object immediately via kmem_cache_free() without waiting for an RCU grace period, meaning the concurrent RCU-protected access in futex_key_to_node_opt() can use-after-free. No fix (e.g., kfree_rcu or proper refcounting) is present in this commit."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "cec199c5e39b",
+          "anchor_file": "kernel/futex/core.c",
+          "anchor_lineno": 345
+        },
+        "commit": "80367ad01d93ac781b0e1df246edaf006928002f",
+        "commit_short": "80367ad01d93",
+        "commit_msg": "futex: Add basic infrastructure for local task local hash\n\nThe futex hash is system wide and shared by all tasks. Each s",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/futex/core.c",
+        "display_lineno": 214,
+        "code_snippet": "commit 80367ad01d93ac781b0e1df246edaf006928002f\nAuthor: Sebastian Andrzej Siewior <bigeasy@linutronix.de>\nDate:   Wed Apr 16 18:29:12 2025 +0200\n\n    futex: Add basic infrastructure for local task local hash\n    \n    The futex hash is system wide and shared by all tasks. Each slot\n    is hashed based on futex address and the VMA of the thread. Due to\n    randomized VMAs (and memory allocations) the same logical lock (pointer)\n    can end up in a different hash bucket on each invocation of the\n  ",
+        "exists": false,
+        "reason": "The commit only modifies futex hash bucket initialization and private hash allocation. No code related to mempolicy freeing or __futex_key_to_node is present. The vulnerable construct is absent."
+      }
+    },
+    {
+      "bic_found": "c042c505210dc3453f378df432c10fff3d471bc5",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 1022
+        },
+        "commit": "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+        "commit_short": "869833f2c5c6",
+        "commit_msg": "mempolicy: remove mempolicy sharing\n\nDave Jones' system call fuzz testing tool \"trinity\" triggered the\nfollowing bug err",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 636,
+        "code_snippet": "commit 869833f2c5c6e4dd09a5378cfc665ffb4615e5d2\nAuthor: KOSAKI Motohiro <kosaki.motohiro@jp.fujitsu.com>\nDate:   Mon Oct 8 16:29:16 2012 -0700\n\n    mempolicy: remove mempolicy sharing\n    \n    Dave Jones' system call fuzz testing tool \"trinity\" triggered the\n    following bug error with slab debugging enabled\n    \n        =============================================================================\n        BUG numa_policy (Not tainted): Poison overwritten\n        --------------------------------",
+        "exists": true,
+        "reason": "The commit modifies vma_replace_policy() to call mpol_put(old) when replacing vma->vm_policy. This mpol_put path leads to __mpol_put() which frees the mempolicy via kmem_cache_free() without any RCU grace period. The diff does not add any synchronize_rcu() or kfree_rcu() to protect concurrent readers (e.g., __futex_key_to_node()) that may access vma->vm_policy under RCU. Therefore the vulnerable construct (immediate free without RCU) is present and not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "8d34694c1abf",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 636
+        },
+        "commit": "9d8cebd4bcd7c3878462fdfda34bbcdeb4df7ef4",
+        "commit_short": "9d8cebd4bcd7",
+        "commit_msg": "mm: fix mbind vma merge problem\n\nStrangely, current mbind() doesn't merge vma with neighbor vma although it's possible.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 570,
+        "code_snippet": "commit 9d8cebd4bcd7c3878462fdfda34bbcdeb4df7ef4\nAuthor: KOSAKI Motohiro <kosaki.motohiro@jp.fujitsu.com>\nDate:   Fri Mar 5 13:41:57 2010 -0800\n\n    mm: fix mbind vma merge problem\n    \n    Strangely, current mbind() doesn't merge vma with neighbor vma although it's possible.\n    Unfortunately, many vma can reduce performance...\n    \n    This patch fixes it.\n    \n        reproduced program\n        ----------------------------------------------------------------\n         #include <numaif.h>\n      ",
+        "exists": false,
+        "reason": "The commit modifies mbind_range to merge vmas, but does not touch the mempolicy freeing path or RCU grace period. The vulnerable construct (use-after-free in __mpol_put without RCU) is absent from the shown code."
+      }
+    },
+    {
+      "bic_found": "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+      "depth": 1
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 1023
+        },
+        "commit": "c1e8d7c6a7a682e1405e3e242d32fc377fd196ff",
+        "commit_short": "c1e8d7c6a7a6",
+        "commit_msg": "mmap locking API: convert mmap_sem comments\n\nConvert comments that reference mmap_sem to reference mmap_lock instead.\n\n[",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 792,
+        "code_snippet": "commit c1e8d7c6a7a682e1405e3e242d32fc377fd196ff\nAuthor: Michel Lespinasse <michel@lespinasse.org>\nDate:   Mon Jun 8 21:33:54 2020 -0700\n\n    mmap locking API: convert mmap_sem comments\n    \n    Convert comments that reference mmap_sem to reference mmap_lock instead.\n    \n    [akpm@linux-foundation.org: fix up linux-next leftovers]\n    [akpm@linux-foundation.org: s/lockaphore/lock/, per Vlastimil]\n    [akpm@linux-foundation.org: more linux-next fixups, per Michel]\n    \n    Signed-off-by: Michel L",
+        "exists": true,
+        "reason": "The function body shows that mpol_put(old) is called at line 793 without any RCU grace period synchronization, allowing the old mempolicy to be freed while concurrent readers under RCU may still be accessing it. This matches the vulnerability root cause of a use-after-free in __mpol_put."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "3e4e28c5a8f0",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 792
+        },
+        "commit": "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+        "commit_short": "869833f2c5c6",
+        "commit_msg": "mempolicy: remove mempolicy sharing\n\nDave Jones' system call fuzz testing tool \"trinity\" triggered the\nfollowing bug err",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 637,
+        "code_snippet": "commit 869833f2c5c6e4dd09a5378cfc665ffb4615e5d2\nAuthor: KOSAKI Motohiro <kosaki.motohiro@jp.fujitsu.com>\nDate:   Mon Oct 8 16:29:16 2012 -0700\n\n    mempolicy: remove mempolicy sharing\n    \n    Dave Jones' system call fuzz testing tool \"trinity\" triggered the\n    following bug error with slab debugging enabled\n    \n        =============================================================================\n        BUG numa_policy (Not tainted): Poison overwritten\n        --------------------------------",
+        "exists": true,
+        "reason": "The commit changes policy_vma to vma_replace_policy, which calls mpol_put(old) to release the old policy. mpol_put invokes __mpol_put() which frees the mempolicy object immediately via kmem_cache_free() without any RCU grace period. This is the vulnerable construct described in the root cause. The commit does not add any RCU synchronization (such as synchronize_rcu() or call_rcu()), so the use-after-free vulnerability remains. Therefore, the function contains the vulnerable construct and does not fix it."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 2,
+        "blame_input": {
+          "anchor_commit": "8d34694c1abf",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 637
+        },
+        "commit": "9d8cebd4bcd7c3878462fdfda34bbcdeb4df7ef4",
+        "commit_short": "9d8cebd4bcd7",
+        "commit_msg": "mm: fix mbind vma merge problem\n\nStrangely, current mbind() doesn't merge vma with neighbor vma although it's possible.\n",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 571,
+        "code_snippet": "commit 9d8cebd4bcd7c3878462fdfda34bbcdeb4df7ef4\nAuthor: KOSAKI Motohiro <kosaki.motohiro@jp.fujitsu.com>\nDate:   Fri Mar 5 13:41:57 2010 -0800\n\n    mm: fix mbind vma merge problem\n    \n    Strangely, current mbind() doesn't merge vma with neighbor vma although it's possible.\n    Unfortunately, many vma can reduce performance...\n    \n    This patch fixes it.\n    \n        reproduced program\n        ----------------------------------------------------------------\n         #include <numaif.h>\n      ",
+        "exists": false,
+        "reason": "The committed changes in mbind_range() and do_mbind() only adjust vma merging logic; they do not contain any call to __mpol_put() or any mempolicy free operation. The vulnerable construct (use-after-free due to missing RCU grace period in __mpol_put/__futex_key_to_node) is absent from this code."
+      }
+    },
+    {
+      "bic_found": "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+      "depth": 2
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "19f94b390586",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 489
+        },
+        "commit": "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+        "commit_short": "52cd3b074050",
+        "commit_msg": "mempolicy: rework mempolicy Reference Counting [yet again]\n\nAfter further discussion with Christoph Lameter, it has beco",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 248,
+        "code_snippet": "commit 52cd3b074050dd664380b5e8cfc85d4a6ed8ad48\nAuthor: Lee Schermerhorn <lee.schermerhorn@hp.com>\nDate:   Mon Apr 28 02:13:16 2008 -0700\n\n    mempolicy: rework mempolicy Reference Counting [yet again]\n    \n    After further discussion with Christoph Lameter, it has become clear that my\n    earlier attempts to clean up the mempolicy reference counting were a bit of\n    overkill in some areas, resulting in superflous ref/unref in what are usually\n    fast paths.  In other areas, further inspectio",
+        "exists": true,
+        "reason": "The code shows `__mpol_put()` (lines 241-249 of the new code) which calls `kmem_cache_free(policy_cache, p)` directly without any RCU grace period. This is the vulnerable construct described in the root cause. No RCU-based fix or deferred free mechanism is present. Therefore the function contains the bug and is not fixed."
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 1,
+        "blame_input": {
+          "anchor_commit": "a6020ed75940",
+          "anchor_file": "mm/mempolicy.c",
+          "anchor_lineno": 248
+        },
+        "commit": "37012946da940521fb997a758a219d2f1ab56e51",
+        "commit_short": "37012946da94",
+        "commit_msg": "mempolicy: create mempolicy_operations structure\n\nCreate a mempolicy_operations structure that currently points to two\nf",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "mm/mempolicy.c",
+        "display_lineno": 232,
+        "code_snippet": "commit 37012946da940521fb997a758a219d2f1ab56e51\nAuthor: David Rientjes <rientjes@google.com>\nDate:   Mon Apr 28 02:12:33 2008 -0700\n\n    mempolicy: create mempolicy_operations structure\n    \n    Create a mempolicy_operations structure that currently points to two\n    functions[*] for the various modes:\n    \n            int (*create)(struct mempolicy *, const nodemask_t *);\n            void (*rebind)(struct mempolicy *, const nodemask_t *);\n    \n    This splits the implementation for the various ",
+        "exists": false,
+        "reason": "The diff in this commit restructures mempolicy creation and rebinding using a mempolicy_operations structure but does not modify __mpol_put() or add RCU synchronization. The vulnerable construct (use-after-free due to freeing without RCU grace period) is absent from this code."
+      }
+    },
+    {
+      "bic_found": "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+      "depth": 1
+    },
+    {
+      "bic_votes": {
+        "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48": 3,
+        "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2": 3,
+        "c042c505210dc3453f378df432c10fff3d471bc5": 2
+      },
+      "bic_candidates": [
+        "52cd3b074050dd664380b5e8cfc85d4a6ed8ad48",
+        "869833f2c5c6e4dd09a5378cfc665ffb4615e5d2",
+        "c042c505210dc3453f378df432c10fff3d471bc5"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

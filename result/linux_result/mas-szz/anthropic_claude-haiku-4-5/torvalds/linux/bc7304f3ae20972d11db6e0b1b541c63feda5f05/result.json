@@ -1,0 +1,220 @@
+{
+  "cveid": "CVE-2026-52977",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "bc7304f3ae20972d11db6e0b1b541c63feda5f05"
+  ],
+  "ground_truth_bic": "07d91ef510fb16a2e0ca7453222105835b7ba3b8",
+  "predicted_bic": [
+    "e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 41381,
+  "root_cause": {
+    "text": "A race condition in futex requeue-PI where a task timing out or receiving a signal cannot remove itself from the waiters list because the hash bucket lock is held by the requeuing task, causing the requeuing task to busy-loop on a stale waiter entry while the exiting task blocks waiting for the lock, resulting in a system deadlock.",
+    "evidence": "The patch shows two key fixes: (1) In `futex_proxy_trylock_atomic()`, when `futex_requeue_pi_prepare()` fails (indicating the waiter is exiting early via `Q_REQUEUE_PI_IGNORE`), the top waiter is explicitly removed from the list (`plist_del(&top_waiter->list, &hb1->chain)`) before returning `-EAGAIN`, allowing the requeuing task to progress to the next waiter instead of retrying on the same stale entry. (2) In `handle_early_requeue_pi_wakeup()`, the removal is made conditional (`if (!plist_node_empty(&q->list))`) to handle the case where the waiter was already removed by the requeuing task, preventing double-removal. The CVE description explicitly states: \"Task A...can not remove it from the list because this requires the hb lock which is owned by task B\" and \"task B busy loops, trying to make progress but live locks the system instead.\"",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "kernel/futex/requeue.c",
+      "lineno": 323,
+      "content": "return -EAGAIN;",
+      "confidence": 1.0
+    },
+    {
+      "file": "kernel/futex/requeue.c",
+      "lineno": 322,
+      "content": "if (!futex_requeue_pi_prepare(top_waiter, NULL))",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "A race condition in futex requeue-PI where a task timing out or receiving a signal cannot remove itself from the waiters list because the hash bucket lock is held by the requeuing task, causing the requeuing task to busy-loop on a stale waiter entry while the exiting task blocks waiting for the lock, resulting in a system deadlock.",
+      "evidence_points": "The patch shows two key fixes: (1) In `futex_proxy_trylock_atomic()`, when `futex_requeue_pi_prepare()` fails (indicating the waiter is exiting early via `Q_REQUEUE_PI_IGNORE`), the top waiter is explicitly removed from the list (`plist_del(&top_waiter->list, &hb1->chain)`) before returning `-EAGAIN`, allowing the requeuing task to progress to the next waiter instead of retrying on the same stale entry. (2) In `handle_early_requeue_pi_wakeup()`, the removal is made conditional (`if (!plist_node_empty(&q->list))`) to handle the case where the waiter was already removed by the requeuing task, preventing double-removal. The CVE description explicitly states: \"Task A...can not remove it from the list because this requires the hb lock which is owned by task B\" and \"task B busy loops, trying to make progress but live locks the system instead.\""
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "kernel/futex/requeue.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "kernel/futex/requeue.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Fix a resource leak by properly cleaning up the waiter from the hash bucket chain when futex_requeue_pi_prepare fails.",
+        "what": "Added two function calls (plist_del and futex_hb_waiters_dec) inside the error handling block when futex_requeue_pi_prepare fails, wrapping the return statement in braces to create a compound statement.",
+        "how": "When futex_requeue_pi_prepare returns false, the code now removes the top_waiter from the hash bucket's wait list and decrements the waiters count before returning -EAGAIN. Previously, these cleanup operations were skipped, potentially leaving the waiter in an inconsistent state (still registered in the bucket despite the failed preparation)."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "guard",
+        "intent_summary": "Add a guard check to conditionally unqueue the futex_q only if it is not already empty, preventing double-deletion and list corruption.",
+        "what": "Added a conditional check `if (!plist_node_empty(&q->list))` around the `plist_del()` and `futex_hb_waiters_dec()` calls, and updated the comment from 'Unqueue' to 'Conditionally unqueue'.",
+        "how": "The change prevents calling `plist_del()` and `futex_hb_waiters_dec()` when the futex queue node is already empty. This guards against potential double-deletion or operating on an already-removed node, which could cause list corruption or incorrect waiter count tracking."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 1,
+          "intent": "Fix a resource leak by properly cleaning up the waiter from the hash bucket chain when futex_requeue_pi_prepare fails."
+        },
+        {
+          "group_id": 1,
+          "category": "guard",
+          "hunk_count": 1,
+          "intent": "Add a guard check to conditionally unqueue the futex_q only if it is not already empty, preventing double-deletion and list corruption."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "consistency_review": {
+        "group_id": 1,
+        "verdict": "ACCEPT",
+        "reason": "single hunk group, auto-accepted"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The group addresses a critical aspect of the futex requeue-PI vulnerability by ensuring proper cleanup of waiters from the hash bucket chain when failures occur. This directly relates to the root cause, which involves tasks being unable to remove themselves from the waiters list due to lock contention. Proper cleanup when futex_requeue_pi_prepare fails prevents stale waiter entries from remaining in the hash bucket, which is a key factor in the deadlock scenario described in the vulnerability."
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 1,
+        "is_relevant": false,
+        "reason": "The group addresses double-deletion and list corruption prevention, which is a different issue than the race condition deadlock. The root cause involves a task unable to remove itself from the waiters list due to lock contention during requeue-PI, leading to busy-looping and deadlock. A guard check for empty queue state does not address the fundamental synchronization issue where the hash bucket lock prevents proper removal during timeout/signal handling."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/futex/requeue.c",
+            "lineno": 322,
+            "content": "if (!futex_requeue_pi_prepare(top_waiter, NULL))",
+            "rationale": "This condition checks if futex_requeue_pi_prepare fails, but when it returns false and -EAGAIN is returned, the waiter is not removed from the hash bucket chain. The waiter remains in the waiters list while the requeuing task holds the hash bucket lock, creating a race condition where a timing out or signaled task cannot remove itself from the list, leading to deadlock."
+          },
+          {
+            "hunk_index": 0,
+            "file_path": "kernel/futex/requeue.c",
+            "lineno": 323,
+            "content": "return -EAGAIN;",
+            "rationale": "This early return on futex_requeue_pi_prepare failure does not clean up the waiter from the hash bucket chain before returning. The waiter remains queued while the lock is held, preventing the waiter from removing itself if it times out or receives a signal, causing the deadlock condition described in the root cause."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "kernel/futex/requeue.c",
+            "stmt_text": "return -EAGAIN;",
+            "location": "hunk",
+            "explanation": "This early return at line 323 fails to remove the waiter from the hash bucket chain before returning when futex_requeue_pi_prepare fails. The waiter remains queued while the requeuing task holds the hash bucket lock, preventing a timing out or signaled task from removing itself from the waiters list, directly causing the deadlock condition described in the root cause."
+          },
+          {
+            "vuln_file": "kernel/futex/requeue.c",
+            "stmt_text": "if (!futex_requeue_pi_prepare(top_waiter, NULL))",
+            "location": "hunk",
+            "explanation": "This condition at line 322 detects the failure case but does not trigger proper cleanup of the waiter from the hash bucket chain. When this condition is true (futex_requeue_pi_prepare returns false), the subsequent early return leaves the waiter in the waiters list, creating the race condition where the requeuing task holds the lock and a timing out/signaled task cannot remove itself, leading to deadlock."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "254f49634ee1",
+          "anchor_file": "kernel/futex/requeue.c",
+          "anchor_lineno": 323
+        },
+        "commit": "e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f",
+        "commit_short": "e5c6828493b5",
+        "commit_msg": "futex: Split out requeue\n\nMove all the requeue bits into their own file.\n\nSigned-off-by: Peter Zijlstra (Intel) <peterz@",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/futex/requeue.c",
+        "display_lineno": 309,
+        "code_snippet": "commit e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f\nAuthor: Peter Zijlstra <peterz@infradead.org>\nDate:   Thu Sep 23 14:11:02 2021 -0300\n\n    futex: Split out requeue\n    \n    Move all the requeue bits into their own file.\n    \n    Signed-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>\n    Signed-off-by: André Almeida <andrealmeid@collabora.com>\n    Signed-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>\n    Reviewed-by: André Almeida <andrealmeid@collabora.com>\n    Link: https://lore.ker",
+        "exists": false,
+        "reason": "This function shows the requeue-PI logic after the fix has been applied. The critical line 308 calls `futex_requeue_pi_prepare(top_waiter, NULL)` which is the synchronization mechanism that prevents the race condition. This function properly checks and prepares the waiter state before proceeding with the requeue operation. The code at lines 329-331 also shows proper error handling with `futex_requeue_pi_complete(top_waiter, ret)` to rewind state on failure. The function structure ensures that the waiter's state is properly managed throughout the requeue process, preventing the deadlock scenario where a timing-out task cannot remove itself from the waiters list. The presence of these state management calls indicates the vulnerability has been addressed in this commit version."
+      }
+    },
+    {
+      "bic_found": "e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "254f49634ee1",
+          "anchor_file": "kernel/futex/requeue.c",
+          "anchor_lineno": 322
+        },
+        "commit": "e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f",
+        "commit_short": "e5c6828493b5",
+        "commit_msg": "futex: Split out requeue\n\nMove all the requeue bits into their own file.\n\nSigned-off-by: Peter Zijlstra (Intel) <peterz@",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "kernel/futex/requeue.c",
+        "display_lineno": 308,
+        "code_snippet": "commit e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f\nAuthor: Peter Zijlstra <peterz@infradead.org>\nDate:   Thu Sep 23 14:11:02 2021 -0300\n\n    futex: Split out requeue\n    \n    Move all the requeue bits into their own file.\n    \n    Signed-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>\n    Signed-off-by: André Almeida <andrealmeid@collabora.com>\n    Signed-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>\n    Reviewed-by: André Almeida <andrealmeid@collabora.com>\n    Link: https://lore.ker",
+        "exists": false,
+        "reason": "This function shows the requeue-PI logic after the fix has been applied. The critical line 308 calls `futex_requeue_pi_prepare(top_waiter, NULL)` which is the fix for the race condition. This function prepares the waiter state and prevents the race condition where a task timing out or receiving a signal cannot remove itself from the waiters list. The code properly handles the return value at line 308-309, returning -EAGAIN if the prepare fails, which allows proper cleanup. Additionally, line 331 shows `futex_requeue_pi_complete(top_waiter, ret)` being called on error paths to properly rewind the requeue state. The function also properly manages the waiter state through the conditional logic (lines 321-342) that handles different outcomes from `futex_lock_pi_atomic()`. The presence of these state management calls (`futex_requeue_pi_prepare` and `futex_requeue_pi_complete`) indicates the fix is in place to prevent the deadlock scenario described in the vulnerability root cause."
+      }
+    },
+    {
+      "bic_found": "e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f": 2
+      },
+      "bic_candidates": [
+        "e5c6828493b5fa6a3c4606b43e80ab6c5ec1111f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}

@@ -1,0 +1,247 @@
+{
+  "cveid": "CVE-2026-53108",
+  "repo_name": "torvalds/linux",
+  "fix_commit_hashes": [
+    "bbcbf045d6c778e82b47a35fc8728387708e9a3d"
+  ],
+  "ground_truth_bic": "a30b48bf1b244f11bf9b6d20cdccfe0c2264130c",
+  "predicted_bic": [
+    "bea0cc7cf4a51e8d3a0042212df3b83b49df58a7",
+    "75358ea359e7c0dfceb3c7b3d854570b4260cb7f"
+  ],
+  "correct": false,
+  "bic_method": "blame_trace",
+  "llm_calls": 14,
+  "llm_tokens": 24964,
+  "root_cause": {
+    "text": "PowerPC Book3S64’s huge-PMD unmap path assumed `pmdp_huge_get_and_clear_full()` would only ever see present, huge PMDs, but migration/device-private THP entries can leave a non-present PMD temporarily visible and race with `munmap`, triggering the `VM_BUG_ON` in `pmdp_huge_get_and_clear_full()`.",
+    "evidence": "The patch explicitly says “Non-present PMDs can be migration entries or device-private THP entries” and adds a special non-present PMD case in `pmdp_huge_get_and_clear()`, while `pmdp_huge_get_and_clear_full()` changes its assertion from `VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp)) || !pmd_present(*pmdp));` to only rejecting present-but-not-huge PMDs and notes “Check pmdp_huge_get_and_clear() for non-present pmd case”; the CVE description shows the race between `move_pages()`/`set_pmd_migration_entry()` and `munmap()`/`zap_huge_pmd()` hitting that `VM_BUG_ON(!pmd_present(*pmdp))`.",
+    "passed_review": true
+  },
+  "vuln_statements": [
+    {
+      "file": "arch/powerpc/mm/book3s64/pgtable.c",
+      "lineno": 213,
+      "content": "VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp)) ||",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/powerpc/mm/book3s64/pgtable.c",
+      "lineno": 214,
+      "content": "!pmd_present(*pmdp));",
+      "confidence": 1.0
+    },
+    {
+      "file": "arch/powerpc/mm/book3s64/pgtable.c",
+      "lineno": 215,
+      "content": "pmd = pmdp_huge_get_and_clear(vma->vm_mm, addr, pmdp);",
+      "confidence": 1.0
+    }
+  ],
+  "agent_logs": [
+    {
+      "root_cause_candidate": "PowerPC Book3S64’s huge-PMD unmap path assumed `pmdp_huge_get_and_clear_full()` would only ever see present, huge PMDs, but migration/device-private THP entries can leave a non-present PMD temporarily visible and race with `munmap`, triggering the `VM_BUG_ON` in `pmdp_huge_get_and_clear_full()`.",
+      "evidence_points": "The patch explicitly says “Non-present PMDs can be migration entries or device-private THP entries” and adds a special non-present PMD case in `pmdp_huge_get_and_clear()`, while `pmdp_huge_get_and_clear_full()` changes its assertion from `VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp)) || !pmd_present(*pmdp));` to only rejecting present-but-not-huge PMDs and notes “Check pmdp_huge_get_and_clear() for non-present pmd case”; the CVE description shows the race between `move_pages()`/`set_pmd_migration_entry()` and `munmap()`/`zap_huge_pmd()` hitting that `VM_BUG_ON(!pmd_present(*pmdp))`."
+    },
+    {
+      "root_cause_review": {
+        "passed": true,
+        "feedback": "OK"
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 0,
+        "file_path": "arch/powerpc/include/asm/book3s/64/pgtable.h",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "semantic_completeness": {
+        "hunk_index": 1,
+        "file_path": "arch/powerpc/mm/book3s64/pgtable.c",
+        "complete": true,
+        "missing": []
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 0,
+        "change_category": "bug_fix",
+        "intent_summary": "Handle non-present huge PMDs explicitly so migration and device-private entries are safely cleared without using the present-PMD fast path.",
+        "what": "The function pmdp_huge_get_and_clear() was extended with a new early check for !pmd_present(*pmdp). In that case it now reads the PMD with READ_ONCE(*pmdp), clears it with pmd_clear(pmdp), and jumps to a new out label before calling page_table_check_pmd_clear(). The existing radix/hash-specific get-and-clear logic is unchanged, but is now skipped for non-present PMDs.",
+        "how": "At runtime, non-present huge PMDs are now handled explicitly instead of being passed through the radix/hash get-and-clear helpers. This allows the function to safely clear migration entries or device-private THP entries during unmapping or migration without relying on present-PMD handling paths, preventing incorrect treatment of these entries and preserving the correct old PMD value for page table checks."
+      }
+    },
+    {
+      "intent_record": {
+        "hunk_index": 1,
+        "change_category": "bug_fix",
+        "intent_summary": "Avoid unnecessary TLB flushing for non-present huge PMDs while preserving the existing flush behavior for present entries.",
+        "what": "In pmdp_huge_get_and_clear_full(), a new local boolean was_present is introduced to record pmd_present(*pmdp) before clearing. The VM_BUG_ON validation is split into VM_BUG_ON(was_present && !pmd_trans_huge(*pmdp)), and the previous unconditional present-check is replaced with a comment noting the non-present case is handled by pmdp_huge_get_and_clear(). The TLB flush condition changes from if (!full) to if (was_present && !full), with a comment updated to state that no TLB flush is needed for non-present PMDs.",
+        "how": "At runtime, the function now distinguishes between present and non-present PMD entries before clearing them. For present huge PMDs, it still performs the same safety check and flushes the PMD TLB range when not doing a full-mm flush. For non-present PMDs, it avoids the extra flush, matching the underlying clear helper's behavior and preventing unnecessary TLB invalidation."
+      }
+    },
+    {
+      "grouping_result": [
+        {
+          "group_id": 0,
+          "category": "bug_fix",
+          "hunk_count": 2,
+          "intent": "Avoid unnecessary TLB flushing for non-present huge PMDs while preserving the existing flush behavior for present entries."
+        }
+      ]
+    },
+    {
+      "consistency_review": {
+        "group_id": 0,
+        "verdict": "ACCEPT",
+        "core_intent": "Update huge PMD handling so non-present entries are treated explicitly and present entries keep their existing flush behavior.",
+        "outliers": [],
+        "reason": "OK"
+      }
+    },
+    {
+      "relevance_review": {
+        "group_id": 0,
+        "is_relevant": true,
+        "reason": "The changes directly address the root cause by handling non-present huge PMD entries explicitly in the huge-PMD unmap path, avoiding the assumption that only present, huge PMDs reach pmdp_huge_get_and_clear_full(). This matches the migration/device-private race described in the vulnerability."
+      }
+    },
+    {
+      "vuln_stmt_initial": {
+        "candidates": [
+          {
+            "hunk_index": 1,
+            "file_path": "arch/powerpc/mm/book3s64/pgtable.c",
+            "lineno": 213,
+            "content": "VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp)) ||",
+            "rationale": "This assertion rejects any non-present PMD, but migration/device-private THP entries can legitimately be non-present and still reach this path, causing the BUG_ON during munmap."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "arch/powerpc/mm/book3s64/pgtable.c",
+            "lineno": 214,
+            "content": "!pmd_present(*pmdp));",
+            "rationale": "This part of the assertion explicitly treats non-present huge PMDs as invalid, which is the direct trigger for the crash when such entries are temporarily visible."
+          },
+          {
+            "hunk_index": 1,
+            "file_path": "arch/powerpc/mm/book3s64/pgtable.c",
+            "lineno": 215,
+            "content": "pmd = pmdp_huge_get_and_clear(vma->vm_mm, addr, pmdp);",
+            "rationale": "This call routes huge-PMD clearing through the path that assumes a present huge PMD, so when a non-present migration/device-private entry is encountered it can hit the underlying BUG_ON."
+          }
+        ],
+        "confidence": "high",
+        "sufficient": true
+      }
+    },
+    {
+      "vuln_stmt_final": {
+        "vuln_statements": [
+          {
+            "vuln_file": "arch/powerpc/mm/book3s64/pgtable.c",
+            "stmt_text": "VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp)) ||",
+            "location": "hunk",
+            "explanation": "This assertion is part of the huge-PMD unmap path’s assumption that only present huge PMDs are valid. It contributes directly to the crash when a migration/device-private THP entry is non-present but still visible during munmap."
+          },
+          {
+            "vuln_file": "arch/powerpc/mm/book3s64/pgtable.c",
+            "stmt_text": "!pmd_present(*pmdp));",
+            "location": "hunk",
+            "explanation": "This completes the BUG_ON condition by explicitly rejecting any non-present PMD. That is the root cause of the failure when non-present migration/device-private THP entries reach this path."
+          },
+          {
+            "vuln_file": "arch/powerpc/mm/book3s64/pgtable.c",
+            "stmt_text": "pmd = pmdp_huge_get_and_clear(vma->vm_mm, addr, pmdp);",
+            "location": "hunk",
+            "explanation": "This statement routes clearing through the huge-PMD path that assumes a present huge PMD, which is unsafe for temporarily non-present migration/device-private entries and leads to the BUG_ON."
+          }
+        ]
+      }
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fda4d71651f7",
+          "anchor_file": "arch/powerpc/mm/book3s64/pgtable.c",
+          "anchor_lineno": 213
+        },
+        "commit": "bea0cc7cf4a51e8d3a0042212df3b83b49df58a7",
+        "commit_short": "bea0cc7cf4a5",
+        "commit_msg": "powerpc: remove checks for devmap pages and PMDs/PUDs\n\nPFN_DEV no longer exists.  This means no devmap PMDs or PUDs will",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/powerpc/mm/book3s64/pgtable.c",
+        "display_lineno": 206,
+        "code_snippet": "commit bea0cc7cf4a51e8d3a0042212df3b83b49df58a7\nAuthor: Alistair Popple <apopple@nvidia.com>\nDate:   Thu Jun 19 18:58:01 2025 +1000\n\n    powerpc: remove checks for devmap pages and PMDs/PUDs\n    \n    PFN_DEV no longer exists.  This means no devmap PMDs or PUDs will be\n    created, so checking for them is redundant.  Instead mappings of pages\n    that would have previously returned true for pXd_devmap() will return true\n    for pXd_trans_huge()\n    \n    Link: https://lkml.kernel.org/r/31f63cc8dd5",
+        "exists": false,
+        "reason": "The vulnerable construct described in the root cause is the assumption in `pmdp_huge_get_and_clear_full()` that only present, huge PMDs are seen, while a non-present migration/device-private THP entry may be temporarily visible and race with `munmap`, triggering the `VM_BUG_ON`. In this snippet, that path is still guarded by `VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp)) || !pmd_present(*pmdp));`, which explicitly BUGs on any non-present PMD (`!pmd_present(*pmdp)`). That means the vulnerable assumption is present, and the function does not contain a fix for the race; instead it still rejects non-present entries. However, because the commit message and diff here are about removing devmap checks and the snippet shows the updated assert behavior, the specific vulnerable construct is not clearly established as present in the sense of the migration/device-private THP issue being handled here. So for this commit version, the shown code is sufficient to see the BUG_ON logic, but it is not the vulnerable condition being exercised by the root cause."
+      }
+    },
+    {
+      "bic_found": "bea0cc7cf4a51e8d3a0042212df3b83b49df58a7",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fda4d71651f7",
+          "anchor_file": "arch/powerpc/mm/book3s64/pgtable.c",
+          "anchor_lineno": 214
+        },
+        "commit": "bea0cc7cf4a51e8d3a0042212df3b83b49df58a7",
+        "commit_short": "bea0cc7cf4a5",
+        "commit_msg": "powerpc: remove checks for devmap pages and PMDs/PUDs\n\nPFN_DEV no longer exists.  This means no devmap PMDs or PUDs will",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/powerpc/mm/book3s64/pgtable.c",
+        "display_lineno": 207,
+        "code_snippet": "commit bea0cc7cf4a51e8d3a0042212df3b83b49df58a7\nAuthor: Alistair Popple <apopple@nvidia.com>\nDate:   Thu Jun 19 18:58:01 2025 +1000\n\n    powerpc: remove checks for devmap pages and PMDs/PUDs\n    \n    PFN_DEV no longer exists.  This means no devmap PMDs or PUDs will be\n    created, so checking for them is redundant.  Instead mappings of pages\n    that would have previously returned true for pXd_devmap() will return true\n    for pXd_trans_huge()\n    \n    Link: https://lkml.kernel.org/r/31f63cc8dd5",
+        "exists": false,
+        "reason": "The snippet includes the exact huge-PMD unmap assertion in question: `VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp)) || !pmd_present(*pmdp));` inside `pmdp_huge_get_and_clear_full()`. This is the place where the root cause manifests: the code assumes that any present PMD seen here must be a huge/trans-huge PMD, and will BUG otherwise. However, the shown commit already removed the old `pmd_devmap()` allowance and leaves only `pmd_trans_huge()` as acceptable, which matches the problematic assumption described in the root cause. The fix is not present in this function body; there is no handling for temporarily visible non-present migration/device-private THP entries or any relaxation of the BUG_ON. The function body is sufficient to determine that the vulnerable construct is present and not fixed."
+      }
+    },
+    {
+      "bic_found": "bea0cc7cf4a51e8d3a0042212df3b83b49df58a7",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_trace_step": {
+        "depth": 0,
+        "blame_input": {
+          "anchor_commit": "fda4d71651f7",
+          "anchor_file": "arch/powerpc/mm/book3s64/pgtable.c",
+          "anchor_lineno": 215
+        },
+        "commit": "75358ea359e7c0dfceb3c7b3d854570b4260cb7f",
+        "commit_short": "75358ea359e7",
+        "commit_msg": "powerpc/mm/book3s64: Fix MADV_DONTNEED and parallel page fault race\n\nMADV_DONTNEED holds mmap_sem in read mode and that ",
+        "loc_method": "blame_orig_lineno",
+        "display_file": "arch/powerpc/mm/book3s64/pgtable.c",
+        "display_lineno": 122,
+        "code_snippet": "commit 75358ea359e7c0dfceb3c7b3d854570b4260cb7f\nAuthor: Aneesh Kumar K.V <aneesh.kumar@linux.ibm.com>\nDate:   Tue May 5 12:47:29 2020 +0530\n\n    powerpc/mm/book3s64: Fix MADV_DONTNEED and parallel page fault race\n    \n    MADV_DONTNEED holds mmap_sem in read mode and that implies a\n    parallel page fault is possible and the kernel can end up with a level 1 PTE\n    entry (THP entry) converted to a level 0 PTE entry without flushing\n    the THP TLB entry.\n    \n    Most architectures including POW",
+        "exists": false,
+        "reason": "The shown function is the new helper `pmdp_huge_get_and_clear_full()`, and it already contains the race fix described in the commit message. The key fix is the added conditional flush: `if (!full) flush_pmd_tlb_range(vma, addr, addr + HPAGE_PMD_SIZE);`, which forces a TLB invalidate before releasing the PMD lock for non-fullmm cases, preventing a parallel page fault from installing a level-0 PTE while a THP TLB entry still exists. The vulnerable construct from the root cause (clearing a huge PMD without this flush, leading to the `VM_BUG_ON` in `pmdp_huge_get_and_clear_full()`) is not present in this code. The function also has validation `VM_BUG_ON((pmd_present(*pmdp) && !pmd_trans_huge(*pmdp) && !pmd_devmap(*pmdp)) || !pmd_present(*pmdp));`, indicating it explicitly handles the expected PMD types rather than assuming arbitrary present PMDs. Therefore this version already reflects the fix, not the bug."
+      }
+    },
+    {
+      "bic_found": "75358ea359e7c0dfceb3c7b3d854570b4260cb7f",
+      "note": "first step no-vuln"
+    },
+    {
+      "bic_votes": {
+        "bea0cc7cf4a51e8d3a0042212df3b83b49df58a7": 2,
+        "75358ea359e7c0dfceb3c7b3d854570b4260cb7f": 1
+      },
+      "bic_candidates": [
+        "bea0cc7cf4a51e8d3a0042212df3b83b49df58a7",
+        "75358ea359e7c0dfceb3c7b3d854570b4260cb7f"
+      ]
+    }
+  ],
+  "used_fallback": false,
+  "error": ""
+}
